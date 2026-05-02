@@ -67,7 +67,7 @@ function createMainWindow() {
 }
 
 // Espera a que Vite esté disponible antes de abrir la ventana
-function waitForVite(url, retries = 20, delay = 500) {
+function waitForVite(url, retries = 40, delay = 1000) {
   return new Promise((resolve, reject) => {
     function tryConnect() {
       http.get(url, (res) => {
