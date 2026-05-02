@@ -1,0 +1,158 @@
+.login-container {
+  height: 100vh;
+  background: radial-gradient(circle at top, #111827, #020617);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  color: #fff;
+}
+
+/* ===== CARDS ===== */
+.cards {
+  display: flex;
+  gap: 40px;
+  transition: all 0.8s ease-in-out;
+}
+
+.cards.selected {
+  gap: 0;
+}
+
+/* ===== CARD ===== */
+.card {
+  width: 260px;
+  height: 340px;
+  background: #1f2933;
+  border-radius: 16px;
+  padding: 24px;
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 20px 50px rgba(0,0,0,.4);
+  position: relative;
+  z-index: 2;
+
+  transition:
+    transform 0.8s cubic-bezier(.22,1,.36,1),
+    opacity 0.6s ease;
+}
+
+.card img {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  margin: 10px 0 6px;
+}
+
+.card p {
+  font-size: 14px;
+  opacity: .8;
+}
+
+/* Hover */
+.card:hover {
+  transform: translateY(-10px) scale(1.03);
+}
+
+/* Seleccionada */
+.card.active {
+  transform: scale(1.1);
+  z-index: 5;
+}
+
+/* Ocultar la NO seleccionada */
+.cards.selected .card:not(.active) {
+  opacity: 0;
+  transform: scale(0.85);
+  pointer-events: none;
+  transition-delay: 0s;
+}
+
+/* ===== FORMULARIO ===== */
+.credentials {
+  margin-top: 40px;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  opacity: 0;
+  transform: translateY(20px);
+  pointer-events: none;
+
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease;
+
+  transition-delay: 0.4s;
+  z-index: 5;
+}
+
+/* Mostrar formulario */
+.credentials.show {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Inputs animados uno a uno */
+.credentials input {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: none;
+  outline: none;
+  font-size: 14px;
+
+  opacity: 0;
+  transform: translateX(-10px);
+  animation: inputFade 0.5s ease forwards;
+}
+
+.credentials input:nth-child(1) {
+  animation-delay: 0.2s;
+}
+
+.credentials input:nth-child(2) {
+  animation-delay: 0.35s;
+}
+
+/* Botón */
+.credentials button {
+  margin-top: 8px;
+  padding: 12px;
+  border-radius: 8px;
+  border: none;
+  background: #2563eb;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+
+  opacity: 0;
+  transform: translateY(10px);
+  animation: buttonFade 0.5s ease forwards;
+  animation-delay: 0.55s;
+}
+
+.credentials button:hover {
+  background: #1e40af;
+}
+
+/* ===== KEYFRAMES ===== */
+@keyframes inputFade {
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes buttonFade {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

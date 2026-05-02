@@ -1,0 +1,70 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Rol {
+  id       Int       @id @default(autoincrement())
+  nombre   String
+  usuarios Usuario[]
+}
+
+model Usuario {
+  id       Int    @id @default(autoincrement())
+  nombre   String
+  email    String @unique
+  password String
+  rolId    Int
+  rol      Rol    @relation(fields: [rolId], references: [id])
+}
+
+model Categoria {
+  id         Int    @id @default(autoincrement())
+  nombre     String
+  prioridad  Int
+  articulos  Articulo[]
+}
+
+model EstadoArticulo {
+  id         Int    @id @default(autoincrement())
+  nombre     String
+  articulos  Articulo[]
+}
+
+model Articulo {
+  id          Int    @id @default(autoincrement())
+  nombre      String
+  descripcion String?
+  codigoRfid  String @unique
+  estadoId    Int
+  categoriaId Int
+
+  estado      EstadoArticulo @relation(fields: [estadoId], references: [id])
+  categoria   Categoria      @relation(fields: [categoriaId], references: [id])
+}
+
+model EventoArticulo {
+  id          Int @id @default(autoincrement())
+  eventoId    Int
+  articuloId  Int
+
+  evento      Evento   @relation(fields: [eventoId], references: [id])
+  articulo    Articulo @relation(fields: [articuloId], references: [id])
+}
+
+model Movimiento {
+  id          Int      @id @default(autoincrement())
+  tipo        String
+  fechaHora   DateTime @default(now())
+  usuarioId   Int
+  articuloId  Int
+}
