@@ -86,9 +86,10 @@ app.whenReady().then(async () => {
 
   if (isDev) {
     // Inicia Vite en segundo plano si no está corriendo
-    viteProcess = spawn('npm', ['run', 'dev', '--prefix', path.join(__dirname, '../frontend')], {
+    const isWindows = process.platform === 'win32'
+    viteProcess = spawn(isWindows ? 'npm.cmd' : 'npm', ['run', 'dev', '--prefix', path.join(__dirname, '../frontend')], {
       shell: true,
-      stdio: 'ignore',
+      stdio: 'inherit',
       detached: false
     })
     try {
