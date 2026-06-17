@@ -8,13 +8,14 @@ import CalendarTodayIcon from '@mui/icons-material/CalendarToday'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useInventory } from '../context/InventoryContext'
 
-const STATES = ['Disponible', 'Reservado', 'Ocupado', 'En Mantenimiento', 'Perdido']
+const STATES = ['Disponible', 'Reservado', 'Ocupado', 'Rental', 'En Mantenimiento', 'Perdido']
 const ROWS_PER_PAGE = 15
 
 const stateColors = {
   Disponible: 'success',
   Reservado: 'secondary',
   Ocupado: 'warning',
+  Rental: 'info',
   'En Mantenimiento': 'info',
   Perdido: 'error'
 }
@@ -54,7 +55,10 @@ export default function Inventory() {
   }
 
   const filteredProducts = products.filter(p =>
-    (filter.sku ? p.sku.toLowerCase().includes(filter.sku.toLowerCase()) : true) &&
+    (filter.sku ? (
+      p.sku.toLowerCase().includes(filter.sku.toLowerCase()) ||
+      p.name.toLowerCase().includes(filter.sku.toLowerCase())
+    ) : true) &&
     (filter.category ? p.category === filter.category : true) &&
     (filter.state ? countForDate(p, filter.state) > 0 : true)
   )
@@ -91,7 +95,7 @@ export default function Inventory() {
       <Paper sx={{ p: 2, mb: 2 }}>
         <Box sx={{ display: 'flex', gap: 2, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
           <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-            <TextField label="SKU" size="small" sx={{ minWidth: 140 }}
+            <TextField label="SKU o nombre" size="small" sx={{ minWidth: 160 }}
               value={filter.sku} onChange={e => setFilter({ ...filter, sku: e.target.value })} />
             <TextField select label="Categoría" size="small" sx={{ minWidth: 160 }}
               value={filter.category} onChange={e => setFilter({ ...filter, category: e.target.value })}>
@@ -164,7 +168,7 @@ export default function Inventory() {
                 <TableCell key={s} align="center">
                   <Tooltip title={
                     s === 'Disponible' ? `Libre para el ${consulDate}` :
-                    s === 'Reservado'  ? `Comprometido para el ${consulDate}` : s
+                      s === 'Reservado' ? `Comprometido para el ${consulDate}` : s
                   }>
                     <span>{s}</span>
                   </Tooltip>
@@ -182,7 +186,10 @@ export default function Inventory() {
                 <TableCell align="center">{p.total}</TableCell>
                 {STATES.map(s => (
                   <TableCell key={s} align="center">
-                    <Chip size="small" label={countForDate(p, s)} color={stateColors[s]} />
+                    <Chip size="small" label={countForDate(p, s)}
+                      color={stateColors[s]}
+                      sx={s === 'Rental' ? { bgcolor: '#7F77DD', color: '#fff', '& .MuiChip-label': { color: '#fff' } } : {}}
+                    />
                   </TableCell>
                 ))}
                 <TableCell>

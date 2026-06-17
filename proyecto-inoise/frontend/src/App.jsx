@@ -26,6 +26,8 @@ import Reports from './pages/Reports'
 import Users from './pages/Users'
 import Settings from './pages/Settings'
 import Operations from './pages/Operations'
+import Rental from './pages/Rental'
+import RfidRegistrar from './pages/RfidRegistrar'
 import Login from './pages/Login'
 
 import { useAuth } from './context/AuthContext'
@@ -176,6 +178,8 @@ export default function App() {
                   <Route path="/reports" element={<Reports />} />
                   <Route path="/users" element={<Users />} />
                   <Route path="/settings" element={<Settings />} />
+                  <Route path="/rental" element={<Rental />} />
+                  <Route path="/rfid-registrar" element={<RfidRegistrar />} />
                 </Routes>
               </Box>
 

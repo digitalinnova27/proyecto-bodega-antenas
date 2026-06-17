@@ -21,7 +21,9 @@ import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import EventIcon from '@mui/icons-material/Event'
 import PlaceIcon from '@mui/icons-material/Place'
 
+import HandshakeIcon from '@mui/icons-material/Handshake'
 import { useInventory } from '../context/InventoryContext'
+import { useRfidSocket } from '../hooks/useRfidSocket'
 import { useAuth } from '../context/AuthContext'
 
 /* ─── Constantes de fases ──────────────────────────────────────────────────── */
@@ -78,7 +80,7 @@ const calcPhaseProgress = (phase, totalItems) => {
 /* ─── Componente principal ──────────────────────────────────────────────────── */
 export default function Operations() {
   const { role } = useAuth()
-  const { events, products, updateEvent, setEvents } = useInventory()
+  const { events, products, rentals, updateEvent, setEvents, epcMap, markUnitOccupied, markUnitAvailable } = useInventory()
 
   // opStates: { [eventId]: opState }
   const [opStates, setOpStates] = React.useState({})
@@ -90,6 +92,7 @@ export default function Operations() {
   // Modal forzar cierre (solo admin)
   const [openForce, setOpenForce] = React.useState(false)
   const [forceTarget, setForceTarget] = React.useState(null) // { eventId, phase|'all' }
+  const forceTargetRef = React.useRef(null) // ref para useCallback estable
   const [openForceLog, setOpenForceLog] = React.useState(false)
   const [forceLogEvent, setForceLogEvent] = React.useState(null)
 
@@ -110,7 +113,9 @@ export default function Operations() {
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity })
 
   // Filtro
-  const [filter, setFilter] = React.useState('all') // all|active|pending|done
+  const [filter, setFilter] = React.useState('all') // all|active|pending|done|rental
+  const [openRentalModal, setOpenRentalModal] = React.useState(false)
+  const [activeRental, setActiveRental] = React.useState(null)
 
   /* ── Inicializar opState de un evento si no existe ── */
   const getOrInitOp = (ev) => {
@@ -242,6 +247,8 @@ export default function Operations() {
 
   /* ── Escaneo manual: marcar artículo ── */
   const manualScanItem = (eventId, phaseKey, item) => {
+    if (phaseKey === 'f1') markUnitOccupied(item.id)
+    if (phaseKey === 'f4') markUnitAvailable(item.id)
     updateOp(eventId, op => {
       const phase = op.phases[phaseKey]
       if (phase.scanned.find(s => s.id === item.id)) return op // ya escaneado
@@ -272,8 +279,8 @@ export default function Operations() {
   }
 
   /* ── Forzar cierre (admin) ── */
-  const handleForceClose = (reason) => {
-    const { eventId, phase } = forceTarget
+  const handleForceClose = React.useCallback((reason) => {
+    const { eventId, phase } = forceTargetRef.current || {}
     const logEntry = {
       at: new Date().toISOString(),
       user: 'Administrador',
@@ -304,7 +311,8 @@ export default function Operations() {
     }
     setOpenForce(false)
     setOpenModal(false)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /* ── Registrar incidencia (artículo perdido/mantenimiento) ── */
   const registerIncident = () => {
@@ -340,6 +348,7 @@ export default function Operations() {
 
   /* ── Filtrar eventos ── */
   const filteredEvents = events.filter(ev => {
+    if (filter === 'rental') return false // rentals shown separately below
     if (filter === 'pending') return ev.status === 'Programado' || ev.status === 'Confirmado'
     if (filter === 'active') return ev.status === 'En curso'
     if (filter === 'done') return ev.status === 'Realizado'
@@ -420,7 +429,7 @@ export default function Operations() {
             )}
             {role === 'admin' && !isDone && (
               <Tooltip title="Forzar cierre del ciclo completo (admin)">
-                <IconButton size="small" color="error" onClick={() => { setForceTarget({ eventId: ev.id, phase: 'all' }); setOpenForce(true) }}>
+                <IconButton size="small" color="error" onClick={() => { stopAutoScan(); setForceTarget({ eventId: ev.id, phase: 'all' }); forceTargetRef.current = { eventId: ev.id, phase: 'all' }; setOpenForce(true) }}>
                   <AdminPanelSettingsIcon sx={{ fontSize: 18 }} />
                 </IconButton>
               </Tooltip>
@@ -506,192 +515,6 @@ export default function Operations() {
   }
 
   /* ── Modal de operación ── */
-  const OpModal = () => {
-    if (!activeModal) return null
-    const { eventId, phase } = activeModal
-    const ev = events.find(e => e.id === eventId)
-    if (!ev) return null
-    const op = opStates[eventId] || initOpState(0)
-    const phaseObj = PHASES.find(p => p.key === phase)
-    const phState = op.phases[phase]
-    const allItems = getEventItems(ev)
-    const scannedIds = phState.scanned.map(s => s.id)
-    const incidentIds = phState.incidents.map(i => i.id)
-    const pendingItems = allItems.filter(i => !scannedIds.includes(i.id) && !incidentIds.includes(i.id))
-    const phasePct = calcPhaseProgress(phState, op.totalItems)
-    const isActive = op.activePhase === phase
-
-    return (
-      <Dialog open={openModal} onClose={() => { stopAutoScan(); setOpenModal(false) }} fullWidth maxWidth="md">
-        <DialogTitle>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Box sx={{ color: phaseObj.color }}>{phaseObj.icon}</Box>
-            {phaseObj.label} — {ev.name}
-            <Chip label={ev.orderNumber} size="small" color="primary" variant="outlined" sx={{ fontSize: 10, ml: 1 }} />
-          </Box>
-        </DialogTitle>
-
-        <DialogContent>
-          {/* Barra de progreso de la fase */}
-          <Box sx={{ mb: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-              <Typography variant="body2" color="text.secondary">
-                {phState.scanned.length} de {op.totalItems} artículos escaneados
-                {phState.incidents.length > 0 && ` · ${phState.incidents.length} con incidencia`}
-              </Typography>
-              <Typography variant="body2" fontWeight={600} sx={{ color: phaseObj.color }}>{phasePct}%</Typography>
-            </Box>
-            <LinearProgress
-              variant="determinate"
-              value={phasePct}
-              sx={{ height: 12, borderRadius: 6, '& .MuiLinearProgress-bar': { bgcolor: phaseObj.color } }}
-            />
-          </Box>
-
-          {/* Incidencias */}
-          {phState.incidents.length > 0 && (
-            <Alert severity="warning" sx={{ mb: 2 }}>
-              <Typography variant="caption" fontWeight={600}>Artículos con incidencia:</Typography>
-              {phState.incidents.map((inc, i) => (
-                <Box key={i} sx={{ fontSize: 12 }}>• {inc.name} ({inc.rfid}) → <strong>{inc.state}</strong>: {inc.reason}</Box>
-              ))}
-            </Alert>
-          )}
-
-          {/* Controles de escaneo */}
-          {!phState.done && (
-            <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-              <Button
-                variant="contained"
-                size="small"
-                startIcon={<WifiIcon />}
-                color="primary"
-                onClick={() => startAutoScan(eventId, phase)}
-                disabled={isAutoRunning || pendingItems.length === 0}
-              >
-                Simular lectura RFID
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<StopIcon />}
-                color="error"
-                onClick={stopAutoScan}
-                disabled={!isAutoRunning}
-              >
-                Detener
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<EditNoteIcon />}
-                onClick={() => {
-                  updateOp(eventId, op => ({ ...op, scanMode: 'manual' }))
-                  showSnack('Modo manual activado. Marca artículos uno a uno.', 'info')
-                }}
-              >
-                Modo manual
-              </Button>
-              {role === 'admin' && (
-                <Tooltip title="Forzar cierre de esta fase (admin)">
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    color="error"
-                    startIcon={<LockIcon />}
-                    onClick={() => { setForceTarget({ eventId, phase }); setOpenForce(true) }}
-                  >
-                    Forzar fase
-                  </Button>
-                </Tooltip>
-              )}
-            </Box>
-          )}
-
-          {/* Lista de artículos */}
-          <Box sx={{ maxHeight: 360, overflowY: 'auto' }}>
-            <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-              Artículos del evento
-            </Typography>
-            <List dense disablePadding>
-              {allItems.map(item => {
-                const scanned = scannedIds.includes(item.id)
-                const incident = phState.incidents.find(i => i.id === item.id)
-                return (
-                  <ListItem
-                    key={item.id}
-                    sx={{
-                      py: 0.5, px: 1, mb: 0.3, borderRadius: 1,
-                      bgcolor: scanned ? 'rgba(99,153,34,0.08)' : incident ? 'rgba(186,117,23,0.1)' : 'background.paper',
-                      border: '1px solid',
-                      borderColor: scanned ? '#639922' : incident ? '#BA7517' : 'divider'
-                    }}
-                    secondaryAction={
-                      !phState.done && (
-                        <Box sx={{ display: 'flex', gap: 0.5 }}>
-                          {!scanned && !incident && op.scanMode === 'manual' && (
-                            <Button size="small" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
-                              onClick={() => manualScanItem(eventId, phase, item)}>
-                              Marcar
-                            </Button>
-                          )}
-                          {!scanned && !incident && (
-                            <Button size="small" color="warning" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
-                              onClick={() => {
-                                setIncidentItem({ ...item, eventId, phaseKey: phase })
-                                setOpenIncident(true)
-                              }}>
-                              Incidencia
-                            </Button>
-                          )}
-                        </Box>
-                      )
-                    }
-                  >
-                    <ListItemIcon sx={{ minWidth: 28 }}>
-                      {scanned
-                        ? <CheckCircleIcon sx={{ fontSize: 16, color: '#639922' }} />
-                        : incident
-                          ? <WarningAmberIcon sx={{ fontSize: 16, color: '#BA7517' }} />
-                          : <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
-                      }
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={<Typography variant="caption" fontWeight={scanned ? 600 : 400}>{item.name}</Typography>}
-                      secondary={
-                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: 10 }}>
-                          {item.rfid}
-                          {incident && ` · ${incident.state}: ${incident.reason}`}
-                        </Typography>
-                      }
-                    />
-                  </ListItem>
-                )
-              })}
-            </List>
-          </Box>
-        </DialogContent>
-
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => { stopAutoScan(); setOpenModal(false) }}>Cerrar</Button>
-          {!phState.done && (
-            <Button
-              variant="contained"
-              color="success"
-              disabled={pendingItems.length > 0 && phState.incidents.length === 0}
-              onClick={() => completePhase(eventId, phase)}
-            >
-              Completar fase ({phasePct}%)
-            </Button>
-          )}
-          {phState.done && (
-            <Chip label="Fase completada" color="success" icon={<CheckCircleIcon />} />
-          )}
-        </DialogActions>
-      </Dialog>
-    )
-  }
-
   /* ── Modal forzar cierre ── */
   /* ForceModal y ForceLogModal se renderizan como componentes externos al final del JSX
      para evitar re-renders del padre en cada keystroke */
@@ -738,7 +561,12 @@ export default function Operations() {
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
-        <Typography variant="h5">Operaciones</Typography>
+        <Box>
+          <Typography variant="h5">Operaciones</Typography>
+          {filter === 'rental' && (
+            <Typography variant="caption" sx={{ color: '#EF9F27' }}>Vista: Rental</Typography>
+          )}
+        </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
           {[
             { key: 'all', label: 'Todos' },
@@ -756,19 +584,72 @@ export default function Operations() {
               {f.label}
             </Button>
           ))}
+          <Button
+            size="small"
+            variant={filter === 'rental' ? 'contained' : 'outlined'}
+            onClick={() => setFilter('rental')}
+            startIcon={<HandshakeIcon sx={{ fontSize: 14 }} />}
+            sx={{ fontSize: 12, bgcolor: filter === 'rental' ? '#EF9F27' : 'transparent', borderColor: '#EF9F27', color: filter === 'rental' ? '#000' : '#EF9F27', '&:hover': { bgcolor: '#EF9F2733', borderColor: '#EF9F27' } }}
+          >
+            Rental
+          </Button>
         </Box>
       </Box>
 
-      {filteredEvents.length === 0 ? (
-        <Paper sx={{ p: 6, textAlign: 'center' }}>
-          <EventIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 1 }} />
-          <Typography color="text.secondary">No hay eventos en esta categoría.</Typography>
-        </Paper>
-      ) : (
-        filteredEvents.map(ev => <EventCard key={ev.id} ev={ev} />)
+      {/* ── Eventos ── */}
+      {filter !== 'rental' && (
+        filteredEvents.length === 0 ? (
+          <Paper sx={{ p: 4, textAlign: 'center', mb: 2 }}>
+            <EventIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 1 }} />
+            <Typography color="text.secondary">No hay eventos en esta categoría.</Typography>
+          </Paper>
+        ) : (
+          filteredEvents.map(ev => <EventCard key={ev.id} ev={ev} />)
+        )
       )}
 
-      <OpModal />
+      {/* ── Rentals — siempre visibles en TODOS, o exclusivos con botón Rental ── */}
+      {(filter === 'all' || filter === 'rental') && rentals.length > 0 && (
+        <Box sx={{ mt: filter === 'all' ? 2 : 0 }}>
+          {filter === 'all' && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+              <HandshakeIcon sx={{ color: '#EF9F27', fontSize: 18 }} />
+              <Typography variant="subtitle2" sx={{ color: '#EF9F27', fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', fontSize: 12 }}>
+                Operaciones Rental
+              </Typography>
+            </Box>
+          )}
+          {rentals.map(r => <RentalCard key={r.id} rental={r} />)}
+        </Box>
+      )}
+      {filter === 'rental' && rentals.length === 0 && (
+        <Paper sx={{ p: 6, textAlign: 'center' }}>
+          <HandshakeIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 1 }} />
+          <Typography color="text.secondary">No hay arriendos registrados.</Typography>
+        </Paper>
+      )}
+
+      <OpModalExternal
+        open={openModal}
+        activeModal={activeModal}
+        events={events}
+        opStates={opStates}
+        products={products}
+        isAutoRunning={isAutoRunning}
+        role={role}
+        onClose={() => { stopAutoScan(); setOpenModal(false) }}
+        onStartAutoScan={startAutoScan}
+        onStopAutoScan={stopAutoScan}
+        onCompletePhase={completePhase}
+        onManualScan={manualScanItem}
+        onForceOpen={(eventId, phase) => {
+          setForceTarget({ eventId, phase })
+          forceTargetRef.current = { eventId, phase }
+          setOpenForce(true)
+        }}
+        onIncidentOpen={(item) => { setIncidentItem(item); setOpenIncident(true) }}
+        onUpdateOp={updateOp}
+      />
       <ForceDialogExternal
         open={openForce}
         target={forceTarget}
@@ -794,6 +675,373 @@ export default function Operations() {
     </Box>
   )
 }
+
+
+
+/* ─── RentalCard ──────────────────────────────────────────────────────────── */
+function RentalCard({ rental }) {
+  const { products } = useInventory()
+  const [openModal, setOpenModal] = React.useState(false)
+  const [phase, setPhase] = React.useState(null)
+  const [progress, setProgress] = React.useState({ f1: 0, f4: 0 })
+  const [scanned, setScanned] = React.useState({ f1: 0, f4: 0 })
+
+  const totalItems = (rental.assignments || []).reduce((s, a) => s + a.qty, 0)
+
+  const openPhase = (ph) => { setPhase(ph); setOpenModal(true) }
+
+  return (
+    <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: '#EF9F27', opacity: 0.95 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
+        <Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            <Typography variant="body1" fontWeight={600}>{rental.name}</Typography>
+            <Chip label={rental.orderNumber} size="small" sx={{ fontSize: 10, bgcolor: '#EF9F27', color: '#000' }} />
+            <Chip label="Rental" size="small" sx={{ bgcolor: '#EF9F2733', color: '#EF9F27', border: '1px solid #EF9F27', fontSize: 10 }} />
+          </Box>
+          <Box sx={{ display: 'flex', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
+            <Typography variant="caption" color="text.secondary">{rental.date}{rental.endDate ? ` → ${rental.endDate}` : ''}</Typography>
+            {rental.clientName && <Typography variant="caption" color="text.secondary">Cliente: {rental.clientName}</Typography>}
+            <Typography variant="caption" sx={{ color: '#EF9F27' }}>{totalItems} artículos</Typography>
+          </Box>
+        </Box>
+      </Box>
+
+      {/* Fases rental */}
+      <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+        {RENTAL_PHASES.map(ph => (
+          <Button key={ph.key} size="small" variant="outlined"
+            startIcon={ph.icon}
+            onClick={() => openPhase(ph.key)}
+            sx={{ borderColor: ph.color, color: ph.color, fontSize: 12 }}>
+            {ph.short} · {ph.label}
+            {progress[ph.key] > 0 && ` (${progress[ph.key]}%)`}
+          </Button>
+        ))}
+      </Box>
+
+      {/* Mini progress bars */}
+      <Box sx={{ mt: 1.5, display: 'flex', flexDirection: 'column', gap: 0.8 }}>
+        {RENTAL_PHASES.map(ph => (
+          <Box key={ph.key} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography variant="caption" sx={{ minWidth: 130, color: 'text.secondary' }}>{ph.short} · {ph.label}</Typography>
+            <LinearProgress variant="determinate" value={progress[ph.key]}
+              sx={{ flex: 1, height: 6, borderRadius: 3, bgcolor: 'action.hover', '& .MuiLinearProgress-bar': { bgcolor: ph.color } }} />
+            <Typography variant="caption" sx={{ minWidth: 32, textAlign: 'right', color: ph.color }}>
+              {progress[ph.key] > 0 ? `${progress[ph.key]}%` : '—'}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
+
+      {/* Modal de fase */}
+      <RentalPhaseModal
+        open={openModal} phase={phase} rental={rental}
+        products={products} totalItems={totalItems}
+        progress={progress} setProgress={setProgress}
+        scanned={scanned} setScanned={setScanned}
+        onClose={() => setOpenModal(false)}
+      />
+    </Paper>
+  )
+}
+
+/* ─── RentalPhaseModal ────────────────────────────────────────────────────── */
+function RentalPhaseModal({ open, phase, rental, products, totalItems, progress, setProgress, scanned, setScanned, onClose }) {
+  const phaseObj = RENTAL_PHASES.find(p => p.key === phase)
+  const [isRunning, setIsRunning] = React.useState(false)
+  const scannedCount = (scanned && phase) ? (scanned[phase] || 0) : 0
+  const setScannedCount = (updater) => {
+    setScanned(prev => {
+      const current = prev[phase] || 0
+      const next = typeof updater === 'function' ? updater(current) : updater
+      return { ...prev, [phase]: next }
+    })
+  }
+  const intervalRef = React.useRef(null)
+
+  React.useEffect(() => {
+    if (!open) {
+      clearInterval(intervalRef.current)
+      setIsRunning(false)
+    }
+  }, [open])
+
+  const pct = totalItems > 0 ? Math.min(Math.round((scannedCount / totalItems) * 100), 100) : 0
+
+  const startScan = () => {
+    setIsRunning(true)
+    intervalRef.current = setInterval(() => {
+      setScannedCount(prev => {
+        const next = Math.min(prev + 1, totalItems)
+        const newPct = Math.min(Math.round((next / totalItems) * 100), 100)
+        setProgress(p => ({ ...p, [phase]: newPct }))
+        if (next >= totalItems) {
+          clearInterval(intervalRef.current)
+          setIsRunning(false)
+        }
+        return next
+      })
+    }, 300)
+  }
+
+  const stopScan = () => {
+    clearInterval(intervalRef.current)
+    setIsRunning(false)
+  }
+
+  if (!phaseObj) return null
+
+  const items = (rental.assignments || []).flatMap(a => {
+    const prod = products.find(p => p.id === a.productId)
+    if (!prod) return []
+    return Array.from({ length: a.qty }, (_, i) => ({
+      id: `${prod.id}-${i + 1}`,
+      name: prod.name,
+      sku: prod.sku,
+    }))
+  })
+
+  return (
+    <Dialog open={open} onClose={() => { stopScan(); onClose() }} fullWidth maxWidth="md">
+      <DialogTitle>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Box sx={{ color: phaseObj.color }}>{phaseObj.icon}</Box>
+          {phaseObj.label} — {rental.name}
+          <Chip label={rental.orderNumber} size="small" sx={{ bgcolor: '#EF9F27', color: '#000', fontSize: 10, ml: 1 }} />
+        </Box>
+      </DialogTitle>
+      <DialogContent>
+        <Box sx={{ mb: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+            <Typography variant="body2" color="text.secondary">{scannedCount} de {totalItems} artículos escaneados</Typography>
+            <Typography variant="body2" fontWeight={600} sx={{ color: phaseObj.color }}>{pct}%</Typography>
+          </Box>
+          <LinearProgress variant="determinate" value={pct}
+            sx={{ height: 12, borderRadius: 6, '& .MuiLinearProgress-bar': { bgcolor: phaseObj.color } }} />
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
+          <Button variant="contained" size="small" startIcon={<WifiIcon />}
+            onClick={startScan} disabled={isRunning || scannedCount >= totalItems}
+            sx={{ bgcolor: phaseObj.color, color: '#000', '&:hover': { bgcolor: phaseObj.color + 'cc' } }}>
+            Simular lectura RFID
+          </Button>
+          <Button variant="outlined" size="small" startIcon={<StopIcon />} color="error"
+            onClick={stopScan} disabled={!isRunning}>
+            Detener
+          </Button>
+        </Box>
+        <Box sx={{ maxHeight: 320, overflowY: 'auto' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>Artículos del arriendo</Typography>
+          <List dense disablePadding>
+            {items.map((item, idx) => {
+              const scanned = idx < scannedCount
+              return (
+                <ListItem key={item.id} sx={{
+                  py: 0.5, px: 1, mb: 0.3, borderRadius: 1,
+                  bgcolor: scanned ? 'rgba(239,159,39,0.08)' : 'background.paper',
+                  border: '1px solid', borderColor: scanned ? '#EF9F27' : 'divider'
+                }}>
+                  <ListItemIcon sx={{ minWidth: 28 }}>
+                    {scanned
+                      ? <CheckCircleIcon sx={{ fontSize: 16, color: '#EF9F27' }} />
+                      : <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
+                    }
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={<Typography variant="caption" fontWeight={scanned ? 600 : 400}>{item.name}</Typography>}
+                    secondary={<Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: 10 }}>{item.sku}</Typography>}
+                  />
+                </ListItem>
+              )
+            })}
+          </List>
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => { stopScan(); onClose() }}>Cerrar</Button>
+        {pct === 100 && <Chip label="Fase completada" color="success" icon={<CheckCircleIcon />} />}
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+/* ─── Fases de Rental (solo F1 y F4) ──────────────────────────────────────── */
+const RENTAL_PHASES = [
+  { key: 'f1', label: 'Salida de bodega', short: 'F1', icon: <LocalShippingIcon sx={{ fontSize: 14 }} />, color: '#EF9F27', bgColor: '#FAEEDA', textColor: '#633806' },
+  { key: 'f4', label: 'Entrada a bodega', short: 'F4', icon: <InventoryIcon sx={{ fontSize: 14 }} />, color: '#534AB7', bgColor: '#EEEDFE', textColor: '#3C3489' },
+]
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * OpModalExternal — fuera del componente padre para evitar remounts
+ * ═══════════════════════════════════════════════════════════════════════════ */
+const OpModalExternal = React.memo(function OpModalExternal({
+  open, activeModal, events, opStates, products,
+  isAutoRunning, role,
+  onClose, onStartAutoScan, onStopAutoScan, onCompletePhase,
+  onManualScan, onForceOpen, onIncidentOpen, onUpdateOp
+}) {
+  if (!open || !activeModal) return null
+  const { eventId, phase } = activeModal
+  const ev = events.find(e => e.id === eventId)
+  if (!ev) return null
+  const op = opStates[eventId] || { phases: { f1: { scanned: [], done: false, incidents: [] }, f2: { scanned: [], done: false, incidents: [] }, f3: { scanned: [], done: false, incidents: [] }, f4: { scanned: [], done: false, incidents: [] } }, totalItems: 0 }
+  const phaseObj = PHASES.find(p => p.key === phase)
+  const phState = op.phases[phase]
+
+  const allItems = (ev.assignments || []).flatMap(a => {
+    const prod = products.find(p => p.id === a.productId)
+    if (!prod) return []
+    return Array.from({ length: a.qty }, (_, i) => ({
+      id: `${prod.id}-${i + 1}`,
+      rfid: `${prod.rfidBase}-${String(i + 1).padStart(2, '0')}`,
+      name: prod.name, sku: prod.sku, productId: prod.id,
+    }))
+  })
+
+  const scannedIds = phState.scanned.map(s => s.id)
+  const incidentIds = phState.incidents.map(i => i.id)
+  const pendingItems = allItems.filter(i => !scannedIds.includes(i.id) && !incidentIds.includes(i.id))
+  const phasePct = op.totalItems ? Math.min(Math.round(((phState.scanned.length / op.totalItems) * 100)), 100) : 0
+  const isActive = op.activePhase === phase
+
+  // ── Conexión RFID real ────────────────────────────────────────────────────
+  const { isConnected, lastScan, clearLastScan } = useRfidSocket()
+
+  React.useEffect(() => {
+    if (!lastScan || !open) return
+    // Matching por epcMap del contexto (si existe) o por sku del lastScan
+    const mappedUnitId = lastScan.sku // viene del epcMap.json del bridge
+    const item = allItems.find(it =>
+      !scannedIds.includes(it.id) &&
+      !incidentIds.includes(it.id) &&
+      it.id === mappedUnitId
+    )
+    if (item) {
+      onManualScan(eventId, phase, item)
+      clearLastScan()
+    }
+  }, [lastScan])
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Box sx={{ color: phaseObj.color }}>{phaseObj.icon}</Box>
+          {phaseObj.label} — {ev.name}
+          <Chip label={ev.orderNumber} size="small" color="primary" variant="outlined" sx={{ fontSize: 10, ml: 1 }} />
+          <Chip
+            label={isConnected ? '🔴 Antena conectada' : '⚫ Antena desconectada'}
+            size="small"
+            sx={{ fontSize: 10, ml: 1, bgcolor: isConnected ? '#1D9E7520' : '#88888820', color: isConnected ? '#1D9E75' : '#888' }}
+          />
+        </Box>
+      </DialogTitle>
+      <DialogContent>
+        <Box sx={{ mb: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+            <Typography variant="body2" color="text.secondary">
+              {phState.scanned.length} de {op.totalItems} artículos escaneados
+              {phState.incidents.length > 0 && ` · ${phState.incidents.length} con incidencia`}
+            </Typography>
+            <Typography variant="body2" fontWeight={600} sx={{ color: phaseObj.color }}>{phasePct}%</Typography>
+          </Box>
+          <LinearProgress variant="determinate" value={phasePct}
+            sx={{ height: 12, borderRadius: 6, '& .MuiLinearProgress-bar': { bgcolor: phaseObj.color } }} />
+        </Box>
+        {phState.incidents.length > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Typography variant="caption" fontWeight={600}>Artículos con incidencia:</Typography>
+            {phState.incidents.map((inc, i) => (
+              <Box key={i} sx={{ fontSize: 12 }}>• {inc.name} ({inc.rfid}) → <strong>{inc.state}</strong>: {inc.reason}</Box>
+            ))}
+          </Alert>
+        )}
+        {!phState.done && (
+          <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Button variant="contained" size="small" startIcon={<WifiIcon />} color="primary"
+              onClick={() => onStartAutoScan(eventId, phase)}
+              disabled={isAutoRunning || pendingItems.length === 0}>
+              Simular lectura RFID
+            </Button>
+            <Button variant="outlined" size="small" startIcon={<StopIcon />} color="error"
+              onClick={onStopAutoScan} disabled={!isAutoRunning}>
+              Detener
+            </Button>
+            <Button variant="outlined" size="small" startIcon={<EditNoteIcon />}
+              onClick={() => { onUpdateOp(eventId, op => ({ ...op, scanMode: 'manual' })) }}>
+              Modo manual
+            </Button>
+            {role === 'admin' && (
+              <Tooltip title="Forzar cierre de esta fase (admin)">
+                <Button variant="outlined" size="small" color="error" startIcon={<LockIcon />}
+                  onClick={() => {
+                    onStopAutoScan()
+                    onForceOpen(eventId, phase)
+                  }}>
+                  Forzar fase
+                </Button>
+              </Tooltip>
+            )}
+          </Box>
+        )}
+        <Box sx={{ maxHeight: 360, overflowY: 'auto' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>Artículos del evento</Typography>
+          <List dense disablePadding>
+            {allItems.map(item => {
+              const scanned = scannedIds.includes(item.id)
+              const incident = phState.incidents.find(i => i.id === item.id)
+              return (
+                <ListItem key={item.id} sx={{
+                  py: 0.5, px: 1, mb: 0.3, borderRadius: 1,
+                  bgcolor: scanned ? 'rgba(99,153,34,0.08)' : incident ? 'rgba(186,117,23,0.1)' : 'background.paper',
+                  border: '1px solid', borderColor: scanned ? '#639922' : incident ? '#BA7517' : 'divider'
+                }}
+                  secondaryAction={!phState.done && (
+                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      {!scanned && !incident && op.scanMode === 'manual' && (
+                        <Button size="small" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
+                          onClick={() => onManualScan(eventId, phase, item)}>Marcar</Button>
+                      )}
+                      {!scanned && !incident && (
+                        <Button size="small" color="warning" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
+                          onClick={() => onIncidentOpen({ ...item, eventId, phaseKey: phase })}>
+                          Incidencia
+                        </Button>
+                      )}
+                    </Box>
+                  )}>
+                  <ListItemIcon sx={{ minWidth: 28 }}>
+                    {scanned ? <CheckCircleIcon sx={{ fontSize: 16, color: '#639922' }} />
+                      : incident ? <WarningAmberIcon sx={{ fontSize: 16, color: '#BA7517' }} />
+                        : <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />}
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={<Typography variant="caption" fontWeight={scanned ? 600 : 400}>{item.name}</Typography>}
+                    secondary={<Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: 10 }}>
+                      {item.rfid}{incident && ` · ${incident.state}: ${incident.reason}`}
+                    </Typography>}
+                  />
+                </ListItem>
+              )
+            })}
+          </List>
+        </Box>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={onClose}>Cerrar</Button>
+        {!phState.done && (
+          <Button variant="contained" color="success"
+            disabled={pendingItems.length > 0 && phState.incidents.length === 0}
+            onClick={() => onCompletePhase(eventId, phase)}>
+            Completar fase ({phasePct}%)
+          </Button>
+        )}
+        {phState.done && <Chip label="Fase completada" color="success" icon={<CheckCircleIcon />} />}
+      </DialogActions>
+    </Dialog>
+  )
+})
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ForceDialogExternal — componente EXTERNO al padre para evitar lag en input

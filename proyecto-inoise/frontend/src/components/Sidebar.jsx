@@ -23,6 +23,8 @@ import SettingsIcon from '@mui/icons-material/Settings'
 import EventIcon from '@mui/icons-material/Event'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner'
+import HandshakeIcon from '@mui/icons-material/Handshake'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 
 import { useNavigate } from 'react-router-dom'
@@ -34,7 +36,9 @@ const items = [
   { text: 'Inventario', icon: <Inventory2Icon />, path: '/inventory' },
   { text: 'Productos', icon: <WidgetsIcon />, path: '/products' },
   { text: 'Antenas', icon: <RouterIcon />, path: '/antennas' },
+  { text: 'Registrar RFID', icon: <QrCodeScannerIcon />, path: '/rfid-registrar' },
   { text: 'Eventos', icon: <EventIcon />, path: '/events' },
+  { text: 'Rental', icon: <HandshakeIcon />, path: '/rental' },
   { text: 'Operaciones', icon: <LocalShippingIcon />, path: '/operations' },
   { text: 'Historial', icon: <HistoryIcon />, path: '/history' },
   { text: 'Reportes', icon: <BarChartIcon />, path: '/reports' },

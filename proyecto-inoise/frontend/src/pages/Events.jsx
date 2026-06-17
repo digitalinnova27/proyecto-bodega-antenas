@@ -26,6 +26,81 @@ const STATUS_COLORS = {
   Realizado: 'default'
 }
 
+const ASSIGN_PAGE_SIZE = 10
+
+const AssignPanel = React.memo(function AssignPanel({
+  products, assignSkuSearch, setAssignSkuSearch,
+  assignCategory, setAssignCategory,
+  assignPage, setAssignPage,
+  assignmentsDraft, totalAssigned,
+  availableForDraft, setQty
+}) {
+  const filtered = products.filter(p =>
+    (!assignCategory || p.category === assignCategory) &&
+    (!assignSkuSearch ||
+      p.sku.toLowerCase().includes(assignSkuSearch.toLowerCase()) ||
+      p.name.toLowerCase().includes(assignSkuSearch.toLowerCase()))
+  )
+  const totalPages = Math.ceil(filtered.length / ASSIGN_PAGE_SIZE)
+  const paginated = filtered.slice(assignPage * ASSIGN_PAGE_SIZE, (assignPage + 1) * ASSIGN_PAGE_SIZE)
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      <TextField
+        label="Buscar SKU o nombre" size="small"
+        value={assignSkuSearch}
+        onChange={e => { setAssignSkuSearch(e.target.value); setAssignPage(0) }}
+        placeholder="ej: AUD-001 o micrófono"
+        autoComplete="off"
+      />
+      <TextField select label="Filtrar categoría" size="small" value={assignCategory}
+        onChange={e => { setAssignCategory(e.target.value); setAssignPage(0) }}>
+        <MenuItem value="">Todas las categorías</MenuItem>
+        {CATEGORIES.map(cat => <MenuItem key={cat} value={cat}>{cat}</MenuItem>)}
+      </TextField>
+      {totalAssigned > 0 && (
+        <Alert severity="info" sx={{ py: 0.5, fontSize: 12 }}>
+          {totalAssigned} artículo{totalAssigned !== 1 ? 's' : ''} seleccionado{totalAssigned !== 1 ? 's' : ''}
+        </Alert>
+      )}
+      {paginated.map(p => {
+        const maxAvail = availableForDraft(p)
+        const current = assignmentsDraft.find(a => a.productId === p.id)?.qty || 0
+        return (
+          <Box key={p.id} sx={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            p: 1.5, borderRadius: 1,
+            backgroundColor: current > 0 ? 'rgba(102,252,241,0.06)' : 'background.paper',
+            border: '1px solid', borderColor: current > 0 ? 'primary.main' : 'divider'
+          }}>
+            <Box>
+              <Typography variant="body2" fontWeight={current > 0 ? 600 : 400}>{p.name}</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {p.sku} · {p.category} ·{' '}
+                <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
+                  {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
+                </span>
+              </Typography>
+            </Box>
+            <TextField type="number" size="small" sx={{ width: 80 }}
+              inputProps={{ min: 0, max: maxAvail }} value={current}
+              disabled={maxAvail === 0 && current === 0}
+              onChange={e => setQty(p.id, Number(e.target.value))} />
+          </Box>
+        )
+      })}
+      {totalPages > 1 && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1, mt: 1 }}>
+          <button onClick={() => setAssignPage(p => Math.max(0, p - 1))} disabled={assignPage === 0}
+            style={{ background: 'none', border: '1px solid rgba(102,252,241,0.3)', color: '#66FCF1', borderRadius: 4, padding: '2px 10px', cursor: assignPage === 0 ? 'not-allowed' : 'pointer', opacity: assignPage === 0 ? 0.4 : 1 }}>&#8249;</button>
+          <span style={{ fontSize: 12, color: '#C5C6C7' }}>{assignPage + 1} / {totalPages}</span>
+          <button onClick={() => setAssignPage(p => Math.min(totalPages - 1, p + 1))} disabled={assignPage >= totalPages - 1}
+            style={{ background: 'none', border: '1px solid rgba(102,252,241,0.3)', color: '#66FCF1', borderRadius: 4, padding: '2px 10px', cursor: assignPage >= totalPages - 1 ? 'not-allowed' : 'pointer', opacity: assignPage >= totalPages - 1 ? 0.4 : 1 }}>&#8250;</button>
+        </Box>
+      )}
+    </Box>
+  )
+})
+
 export default function Events() {
   const { role } = useAuth()
   const { products, events, getAvailableQty, getAvailableQtyForEvent, createEvent, updateEvent, deleteEvent } = useInventory()
@@ -45,13 +120,15 @@ export default function Events() {
   const emptyForm = { name: '', date: '', location: '', notes: '' }
   const [form, setForm] = React.useState(emptyForm)
   const [assignCategory, setAssignCategory] = React.useState('')
+  const [assignSkuSearch, setAssignSkuSearch] = React.useState('')
+  const [assignPage, setAssignPage] = React.useState(0)
   const [assignmentsDraft, setAssignmentsDraft] = React.useState([])
   const [pdfLoading, setPdfLoading] = React.useState(false)
   const [snack, setSnack] = React.useState({ open: false, msg: '', severity: 'success' })
 
   const getProduct = id => products.find(p => p.id === id)
 
-  const availableForDraft = (product) => {
+  const availableForDraft = React.useCallback((product) => {
     // Si estamos editando un evento existente, excluimos su propia reserva
     // y consultamos disponibilidad para la fecha específica del evento
     const forDate = form.date || new Date().toISOString().slice(0, 10)
@@ -59,9 +136,10 @@ export default function Events() {
       return getAvailableQtyForEvent(product.id, currentEvent.id, forDate)
     }
     return getAvailableQty(product.id, forDate)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.date, currentEvent, getAvailableQty, getAvailableQtyForEvent])
 
-  const setQty = (productId, qty) => {
+  const setQty = React.useCallback((productId, qty) => {
     const product = products.find(p => p.id === productId)
     const maxAvail = availableForDraft(product)
     const clamped = Math.min(Math.max(0, qty), maxAvail)
@@ -70,10 +148,24 @@ export default function Events() {
       if (existing) return prev.map(a => a.productId === productId ? { ...a, qty: clamped } : a)
       return [...prev, { productId, qty: clamped }]
     })
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products, availableForDraft])
 
   const totalAssigned = assignmentsDraft.reduce((s, a) => s + a.qty, 0)
-  const filteredProductsByCategory = (cat) => products.filter(p => !cat || p.category === cat)
+
+  const assignPanelProps = React.useMemo(() => ({
+    products, assignSkuSearch, setAssignSkuSearch,
+    assignCategory, setAssignCategory,
+    assignPage, setAssignPage,
+    assignmentsDraft, totalAssigned,
+    availableForDraft, setQty
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [products, assignSkuSearch, assignCategory, assignPage, assignmentsDraft, totalAssigned, availableForDraft, setQty])
+
+  const filteredProductsByCategory = (cat) => products.filter(p =>
+    (!cat || p.category === cat) &&
+    (!assignSkuSearch || p.sku.toLowerCase().includes(assignSkuSearch.toLowerCase()) || p.name.toLowerCase().includes(assignSkuSearch.toLowerCase()))
+  )
 
   /* BUSCAR POR N° DE ORDEN */
   const handleOrderSearch = () => {
@@ -168,46 +260,6 @@ export default function Events() {
 
   const filteredEvents = events.filter(e =>
     !search || e.name.toLowerCase().includes(search.toLowerCase()) || e.orderNumber?.toLowerCase().includes(search.toLowerCase())
-  )
-
-  const AssignPanel = () => (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-      <TextField select label="Filtrar categoría" size="small" value={assignCategory} onChange={e => setAssignCategory(e.target.value)}>
-        <MenuItem value="">Todas las categorías</MenuItem>
-        {CATEGORIES.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
-      </TextField>
-      {totalAssigned > 0 && (
-        <Alert severity="info" sx={{ py: 0.5, fontSize: 12 }}>
-          {totalAssigned} artículo{totalAssigned !== 1 ? 's' : ''} seleccionado{totalAssigned !== 1 ? 's' : ''}
-        </Alert>
-      )}
-      {filteredProductsByCategory(assignCategory).map(p => {
-        const maxAvail = availableForDraft(p)
-        const current = assignmentsDraft.find(a => a.productId === p.id)?.qty || 0
-        return (
-          <Box key={p.id} sx={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            p: 1.5, borderRadius: 1,
-            backgroundColor: current > 0 ? 'rgba(102,252,241,0.06)' : 'background.paper',
-            border: '1px solid', borderColor: current > 0 ? 'primary.main' : 'divider'
-          }}>
-            <Box>
-              <Typography variant="body2" fontWeight={current > 0 ? 600 : 400}>{p.name}</Typography>
-              <Typography variant="caption" color="text.secondary">
-                {p.sku} · {p.category} ·{' '}
-                <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
-                  {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
-                </span>
-              </Typography>
-            </Box>
-            <TextField type="number" size="small" sx={{ width: 80 }}
-              inputProps={{ min: 0, max: maxAvail }} value={current}
-              disabled={maxAvail === 0 && current === 0}
-              onChange={e => setQty(p.id, Number(e.target.value))} />
-          </Box>
-        )
-      })}
-    </Box>
   )
 
   const EventDetailContent = ({ ev }) => {
@@ -415,7 +467,7 @@ export default function Events() {
           <TextField label="Notas" multiline minRows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
           <Divider sx={{ my: 0.5 }} />
           <Typography variant="subtitle2" color="primary">Asignar equipos</Typography>
-          <AssignPanel />
+          <AssignPanel {...assignPanelProps} />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenCreate(false)}>Cancelar</Button>
@@ -491,7 +543,7 @@ export default function Events() {
           <TextField label="Notas" multiline minRows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
           <Divider />
           <Typography variant="subtitle2" color="primary">Equipos asignados</Typography>
-          <AssignPanel />
+          <AssignPanel {...assignPanelProps} />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenEdit(false)}>Cancelar</Button>
@@ -503,7 +555,7 @@ export default function Events() {
       <Dialog open={openAssign} onClose={() => setOpenAssign(false)} fullWidth maxWidth="sm">
         <DialogTitle>Asignar equipos — {currentEvent?.name}</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
-          <AssignPanel />
+          <AssignPanel {...assignPanelProps} />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenAssign(false)}>Cancelar</Button>

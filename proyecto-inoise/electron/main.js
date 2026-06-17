@@ -1,4 +1,5 @@
 const { app, BrowserWindow, shell } = require('electron')
+const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 const http = require('http')
@@ -6,6 +7,7 @@ const http = require('http')
 let mainWindow
 let splashWindow
 let viteProcess = null
+let bridgeProcess = null
 
 // Detecta si estamos en producción (con build) o desarrollo
 const isDev = !app.isPackaged
@@ -84,9 +86,20 @@ function waitForVite(url, retries = 40, delay = 1000) {
 app.whenReady().then(async () => {
   createSplash()
 
+  // Iniciar rfid-bridge en background
+  const isWindows = process.platform === 'win32'
+  const bridgePath = path.join(__dirname, '../server/rfid-bridge.js')
+  if (fs.existsSync(bridgePath)) {
+    bridgeProcess = spawn(isWindows ? 'node.exe' : 'node', [bridgePath], {
+      shell: false,
+      stdio: 'ignore',
+      detached: false
+    })
+    console.log('[Electron] rfid-bridge iniciado en background')
+  }
+
   if (isDev) {
     // Inicia Vite en segundo plano si no está corriendo
-    const isWindows = process.platform === 'win32'
     viteProcess = spawn(isWindows ? 'npm.cmd' : 'npm', ['run', 'dev', '--prefix', path.join(__dirname, '../frontend')], {
       shell: true,
       stdio: 'inherit',
@@ -107,6 +120,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  if (bridgeProcess) bridgeProcess.kill()
   if (viteProcess) viteProcess.kill()
   if (process.platform !== 'darwin') app.quit()
 })

@@ -23,7 +23,9 @@ const InventoryContext = createContext(null)
 
 export function InventoryProvider({ children }) {
   const [products, setProducts] = useState(INITIAL_PRODUCTS)
+  const [epcMap, setEpcMap] = useState({}) // EPC → unitId
   const [events, setEvents] = useState([])
+  const [rentals, setRentals] = useState([])
 
   /* ────────────────────────────────────────────────────────────────────────
    * getReservedQty(productId, forDate?, eventList?)
@@ -206,7 +208,98 @@ export function InventoryProvider({ children }) {
     })
   }
 
+  /* ── Crear arriendo ── */
+  const rentalCounterRef = React.useRef(200)
+  const createRental = (formData, assignments) => {
+    rentalCounterRef.current += 1
+    const num = rentalCounterRef.current
+    const newRental = {
+      id: Date.now(),
+      orderNumber: 'RNT-' + num,
+      name: formData.name,
+      date: formData.date,
+      endDate: formData.endDate || '',
+      clientName: formData.clientName || '',
+      staffName: formData.staffName || '',
+      notes: formData.notes || '',
+      status: 'Programado',
+      assignments: assignments.filter(a => a.qty > 0),
+      createdAt: new Date().toISOString()
+    }
+    setRentals(prev => [newRental, ...prev])
+    setProducts(prev => prev.map(product => {
+      const assignment = assignments.find(a => a.productId === product.id)
+      if (!assignment || assignment.qty === 0) return product
+      let count = assignment.qty
+      const units = product.units.map(u => {
+        if (count > 0 && u.state === 'Disponible') { count--; return { ...u, state: 'Rental' } }
+        return u
+      })
+      return { ...product, units }
+    }))
+    return newRental
+  }
+
+  const deleteRental = (rentalId) => {
+    const rental = rentals.find(r => r.id === rentalId)
+    if (!rental) return
+    setRentals(prev => prev.filter(r => r.id !== rentalId))
+    setProducts(prev => prev.map(product => {
+      const assignment = (rental.assignments || []).find(a => a.productId === product.id)
+      if (!assignment || assignment.qty === 0) return product
+      let count = assignment.qty
+      const units = product.units.map(u => {
+        if (count > 0 && u.state === 'Rental') { count--; return { ...u, state: 'Disponible' } }
+        return u
+      })
+      return { ...product, units }
+    }))
+  }
+
   /* ── Agregar producto ── */
+  /* ── Vincular EPC a unidad ── */
+  const linkEpc = (epc, unitId) => {
+    setEpcMap(prev => ({ ...prev, [epc]: unitId }))
+  }
+
+  const unlinkEpc = (epc) => {
+    setEpcMap(prev => { const n = { ...prev }; delete n[epc]; return n })
+  }
+
+  const unlinkAllForProduct = (productId) => {
+    setEpcMap(prev => {
+      const prod = products.find(p => p.id === productId)
+      if (!prod) return prev
+      const unitIds = new Set(prod.units.map(u => u.id))
+      const next = { ...prev }
+      Object.keys(next).forEach(epc => { if (unitIds.has(next[epc])) delete next[epc] })
+      return next
+    })
+  }
+
+  /* ── Cambio de estado por scan RFID real ── */
+  const markUnitOccupied = (unitId) => {
+    setProducts(prev => prev.map(product => ({
+      ...product,
+      units: product.units.map(u =>
+        u.id === unitId && u.state === 'Reservado'
+          ? { ...u, state: 'Ocupado' }
+          : u
+      )
+    })))
+  }
+
+  const markUnitAvailable = (unitId) => {
+    setProducts(prev => prev.map(product => ({
+      ...product,
+      units: product.units.map(u =>
+        u.id === unitId && u.state === 'Ocupado'
+          ? { ...u, state: 'Disponible' }
+          : u
+      )
+    })))
+  }
+
   const addProduct = (data) => {
     const id = Date.now()
     const qty = Number(data.qty)
@@ -219,8 +312,8 @@ export function InventoryProvider({ children }) {
       total: qty,
       description: data.description || '',
       units: Array.from({ length: qty }, (_, i) => ({
-        id: `${id}-${i+1}`,
-        rfid: `${data.rfid}-${String(i+1).padStart(2,'0')}`,
+        id: `${id}-${i + 1}`,
+        rfid: `${data.rfid}-${String(i + 1).padStart(2, '0')}`,
         state: 'Disponible'
       }))
     }])
@@ -233,7 +326,10 @@ export function InventoryProvider({ children }) {
       getReservedQty, getAvailableQty, getAvailableQtyForEvent,
       countByState,
       createEvent, updateEvent, deleteEvent,
+      rentals, setRentals, createRental, deleteRental,
       addProduct,
+      epcMap, linkEpc, unlinkEpc, unlinkAllForProduct,
+      markUnitOccupied, markUnitAvailable,
       isActiveOnDate
     }}>
       {children}

@@ -45,6 +45,8 @@ export default function Events() {
   const emptyForm = { name: '', date: '', location: '', notes: '' }
   const [form, setForm] = React.useState(emptyForm)
   const [assignCategory, setAssignCategory] = React.useState('')
+  const [assignSkuSearch, setAssignSkuSearch] = React.useState('')
+  const [assignPage, setAssignPage] = React.useState(0)
   const [assignmentsDraft, setAssignmentsDraft] = React.useState([])
   const [pdfLoading, setPdfLoading] = React.useState(false)
   const [snack, setSnack] = React.useState({ open: false, msg: '', severity: 'success' })
@@ -73,7 +75,10 @@ export default function Events() {
   }
 
   const totalAssigned = assignmentsDraft.reduce((s, a) => s + a.qty, 0)
-  const filteredProductsByCategory = (cat) => products.filter(p => !cat || p.category === cat)
+  const filteredProductsByCategory = (cat) => products.filter(p =>
+    (!cat || p.category === cat) &&
+    (!assignSkuSearch || p.sku.toLowerCase().includes(assignSkuSearch.toLowerCase()) || p.name.toLowerCase().includes(assignSkuSearch.toLowerCase()))
+  )
 
   /* BUSCAR POR N° DE ORDEN */
   const handleOrderSearch = () => {
@@ -170,45 +175,66 @@ export default function Events() {
     !search || e.name.toLowerCase().includes(search.toLowerCase()) || e.orderNumber?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const AssignPanel = () => (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-      <TextField select label="Filtrar categoría" size="small" value={assignCategory} onChange={e => setAssignCategory(e.target.value)}>
-        <MenuItem value="">Todas las categorías</MenuItem>
-        {CATEGORIES.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
-      </TextField>
-      {totalAssigned > 0 && (
-        <Alert severity="info" sx={{ py: 0.5, fontSize: 12 }}>
-          {totalAssigned} artículo{totalAssigned !== 1 ? 's' : ''} seleccionado{totalAssigned !== 1 ? 's' : ''}
-        </Alert>
-      )}
-      {filteredProductsByCategory(assignCategory).map(p => {
-        const maxAvail = availableForDraft(p)
-        const current = assignmentsDraft.find(a => a.productId === p.id)?.qty || 0
-        return (
-          <Box key={p.id} sx={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            p: 1.5, borderRadius: 1,
-            backgroundColor: current > 0 ? 'rgba(102,252,241,0.06)' : 'background.paper',
-            border: '1px solid', borderColor: current > 0 ? 'primary.main' : 'divider'
-          }}>
-            <Box>
-              <Typography variant="body2" fontWeight={current > 0 ? 600 : 400}>{p.name}</Typography>
-              <Typography variant="caption" color="text.secondary">
-                {p.sku} · {p.category} ·{' '}
-                <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
-                  {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
-                </span>
-              </Typography>
+  const ASSIGN_PAGE_SIZE = 10
+  const AssignPanel = () => {
+    const filtered = filteredProductsByCategory(assignCategory)
+    const totalPages = Math.ceil(filtered.length / ASSIGN_PAGE_SIZE)
+    const paginated = filtered.slice(assignPage * ASSIGN_PAGE_SIZE, (assignPage + 1) * ASSIGN_PAGE_SIZE)
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <TextField
+          label="Buscar SKU o nombre" size="small"
+          value={assignSkuSearch}
+          onChange={e => { setAssignSkuSearch(e.target.value); setAssignPage(0) }}
+          placeholder="ej: AUD-001 o micrófono"
+        />
+        <TextField select label="Filtrar categoría" size="small" value={assignCategory} onChange={e => { setAssignCategory(e.target.value); setAssignPage(0) }}>
+          <MenuItem value="">Todas las categorías</MenuItem>
+          {CATEGORIES.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+        </TextField>
+        {totalAssigned > 0 && (
+          <Alert severity="info" sx={{ py: 0.5, fontSize: 12 }}>
+            {totalAssigned} artículo{totalAssigned !== 1 ? 's' : ''} seleccionado{totalAssigned !== 1 ? 's' : ''}
+          </Alert>
+        )}
+        {paginated.map(p => {
+          const maxAvail = availableForDraft(p)
+          const current = assignmentsDraft.find(a => a.productId === p.id)?.qty || 0
+          return (
+            <Box key={p.id} sx={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              p: 1.5, borderRadius: 1,
+              backgroundColor: current > 0 ? 'rgba(102,252,241,0.06)' : 'background.paper',
+              border: '1px solid', borderColor: current > 0 ? 'primary.main' : 'divider'
+            }}>
+              <Box>
+                <Typography variant="body2" fontWeight={current > 0 ? 600 : 400}>{p.name}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {p.sku} · {p.category} ·{' '}
+                  <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
+                    {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
+                  </span>
+                </Typography>
+              </Box>
+              <TextField type="number" size="small" sx={{ width: 80 }}
+                inputProps={{ min: 0, max: maxAvail }} value={current}
+                disabled={maxAvail === 0 && current === 0}
+                onChange={e => setQty(p.id, Number(e.target.value))} />
             </Box>
-            <TextField type="number" size="small" sx={{ width: 80 }}
-              inputProps={{ min: 0, max: maxAvail }} value={current}
-              disabled={maxAvail === 0 && current === 0}
-              onChange={e => setQty(p.id, Number(e.target.value))} />
+          )
+        })}
+        {totalPages > 1 && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1, mt: 1 }}>
+            <button onClick={() => setAssignPage(p => Math.max(0, p - 1))} disabled={assignPage === 0}
+              style={{ background: 'none', border: '1px solid rgba(102,252,241,0.3)', color: '#66FCF1', borderRadius: 4, padding: '2px 10px', cursor: assignPage === 0 ? 'not-allowed' : 'pointer', opacity: assignPage === 0 ? 0.4 : 1 }}>&#8249;</button>
+            <span style={{ fontSize: 12, color: '#C5C6C7' }}>{assignPage + 1} / {totalPages}</span>
+            <button onClick={() => setAssignPage(p => Math.min(totalPages - 1, p + 1))} disabled={assignPage >= totalPages - 1}
+              style={{ background: 'none', border: '1px solid rgba(102,252,241,0.3)', color: '#66FCF1', borderRadius: 4, padding: '2px 10px', cursor: assignPage >= totalPages - 1 ? 'not-allowed' : 'pointer', opacity: assignPage >= totalPages - 1 ? 0.4 : 1 }}>&#8250;</button>
           </Box>
-        )
-      })}
-    </Box>
-  )
+        )}
+      </Box>
+    )
+  }
 
   const EventDetailContent = ({ ev }) => {
     if (!ev) return null

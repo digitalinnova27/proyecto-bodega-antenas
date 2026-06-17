@@ -10,7 +10,9 @@
     "electron": "electron .",
     "electron:dev": "electron .",
     "electron:build": "npm run build && electron .",
-    "start": "npm run electron:dev"
+    "start": "npm run electron:dev",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir"
   },
   "dependencies": {
     "@emotion/react": "^11.11.0",
@@ -29,6 +31,42 @@
     "concurrently": "^8.2.0",
     "electron": "^40.0.0",
     "vite": "^5.0.0",
-    "wait-on": "^7.2.0"
+    "wait-on": "^7.2.0",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.inoise.bodega",
+    "productName": "iNOISE Control Bodega",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "server/**/*",
+      "!**/node_modules/**"
+    ],
+    "extraResources": [
+      {
+        "from": "server",
+        "to": "server",
+        "filter": [
+          "**/*",
+          "!node_modules"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "electron/assets/icono.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "electron/assets/icono.png",
+      "installerHeaderIcon": "electron/assets/icono.png",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }
