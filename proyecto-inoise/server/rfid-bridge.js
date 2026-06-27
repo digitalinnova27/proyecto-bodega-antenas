@@ -7,7 +7,51 @@ const path = require('path')
 const UDP_PORT = 6001
 const WS_PORT = 3001
 const HTTP_PORT = 3002
-const EPC_MAP_PATH = path.join(__dirname, 'epcMap.json')
+
+/* ── Dónde guardar epcMap.json ──
+ * Si este archivo corre DENTRO de Electron (caso normal, vía require() en
+ * electron/main.js), guardamos epcMap.json en app.getPath('userData') —
+ * la misma carpeta segura donde vive inoise.db, que el instalador NUNCA
+ * borra ni sobreescribe entre versiones. Esto es necesario porque una vez
+ * empaquetado en el .exe, la carpeta del propio script (__dirname) queda
+ * adentro de app.asar, que es de SOLO LECTURA — escribir ahí fallaría en
+ * silencio y los vínculos sticker↔producto nuevos no se guardarían nunca.
+ *
+ * Si en cambio este archivo corre suelto, fuera de Electron (ej. `node
+ * server/rfid-bridge.js` para pruebas manuales), no hay app.getPath
+ * disponible, así que se mantiene el comportamiento de siempre: guardar
+ * junto al script. */
+let epcMapDir = __dirname
+try {
+    if (process.versions && process.versions.electron) {
+        const { app } = require('electron')
+        epcMapDir = app.getPath('userData')
+    }
+} catch (e) {
+    // No estamos en un contexto de Electron utilizable; seguimos con __dirname.
+}
+const EPC_MAP_PATH = path.join(epcMapDir, 'epcMap.json')
+
+/* ── Migración única: epcMap.json viejo (junto al script) → carpeta nueva ──
+ * Este proyecto venía guardando epcMap.json junto a rfid-bridge.js. Como
+ * acabamos de mover la ubicación a userData, sin esto los vínculos
+ * sticker↔producto que ya existían (de antes de este cambio) se verían
+ * "perdidos" la primera vez que se abra la app con esta versión nueva —
+ * no es que se borren, es que el bridge ahora mira en otro lado. Si el
+ * archivo nuevo todavía no existe pero el viejo sí, lo copiamos una sola
+ * vez. Después de eso, el viejo se ignora por completo. */
+const LEGACY_EPC_MAP_PATH = path.join(__dirname, 'epcMap.json')
+try {
+    if (EPC_MAP_PATH !== LEGACY_EPC_MAP_PATH &&
+        !fs.existsSync(EPC_MAP_PATH) &&
+        fs.existsSync(LEGACY_EPC_MAP_PATH)) {
+        fs.copyFileSync(LEGACY_EPC_MAP_PATH, EPC_MAP_PATH)
+        console.log('[Bridge] epcMap.json migrado a la carpeta de datos de usuario')
+    }
+} catch (e) {
+    // Si la migración falla (ej. __dirname de solo lectura sin archivo viejo
+    // real), no es grave: loadMap() de abajo simplemente arranca limpio.
+}
 
 // Tiempo mínimo entre lecturas del mismo tag (ms)
 // Si el mismo EPC llega antes de este tiempo, se ignora

@@ -1,13 +1,62 @@
 import React from 'react'
 import {
-  Box, Typography, Paper, Chip, LinearProgress, Alert, Divider
+  Box, Typography, Paper, Chip, LinearProgress, Alert, Divider,
+  Button, Dialog, DialogTitle, DialogContent, IconButton,
+  List, ListItem, ListItemText, ListItemIcon
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
 import WifiOffIcon from '@mui/icons-material/WifiOff'
+import CloseIcon from '@mui/icons-material/Close'
+import HistoryIcon from '@mui/icons-material/History'
+import NfcIcon from '@mui/icons-material/Nfc'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import CancelIcon from '@mui/icons-material/Cancel'
 import { useRfidSocket } from '../hooks/useRfidSocket'
+import { useInventory } from '../context/InventoryContext'
+
+// Convierte "3-5" → "Unidad 5"
+const unitNumberLabel = (id) => {
+  const parts = String(id).split('-')
+  return `Unidad ${parts[parts.length - 1]}`
+}
+
+// Marca cada lectura como "única" (primera vez que se ve ese EPC en la sesión)
+// o "repetida" (el mismo EPC ya había sido leído antes). El array llega
+// ordenado de más reciente a más antigua, así que se recorre al revés
+// para detectar cuál fue la primera lectura cronológica de cada tag.
+const flagDuplicateScans = (scans) => {
+  const seen = new Set()
+  return [...scans].reverse().map(scan => {
+    const isUnique = !seen.has(scan.epc)
+    seen.add(scan.epc)
+    return { ...scan, isUnique }
+  }).reverse()
+}
 
 export default function Antennas() {
-  const { isConnected, lastScan } = useRfidSocket()
+  const { isConnected: bridgeUp, lastScan, lastReadAt } = useRfidSocket()
+  const { products, epcMap } = useInventory()
+
+  // "isConnected" del hook solo dice que el WebSocket llegó al bridge —
+  // y el bridge corre siempre dentro de Electron, conectado o no haya
+  // ninguna antena física enchufada al PC. La única señal de que existe
+  // hardware real es haber recibido al menos un paquete UDP desde que se
+  // abrió la app (lastReadAt). Sin esto, "Activa" se mostraba en verde
+  // aunque no hubiera ningún lector conectado.
+  const isConnected = bridgeUp && lastReadAt !== null
+
+  // Modal "Revisar lecturas"
+  const [reviewAntenna, setReviewAntenna] = React.useState(null) // antena cuyas lecturas se están revisando
+
+  /* ── Resuelve a qué elemento/unidad pertenece un EPC ── */
+  const resolveAssignedElement = (epc) => {
+    const unitId = epcMap?.[epc]
+    if (!unitId) return 'Sticker no vinculado a ningún elemento'
+    const productId = String(unitId).split('-')[0]
+    const product = products.find(p => String(p.id) === productId)
+    if (!product) return 'Sticker no vinculado a ningún elemento'
+    return `${product.name} — ${unitNumberLabel(unitId)}`
+  }
 
   const [stats, setStats] = React.useState({
     totalScans: 0,
@@ -56,7 +105,7 @@ export default function Antennas() {
       id: 1,
       name: 'Antena 1 — VF-747 / VA-991R 9dBi',
       active: isConnected,
-      signalPct: isConnected ? (signalPct ?? 87) : 0,
+      signalPct: isConnected ? (signalPct ?? 0) : 0,
       signalLabel,
       lastRead: fmtDate(stats.lastScanTime),
       totalScans: stats.totalScans,
@@ -73,10 +122,12 @@ export default function Antennas() {
         <WifiIcon /> Lectores RFID
       </Typography>
 
-      <Alert severity={isConnected ? 'success' : 'warning'} sx={{ mb: 2 }} icon={<WifiIcon />}>
+      <Alert severity={isConnected ? 'success' : bridgeUp ? 'warning' : 'error'} sx={{ mb: 2 }} icon={<WifiIcon />}>
         {isConnected
-          ? '🟢 Bridge RFID activo — el lector VF-747 está enviando datos'
-          : '⚫ Bridge RFID desconectado — ejecuta: node server/rfid-bridge.js'}
+          ? '🟢 Lector VF-747 conectado — recibiendo lecturas reales'
+          : bridgeUp
+            ? '⚪ Bridge activo, pero no se detecta ninguna antena física enviando datos'
+            : '⚫ Bridge RFID desconectado'}
       </Alert>
 
       {antennas.map((ant) => (
@@ -140,35 +191,89 @@ export default function Antennas() {
             </Box>
           </Box>
 
-          {/* Últimas lecturas */}
+          {/* Botón para revisar lecturas (en vez de lista creciente inline) */}
           {ant.active && ant.recentScans.length > 0 && (
-            <Box sx={{ mt: 1 }}>
-              <Typography variant="caption" color="text.secondary">ÚLTIMAS LECTURAS</Typography>
-              <Box sx={{ mt: 0.5, maxHeight: 120, overflowY: 'auto' }}>
-                {ant.recentScans.map((scan, i) => (
-                  <Box key={i} sx={{
-                    display: 'flex', alignItems: 'center', gap: 1.5,
-                    py: 0.4, px: 1, borderRadius: 1,
-                    bgcolor: i === 0 ? 'rgba(102,252,241,0.06)' : 'transparent',
-                    borderBottom: '0.5px solid', borderColor: 'divider'
-                  }}>
-                    <Typography variant="caption" fontFamily="monospace" sx={{ fontSize: 11, flex: 1 }}>
-                      {scan.epc}
-                    </Typography>
-                    {scan.rssi && (
-                      <Chip label={`${scan.rssi} dBm`} size="small"
-                        sx={{ fontSize: 10, height: 18 }} />
-                    )}
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
-                      {new Date(scan.at).toLocaleTimeString('es-CL')}
-                    </Typography>
-                  </Box>
-                ))}
-              </Box>
+            <Box sx={{ mt: 1, display: 'flex', justifyContent: 'flex-end' }}>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<HistoryIcon />}
+                onClick={() => setReviewAntenna(ant)}
+              >
+                Revisar lecturas ({ant.recentScans.length})
+              </Button>
             </Box>
           )}
         </Paper>
       ))}
+
+      {/* Modal "Revisar lecturas" */}
+      <Dialog
+        open={!!reviewAntenna}
+        onClose={() => setReviewAntenna(null)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <HistoryIcon />
+            Lecturas — {reviewAntenna?.name}
+          </Box>
+          <IconButton size="small" onClick={() => setReviewAntenna(null)}>
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers>
+          {(!reviewAntenna?.recentScans || reviewAntenna.recentScans.length === 0) ? (
+            <Typography variant="body2" color="text.secondary">Sin lecturas registradas.</Typography>
+          ) : (
+            <List dense disablePadding>
+              {flagDuplicateScans(reviewAntenna.recentScans).map((scan, i) => (
+                <ListItem key={i} divider sx={{ py: 1.2, alignItems: 'flex-start' }}>
+                  <ListItemIcon sx={{ minWidth: 36, mt: 0.5 }}>
+                    <NfcIcon color={scan.isUnique ? 'primary' : 'disabled'} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body1" fontWeight={700} fontFamily="monospace" sx={{ wordBreak: 'break-all' }}>
+                          {scan.epc}
+                        </Typography>
+                        {scan.isUnique
+                          ? <CheckCircleIcon sx={{ color: 'success.main', fontSize: 20 }} titleAccess="Lectura única" />
+                          : <CancelIcon sx={{ color: 'error.main', fontSize: 20 }} titleAccess="Lectura repetida" />
+                        }
+                      </Box>
+                    }
+                    secondary={
+                      <Box sx={{ mt: 0.5 }}>
+                        <Typography variant="body2" color="text.primary">
+                          {resolveAssignedElement(scan.epc)}
+                        </Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.3 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {new Date(scan.at).toLocaleString('es-CL')}
+                          </Typography>
+                          {scan.rssi && (
+                            <Chip label={`${scan.rssi} dBm`} size="small" sx={{ fontSize: 10, height: 18 }} />
+                          )}
+                          <Chip
+                            label={scan.isUnique ? 'Única' : 'Repetida'}
+                            size="small"
+                            color={scan.isUnique ? 'success' : 'error'}
+                            variant="outlined"
+                            sx={{ fontSize: 10, height: 18 }}
+                          />
+                        </Box>
+                      </Box>
+                    }
+                  />
+                </ListItem>
+              ))}
+            </List>
+          )}
+        </DialogContent>
+      </Dialog>
     </Box>
   )
 }

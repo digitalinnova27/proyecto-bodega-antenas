@@ -74,7 +74,9 @@ export default function Sidebar({ open = true, onToggle }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: open ? 'space-between' : 'center',
-          px: 2
+          px: 1.25,
+          minHeight: { xs: 96, sm: 96 },
+          py: 1.5
         }}
       >
         {/* LOGO (solo cuando está abierto) */}
@@ -83,17 +85,17 @@ export default function Sidebar({ open = true, onToggle }) {
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: 1,
+              flex: 1,
+              minWidth: 0,
               transition: 'opacity 0.2s ease'
             }}
           >
-            <Avatar sx={{ bgcolor: '#66FCF1', color: '#0B0C10' }}>
-              RF
-            </Avatar>
-            <Box>
-              <Typography variant="subtitle1">RFID</Typography>
-              <Typography variant="caption">Control Bodega</Typography>
-            </Box>
+            <Box
+              component="img"
+              src="/logo-header.png"
+              alt="Orbitag"
+              sx={{ width: '100%', maxWidth: 230, height: 'auto', objectFit: 'contain', display: 'block' }}
+            />
           </Box>
         )}
 

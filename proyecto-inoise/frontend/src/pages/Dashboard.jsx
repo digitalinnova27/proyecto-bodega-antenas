@@ -1,5 +1,6 @@
 import React from 'react'
 import { useInventory } from '../context/InventoryContext'
+import { useRfidSocket } from '../hooks/useRfidSocket'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, Cell } from 'recharts'
 
 const CAT_COLORS = {
@@ -209,6 +210,13 @@ function CalendarModal({ year, month, events, onClose }) {
 // ── Dashboard principal ─────────────────────────────────────────────────────
 export default function Dashboard() {
   const { products, events, getAvailableQty } = useInventory()
+  // Estado real del lector (no hardcodeado): "Activa" solo si el bridge
+  // está conectado Y además recibió al menos una lectura UDP real desde
+  // que se abrió la app. Sin esto, el WS del bridge (que corre siempre
+  // dentro de Electron) hacía ver "Activa" aunque no hubiera ninguna
+  // antena física conectada al PC.
+  const { isConnected: bridgeConnected, lastReadAt } = useRfidSocket()
+  const antenna1Active = bridgeConnected && lastReadAt !== null
 
   const todayStr = new Date().toISOString().slice(0, 10)
 
@@ -246,10 +254,15 @@ export default function Dashboard() {
     equipos: (ev.assignments || []).reduce((s, a) => s + (a.qty || 0), 0)
   }))
 
+  // Solo "Antena 1" corresponde a un lector físico real configurado en el
+  // bridge (server/rfid-bridge.js). Antena 2 y 3 no tienen hardware
+  // asignado todavía, así que siempre se muestran offline — antes esto
+  // estaba hardcodeado como "Activa" para las tres sin relación alguna
+  // con una conexión real.
   const antennas = [
-    { name: 'Antena 1', status: 'Activa' },
+    { name: 'Antena 1', status: antenna1Active ? 'Activa' : 'Offline' },
     { name: 'Antena 2', status: 'Offline' },
-    { name: 'Antena 3', status: 'Activa' },
+    { name: 'Antena 3', status: 'Offline' },
   ]
 
   const alerts = Object.entries(catStats)

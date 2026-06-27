@@ -2,11 +2,12 @@ import React from 'react'
 import {
   Box, Typography, Paper, Table, TableHead, TableRow, TableCell, TableBody,
   TextField, MenuItem, Button, Chip, Dialog, DialogTitle, DialogContent,
-  DialogActions, Select, Alert, Tooltip, Pagination
+  DialogActions, Select, Alert, Tooltip, Pagination, Autocomplete
 } from '@mui/material'
 import CalendarTodayIcon from '@mui/icons-material/CalendarToday'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useInventory } from '../context/InventoryContext'
+import { useAuth } from '../context/AuthContext'
 
 const STATES = ['Disponible', 'Reservado', 'Ocupado', 'Rental', 'En Mantenimiento', 'Perdido']
 const ROWS_PER_PAGE = 15
@@ -23,7 +24,9 @@ const stateColors = {
 const todayStr = () => new Date().toISOString().slice(0, 10)
 
 export default function Inventory() {
-  const { products, setProducts, getAvailableQty, addProduct } = useInventory()
+  const { products, setProducts, getAvailableQty, getReservedQty, addProduct, deleteProduct, nextSkuForFamily } = useInventory()
+  const { role } = useAuth()
+  const currentUser = role === 'admin' ? 'Administrador' : 'Operador'
 
   const [categories, setCategories] = React.useState([])
   const [filter, setFilter] = React.useState({ sku: '', category: '', state: '' })
@@ -31,7 +34,8 @@ export default function Inventory() {
   const [detail, setDetail] = React.useState(null)
   const [draftDetail, setDraftDetail] = React.useState(null)
   const [openAdd, setOpenAdd] = React.useState(false)
-  const [newProduct, setNewProduct] = React.useState({ name: '', sku: '', category: '', qty: '', rfid: '', description: '' })
+  const [confirmDeleteProduct, setConfirmDeleteProduct] = React.useState(false)
+  const [newProduct, setNewProduct] = React.useState({ name: '', skuFamily: '', sku: '', category: '', qty: '', description: '' })
   const [page, setPage] = React.useState(1)
 
   React.useEffect(() => {
@@ -39,18 +43,25 @@ export default function Inventory() {
     setCategories(cats)
   }, [products])
 
+  // Familias de SKU existentes (ej. "ILU", "AUD") para sugerir mientras se escribe
+  const skuFamilies = React.useMemo(() => {
+    return [...new Set(products.map(p => p.sku?.split('-')[0]).filter(Boolean))]
+  }, [products])
+
   // Reset page when filter changes
   React.useEffect(() => { setPage(1) }, [filter, consulDate])
 
   const countForDate = (product, state) => {
-    if (state === 'Disponible') return getAvailableQty(product.id, consulDate)
-    if (state === 'Reservado') {
-      const avail = getAvailableQty(product.id, consulDate)
-      const blocked = product.units.filter(u =>
-        ['Ocupado', 'En Mantenimiento', 'Perdido'].includes(u.state)
-      ).length
-      return Math.max(product.total - avail - blocked, 0)
+    // Vista de "hoy": refleja el estado físico real de cada unidad —
+    // siempre suma exactamente el total del producto, sin doble conteo.
+    if (consulDate === todayStr()) {
+      return product.units.filter(u => u.state === state).length
     }
+    // Vista a una fecha futura: proyección basada en reservas de eventos
+    // activos para esa fecha (no hay forma de saber el estado físico real
+    // de algo que aún no ocurre).
+    if (state === 'Disponible') return getAvailableQty(product.id, consulDate)
+    if (state === 'Reservado') return getReservedQty(product.id, consulDate)
     return product.units.filter(u => u.state === state).length
   }
 
@@ -82,10 +93,18 @@ export default function Inventory() {
     setDraftDetail(null)
   }
 
+  const handleDeleteProduct = () => {
+    deleteProduct(detail.id)
+    setConfirmDeleteProduct(false)
+    setDetail(null)
+    setDraftDetail(null)
+  }
+
   const handleAddProduct = () => {
-    addProduct(newProduct)
+    // El código RFID base usa el mismo SKU (misma nomenclatura), no se pide por separado
+    addProduct({ ...newProduct, rfid: newProduct.sku }, currentUser)
     setOpenAdd(false)
-    setNewProduct({ name: '', sku: '', category: '', qty: '', rfid: '', description: '' })
+    setNewProduct({ name: '', skuFamily: '', sku: '', category: '', qty: '', description: '' })
   }
 
   return (
@@ -179,8 +198,13 @@ export default function Inventory() {
           </TableHead>
           <TableBody>
             {paginated.map(p => (
-              <TableRow key={p.id}>
-                <TableCell>{p.name}</TableCell>
+              <TableRow key={p.id} sx={p.total === 0 ? { opacity: 0.5, bgcolor: 'rgba(244,67,54,0.06)' } : {}}>
+                <TableCell>
+                  {p.name}
+                  {p.total === 0 && (
+                    <Chip size="small" label="Sin stock" color="error" sx={{ ml: 1 }} />
+                  )}
+                </TableCell>
                 <TableCell>{p.sku}</TableCell>
                 <TableCell>{p.category}</TableCell>
                 <TableCell align="center">{p.total}</TableCell>
@@ -247,8 +271,26 @@ export default function Inventory() {
           )}
         </DialogContent>
         <DialogActions>
+          <Button color="error" onClick={() => setConfirmDeleteProduct(true)} sx={{ mr: 'auto' }}>
+            Eliminar producto
+          </Button>
           <Button onClick={() => { setDetail(null); setDraftDetail(null) }}>Cancelar</Button>
           <Button variant="contained" onClick={saveDetailChanges}>Guardar cambios</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ═══ MODAL CONFIRMAR ELIMINACIÓN DE PRODUCTO ═══ */}
+      <Dialog open={confirmDeleteProduct} onClose={() => setConfirmDeleteProduct(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ color: 'error.main' }}>Eliminar producto</DialogTitle>
+        <DialogContent>
+          <Typography>
+            ¿Seguro que quieres eliminar <strong>{detail?.name}</strong> y todas sus unidades del inventario?
+            Esta acción no se puede deshacer.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmDeleteProduct(false)}>Cancelar</Button>
+          <Button variant="contained" color="error" onClick={handleDeleteProduct}>Eliminar definitivamente</Button>
         </DialogActions>
       </Dialog>
 
@@ -258,8 +300,20 @@ export default function Inventory() {
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
           <TextField label="Nombre" value={newProduct.name}
             onChange={e => setNewProduct({ ...newProduct, name: e.target.value })} />
-          <TextField label="SKU" value={newProduct.sku}
-            onChange={e => setNewProduct({ ...newProduct, sku: e.target.value })} />
+          <Autocomplete
+            freeSolo
+            options={skuFamilies}
+            inputValue={newProduct.skuFamily}
+            onInputChange={(_, value) => setNewProduct(prev => ({
+              ...prev, skuFamily: value, sku: nextSkuForFamily(value)
+            }))}
+            renderInput={(params) => (
+              <TextField {...params} label="Familia SKU"
+                helperText="Escribe la familia (ej: ILU, AUD) — el número correlativo se asigna solo" />
+            )}
+          />
+          <TextField label="SKU asignado" value={newProduct.sku} disabled
+            helperText={newProduct.sku ? 'Se generó automáticamente, no se puede editar' : 'Aparece al elegir la familia'} />
           <TextField label="Descripción" value={newProduct.description}
             onChange={e => setNewProduct({ ...newProduct, description: e.target.value })} />
           <TextField select label="Categoría" value={newProduct.category}
@@ -270,9 +324,6 @@ export default function Inventory() {
           </TextField>
           <TextField type="number" label="Cantidad" value={newProduct.qty}
             onChange={e => setNewProduct({ ...newProduct, qty: e.target.value })} />
-          <TextField label="RFID base" value={newProduct.rfid}
-            helperText="Ej: RFID-AUD-010"
-            onChange={e => setNewProduct({ ...newProduct, rfid: e.target.value })} />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenAdd(false)}>Cancelar</Button>

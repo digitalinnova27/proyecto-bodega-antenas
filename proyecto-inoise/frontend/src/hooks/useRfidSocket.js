@@ -16,10 +16,19 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 const WS_URL = 'ws://localhost:3001'
 const RECONNECT_INTERVAL = 3000
 
+// Cuántas lecturas de RSSI guardamos para calcular el promedio de cobertura
+const SIGNAL_HISTORY_SIZE = 10
+
 export function useRfidSocket() {
     const [isConnected, setIsConnected] = useState(false)
     const [lastScan, setLastScan] = useState(null)  // { epc, sku, timestamp }
     const [unknownTags, setUnknownTags] = useState([])
+    // RSSI (dBm) de las últimas lecturas reales — sirve para calcular el
+    // % de cobertura de la antena (ver useNotifications.js). Se llenan tanto
+    // con tags conocidos como desconocidos, porque ambos confirman que la
+    // antena está leyendo algo físicamente.
+    const [signalHistory, setSignalHistory] = useState([])
+    const [lastReadAt, setLastReadAt] = useState(null)
     const wsRef = useRef(null)
     const timerRef = useRef(null)
 
@@ -39,14 +48,24 @@ export function useRfidSocket() {
                 const msg = JSON.parse(evt.data)
                 if (msg.type === 'rfid_scan') {
                     setLastScan({ epc: msg.epc, sku: msg.sku, timestamp: msg.timestamp })
+                    setLastReadAt(Date.now())
+                    if (typeof msg.rssi === 'number') {
+                        setSignalHistory(prev => [...prev.slice(-(SIGNAL_HISTORY_SIZE - 1)), msg.rssi])
+                    }
                 } else if (msg.type === 'rfid_unknown') {
                     setUnknownTags(prev => [...prev.slice(-9), msg.epc])
+                    setLastReadAt(Date.now())
+                    if (typeof msg.rssi === 'number') {
+                        setSignalHistory(prev => [...prev.slice(-(SIGNAL_HISTORY_SIZE - 1)), msg.rssi])
+                    }
                 }
             } catch (e) { }
         }
 
         ws.onclose = () => {
             setIsConnected(false)
+            setLastReadAt(null)
+            setSignalHistory([])
             console.log('[RFID] WebSocket desconectado, reintentando en 3s...')
             timerRef.current = setTimeout(connect, RECONNECT_INTERVAL)
         }
@@ -65,5 +84,5 @@ export function useRfidSocket() {
 
     const clearLastScan = useCallback(() => setLastScan(null), [])
 
-    return { isConnected, lastScan, unknownTags, clearLastScan }
+    return { isConnected, lastScan, unknownTags, clearLastScan, signalHistory, lastReadAt }
 }

@@ -65,10 +65,11 @@ const AssignPanel = React.memo(function AssignPanel({
       {paginated.map(p => {
         const maxAvail = availableForDraft(p)
         const current = assignmentsDraft.find(a => a.productId === p.id)?.qty || 0
+        const noStock = (p.total || 0) === 0
         return (
           <Box key={p.id} sx={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            p: 1.5, borderRadius: 1,
+            p: 1.5, borderRadius: 1, opacity: noStock ? 0.5 : 1,
             backgroundColor: current > 0 ? 'rgba(102,252,241,0.06)' : 'background.paper',
             border: '1px solid', borderColor: current > 0 ? 'primary.main' : 'divider'
           }}>
@@ -76,14 +77,18 @@ const AssignPanel = React.memo(function AssignPanel({
               <Typography variant="body2" fontWeight={current > 0 ? 600 : 400}>{p.name}</Typography>
               <Typography variant="caption" color="text.secondary">
                 {p.sku} · {p.category} ·{' '}
-                <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
-                  {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
-                </span>
+                {noStock ? (
+                  <span style={{ color: '#f44336', fontWeight: 600 }}>Sin stock</span>
+                ) : (
+                  <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
+                    {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
+                  </span>
+                )}
               </Typography>
             </Box>
             <TextField type="number" size="small" sx={{ width: 80 }}
               inputProps={{ min: 0, max: maxAvail }} value={current}
-              disabled={maxAvail === 0 && current === 0}
+              disabled={noStock || (maxAvail === 0 && current === 0)}
               onChange={e => setQty(p.id, Number(e.target.value))} />
           </Box>
         )

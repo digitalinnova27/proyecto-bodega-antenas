@@ -3,7 +3,8 @@ import {
     Box, Typography, Paper, TextField, MenuItem, Button,
     Chip, Alert, Divider, CircularProgress, InputAdornment,
     Table, TableHead, TableRow, TableCell, TableBody, Fade, List,
-    ListItem, ListItemText
+    ListItem, ListItemText, Dialog, DialogTitle, DialogContent, IconButton,
+    Autocomplete
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
 import LinkIcon from '@mui/icons-material/Link'
@@ -13,8 +14,11 @@ import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner'
 import AddCircleIcon from '@mui/icons-material/AddCircle'
 import CancelIcon from '@mui/icons-material/Cancel'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
+import CloseIcon from '@mui/icons-material/Close'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import { useInventory } from '../context/InventoryContext'
 import { useRfidSocket } from '../hooks/useRfidSocket'
+import { useAuth } from '../context/AuthContext'
 
 const CATEGORIES = ['Audio', 'Iluminacion', 'Pantalla', 'Efectos', 'Estructuras', 'Energía', 'Tecnologia', 'Otros']
 
@@ -25,8 +29,11 @@ const unitLabel = (id) => {
 }
 
 export default function RfidRegistrar() {
-    const { products, addProduct, linkEpc, epcMap } = useInventory()
-    const { isConnected, lastScan, clearLastScan } = useRfidSocket()
+    const { products, addProduct, linkEpc, epcMap, nextSkuForFamily } = useInventory()
+    const { role } = useAuth()
+    const currentUser = role === 'admin' ? 'Administrador' : 'Operador'
+    const { isConnected, lastScan, unknownTags, clearLastScan } = useRfidSocket()
+    const lastUnknownRef = React.useRef(null)
 
     const [step, setStep] = React.useState('waiting')
     const [currentEpc, setCurrentEpc] = React.useState('')
@@ -35,11 +42,16 @@ export default function RfidRegistrar() {
     const [saving, setSaving] = React.useState(false)
     const [manualEpc, setManualEpc] = React.useState('')
 
-    const emptyForm = { name: '', sku: '', category: '', qty: '1', description: '' }
+    const emptyForm = { name: '', skuFamily: '', sku: '', category: '', qty: '1', description: '' }
     const [newForm, setNewForm] = React.useState(emptyForm)
 
     const [search, setSearch] = React.useState('')
     const [selectedProd, setSelectedProd] = React.useState('')
+
+    // Familias de SKU existentes (ej. "ILU", "AUD") para sugerir mientras se escribe
+    const skuFamilies = React.useMemo(() => {
+        return [...new Set(products.map(p => p.sku?.split('-')[0]).filter(Boolean))]
+    }, [products])
 
     // Mapa inverso unitId → epc (para saber cuáles ya están vinculadas)
     const unitToEpc = React.useMemo(() => {
@@ -85,6 +97,26 @@ export default function RfidRegistrar() {
         setNewForm(emptyForm)
     }, [lastScan])
 
+    // Captura de stickers NUEVOS / no registrados (el bridge los manda como
+    // 'rfid_unknown' porque no existen en epcMap todavía). Antes esta página
+    // solo escuchaba lastScan, que únicamente se dispara para EPCs YA
+    // conocidos por el bridge — por eso un sticker nunca antes escaneado no
+    // hacía nada en esta pantalla. Mismo patrón que usa Operations.jsx.
+    React.useEffect(() => {
+        if (!unknownTags || unknownTags.length === 0) return
+        const epc = unknownTags[unknownTags.length - 1]
+        if (lastUnknownRef.current === epc) return
+        lastUnknownRef.current = epc
+
+        setAlreadyLinked(null)
+        setCurrentEpc(epc)
+        setStep('detected')
+        setSelectedProd('')
+        setSelectedUnit('')
+        setSearch('')
+        setNewForm(emptyForm)
+    }, [unknownTags])
+
     React.useEffect(() => { setSelectedUnit('') }, [selectedProd])
 
     const selProduct = products.find(p => p.id === Number(selectedProd))
@@ -118,12 +150,7 @@ export default function RfidRegistrar() {
             productName: prod?.name || '', sku: prod?.sku || '',
             timestamp: new Date().toISOString()
         }
-        try {
-            await fetch('http://localhost:3002/api/epcmap', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ epc: currentEpc, unitId: selectedUnit })
-            })
-        } catch (e) { }
+        // linkEpc ya sincroniza con el bridge (POST /api/epcmap) internamente
         linkEpc(currentEpc, selectedUnit)
         setRegistered(prev => [entry, ...prev])
         setSaving(false)
@@ -133,15 +160,10 @@ export default function RfidRegistrar() {
     const handleCrearYVincular = async () => {
         if (!newForm.name || !newForm.sku || !newForm.category || !newForm.qty) return
         setSaving(true)
-        const created = addProduct({ name: newForm.name, sku: newForm.sku, category: newForm.category, qty: newForm.qty, rfid: newForm.sku, description: newForm.description })
+        const created = addProduct({ name: newForm.name, sku: newForm.sku, category: newForm.category, qty: newForm.qty, rfid: newForm.sku, description: newForm.description }, currentUser)
         const unitId = created?.units?.[0]?.id || `${created?.id}-1`
         const entry = { epc: currentEpc, unitId, productName: newForm.name, sku: newForm.sku, timestamp: new Date().toISOString(), isNew: true }
-        try {
-            await fetch('http://localhost:3002/api/epcmap', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ epc: currentEpc, unitId })
-            })
-        } catch (e) { }
+        // linkEpc ya sincroniza con el bridge (POST /api/epcmap) internamente
         linkEpc(currentEpc, unitId)
         setRegistered(prev => [entry, ...prev])
         setSaving(false)
@@ -185,26 +207,46 @@ export default function RfidRegistrar() {
                 </Paper>
             )}
 
-            {/* Alerta: sticker ya vinculado */}
-            {alreadyLinked && (
-                <Fade in>
-                    <Alert severity="warning" sx={{ mb: 2 }}
-                        onClose={() => setAlreadyLinked(null)}>
-                        <Typography variant="body2" fontWeight={600}>
-                            ⚠️ Este sticker ya está vinculado
-                        </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.5 }}>
-                            EPC: <code style={{ fontFamily: 'monospace', fontSize: 11 }}>{alreadyLinked.epc}</code>
-                        </Typography>
-                        <Typography variant="body2">
-                            Producto: <strong>{alreadyLinked.productName}</strong> — {alreadyLinked.unitLabel}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                            Si necesitas desvincularlo, ve a "Productos Vinculados" → Revisar → Desvincular.
-                        </Typography>
-                    </Alert>
-                </Fade>
-            )}
+            {/* Modal grande: sticker ya vinculado */}
+            <Dialog
+                open={Boolean(alreadyLinked)}
+                onClose={() => setAlreadyLinked(null)}
+                fullWidth
+                maxWidth="sm"
+            >
+                <DialogTitle sx={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    bgcolor: 'rgba(255,167,38,0.12)', color: 'warning.main'
+                }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <WarningAmberIcon /> Sticker ya vinculado
+                    </Box>
+                    <IconButton size="small" onClick={() => setAlreadyLinked(null)}>
+                        <CloseIcon />
+                    </IconButton>
+                </DialogTitle>
+                <DialogContent dividers sx={{ pt: 3 }}>
+                    {alreadyLinked && (
+                        <>
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                EPC escaneado
+                            </Typography>
+                            <Typography variant="h6" fontFamily="monospace" sx={{ mb: 2, wordBreak: 'break-all' }}>
+                                {alreadyLinked.epc}
+                            </Typography>
+                            <Divider sx={{ mb: 2 }} />
+                            <Typography variant="body2" color="text.secondary">Asignado a</Typography>
+                            <Typography variant="h6" fontWeight={700} sx={{ mb: 0.5 }}>
+                                {alreadyLinked.productName}
+                            </Typography>
+                            <Chip label={alreadyLinked.unitLabel} color="warning" sx={{ mb: 2 }} />
+                            <Alert severity="warning" sx={{ mt: 1 }}>
+                                Si necesitas usar este sticker en otro producto, ve a "Productos Vinculados" → busca {alreadyLinked.productName} → Revisar → Desvincular, y luego vuelve a escanearlo aquí.
+                            </Alert>
+                        </>
+                    )}
+                </DialogContent>
+            </Dialog>
 
             {/* PASO 2: Detectado */}
             {step === 'detected' && (
@@ -317,8 +359,22 @@ export default function RfidRegistrar() {
                                 </Typography>
                                 <TextField fullWidth size="small" label="Nombre del producto *" value={newForm.name}
                                     onChange={e => setNewForm({ ...newForm, name: e.target.value })} sx={{ mb: 1 }} />
-                                <TextField fullWidth size="small" label="SKU *" value={newForm.sku}
-                                    onChange={e => setNewForm({ ...newForm, sku: e.target.value })} sx={{ mb: 1 }} placeholder="ej: AUD-015" />
+                                <Autocomplete
+                                    freeSolo
+                                    options={skuFamilies}
+                                    inputValue={newForm.skuFamily}
+                                    onInputChange={(_, value) => setNewForm(prev => ({
+                                        ...prev, skuFamily: value, sku: nextSkuForFamily(value)
+                                    }))}
+                                    renderInput={(params) => (
+                                        <TextField {...params} fullWidth size="small" label="Familia SKU *"
+                                            placeholder="ej: AUD" />
+                                    )}
+                                    sx={{ mb: 1 }}
+                                />
+                                <TextField fullWidth size="small" label="SKU asignado" value={newForm.sku} disabled
+                                    helperText={newForm.sku ? 'Correlativo automático' : 'Aparece al elegir la familia'}
+                                    sx={{ mb: 1 }} />
                                 <TextField select fullWidth size="small" label="Categoría *" value={newForm.category}
                                     onChange={e => setNewForm({ ...newForm, category: e.target.value })} sx={{ mb: 1 }}>
                                     {CATEGORIES.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
