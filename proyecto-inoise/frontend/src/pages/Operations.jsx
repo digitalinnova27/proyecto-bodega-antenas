@@ -50,6 +50,12 @@ const initOpState = (totalItems) => ({
     f3: { scanned: [], done: false, incidents: [] },
     f4: { scanned: [], done: false, incidents: [] },
   },
+  // lostItems vive a nivel de EVENTO (no por fase): una vez que un artículo
+  // se registra como perdido/incidencia, queda excluido de "pendiente" en
+  // TODAS las fases siguientes automáticamente — antes cada fase tenía su
+  // propio `incidents`, así que un artículo perdido en F1 volvía a aparecer
+  // como pendiente en F2/F3/F4, obligando a reportarlo de nuevo cada vez.
+  lostItems: [],
   totalItems,
   forcedBy: null,
   forceLog: [],
@@ -60,6 +66,7 @@ const calcProgress = (opState) => {
   if (!opState) return 0
   const { phases, totalItems } = opState
   if (!totalItems) return 0
+  const lostCount = (opState.lostItems || []).length
   let pct = 0
   const phaseWeight = 25
   PHASES.forEach(ph => {
@@ -67,17 +74,17 @@ const calcProgress = (opState) => {
     if (p.done) {
       pct += phaseWeight
     } else if (opState.activePhase === ph.key) {
-      const ratio = p.scanned.length / totalItems
+      const ratio = Math.min((p.scanned.length + lostCount) / totalItems, 1)
       pct += ratio * phaseWeight
     }
   })
   return Math.min(Math.round(pct), 100)
 }
 
-const calcPhaseProgress = (phase, totalItems) => {
+const calcPhaseProgress = (phase, totalItems, lostCount = 0) => {
   if (!totalItems) return 0
   if (phase.done) return 100
-  return Math.min(Math.round((phase.scanned.length / totalItems) * 100), 100)
+  return Math.min(Math.round(((phase.scanned.length + lostCount) / totalItems) * 100), 100)
 }
 
 /* ─── Componente principal ──────────────────────────────────────────────────── */
@@ -102,11 +109,12 @@ export default function Operations() {
   const [openForceLog, setOpenForceLog] = React.useState(false)
   const [forceLogEvent, setForceLogEvent] = React.useState(null)
 
-  // Modal incidencia manual
+  // Modal incidencia manual — el estado/motivo viven DENTRO de
+  // IncidentDialogExternal (componente externo), no acá, para evitar que
+  // cada tecleo dispare un re-render del padre (ese era el bug que sólo
+  // dejaba escribir un carácter en el textarea de motivo).
   const [openIncident, setOpenIncident] = React.useState(false)
   const [incidentItem, setIncidentItem] = React.useState(null)
-  const [incidentReason, setIncidentReason] = React.useState('')
-  const [incidentState, setIncidentState] = React.useState('Perdido')
 
   // Simulación auto-scan
   const scanIntervalRef = React.useRef(null)
@@ -193,7 +201,8 @@ export default function Operations() {
     const items = getEventItems(ev)
     const op = opStates[eventId] || initOpState(items.length)
     const alreadyScanned = op.phases[phaseKey].scanned.map(s => s.id)
-    const pending = items.filter(i => !alreadyScanned.includes(i.id))
+    const lostIds = (op.lostItems || []).map(l => l.id)
+    const pending = items.filter(i => !alreadyScanned.includes(i.id) && !lostIds.includes(i.id))
 
     if (pending.length === 0) return
 
@@ -212,7 +221,7 @@ export default function Operations() {
         if (!current) return prev
         const phase = current.phases[phaseKey]
         const merged = [...phase.scanned, ...snapshot]
-        const done = merged.length + phase.incidents.length >= current.totalItems
+        const done = merged.length + (current.lostItems || []).length >= current.totalItems
         return {
           ...prev,
           [eventId]: {
@@ -267,7 +276,7 @@ export default function Operations() {
       const phase = op.phases[phaseKey]
       if (phase.scanned.find(s => s.id === item.id)) return op // ya escaneado
       const newScanned = [...phase.scanned, { ...item, scannedAt: new Date().toISOString() }]
-      const done = newScanned.length + phase.incidents.length >= op.totalItems
+      const done = newScanned.length + (op.lostItems || []).length >= op.totalItems
       return {
         ...op,
         phases: { ...op.phases, [phaseKey]: { ...phase, scanned: newScanned, done } }
@@ -334,34 +343,46 @@ export default function Operations() {
         forceLog: [...(op.forceLog || []), logEntry],
         phases: { ...op.phases, [phase]: { ...op.phases[phase], done: true, forcedClose: true } }
       }))
-      showSnack(`Fase "${PHASES.find(p => p.key === phase)?.label}" forzada por administrador.`, 'warning')
+      showSnack(`Fase "${PHASES.find(p => p.key === phase)?.label}" forzada. Si quedó algún artículo sin escanear, usa el botón "Incidencia" para registrarlo antes de avanzar.`, 'warning')
     }
     setOpenForce(false)
-    setOpenModal(false)
+    // OJO: el modal de la fase NO se cierra al forzar una fase individual —
+    // a propósito. Forzar el cierre solo desbloquea el avance, pero el/los
+    // artículo(s) que no se escanearon siguen sin resolver: el usuario debe
+    // poder pulsar "Incidencia" sobre ellos ahí mismo para registrar el
+    // motivo (flujo pedido: 1. forzar fase → 2. registrar incidencia del
+    // artículo faltante). Si se forzó el CICLO COMPLETO ('all') sí se
+    // cierra, porque ahí no queda nada más por hacer en ese modal.
+    if (phase === 'all') setOpenModal(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /* ── Registrar incidencia (artículo perdido/mantenimiento) ── */
-  const registerIncident = () => {
-    const { eventId, phaseKey } = incidentItem
+  /* ── Registrar incidencia (artículo perdido/mantenimiento) ──
+   * Se guarda a nivel de EVENTO (op.lostItems), no por fase: así el
+   * artículo queda excluido de "pendiente" automáticamente en todas las
+   * fases siguientes sin necesidad de volver a reportarlo. */
+  const registerIncident = (item, state, reason) => {
+    const { eventId, phaseKey, ...itemData } = item
     updateOp(eventId, op => {
-      const phase = op.phases[phaseKey]
-      const newIncidents = [...phase.incidents, {
-        ...incidentItem,
-        state: incidentState,
-        reason: incidentReason,
-        reportedAt: new Date().toISOString()
+      if ((op.lostItems || []).some(li => li.id === itemData.id)) return op // ya registrado
+      const newLost = [...(op.lostItems || []), {
+        ...itemData,
+        state,
+        reason,
+        reportedAt: new Date().toISOString(),
+        phaseKey, // fase en la que se detectó/reportó la pérdida
       }]
-      const done = phase.scanned.length + newIncidents.length >= op.totalItems
+      const phase = op.phases[phaseKey]
+      const done = phase.scanned.length + newLost.length >= op.totalItems
       return {
         ...op,
-        phases: { ...op.phases, [phaseKey]: { ...phase, incidents: newIncidents, done } }
+        lostItems: newLost,
+        phases: { ...op.phases, [phaseKey]: { ...phase, done } }
       }
     })
     // Simular notificación
-    showSnack(`Incidencia registrada: ${incidentItem.name} → ${incidentState}. Notificación enviada.`, 'warning')
+    showSnack(`Incidencia registrada: ${item.name} → ${state}. Notificación enviada.`, 'warning')
     setOpenIncident(false)
-    setIncidentReason('')
     setIncidentItem(null)
   }
 
@@ -378,8 +399,11 @@ export default function Operations() {
     if (filter === 'rental') return false // rentals shown separately below
     if (filter === 'pending') return ev.status === 'Programado' || ev.status === 'Confirmado'
     if (filter === 'active') return ev.status === 'En curso'
-    if (filter === 'done') return ev.status === 'Realizado'
-    return ev.status !== 'Suspendido'
+    if (filter === 'done') return ev.status === 'Realizado' || ev.status === 'Concluido'
+    // 'Concluido' = ya archivado en Historial de Eventos; no se muestra en
+    // la vista general de Operaciones (solo en el filtro "done"), porque ya
+    // no requiere ninguna acción operativa.
+    return ev.status !== 'Suspendido' && ev.status !== 'Concluido'
   }).sort((a, b) => a.date > b.date ? 1 : -1)
 
   /* ── Render de una card de evento ── */
@@ -387,9 +411,9 @@ export default function Operations() {
     const op = getOrInitOp(ev)
     const progress = calcProgress(op)
     const nextPhase = getNextPhase(op)
-    const isDone = ev.status === 'Realizado'
+    const isDone = ev.status === 'Realizado' || ev.status === 'Concluido'
     const totalItems = op.totalItems
-    const hasIncidents = PHASES.some(ph => op.phases[ph.key].incidents.length > 0)
+    const hasIncidents = (op.lostItems || []).length > 0
 
     return (
       <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: isDone ? 'success.dark' : hasIncidents ? 'warning.dark' : 'divider', opacity: isDone ? 0.85 : 1 }}>
@@ -496,7 +520,7 @@ export default function Operations() {
               >
                 {ph.short} · {ph.label.split(' ')[0]}
                 {phState.done && ' ✓'}
-                {phState.incidents.length > 0 && ' ⚠'}
+                {(op.lostItems || []).some(li => li.phaseKey === ph.key) && ' ⚠'}
               </Box>
             )
           })}
@@ -506,7 +530,11 @@ export default function Operations() {
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.8 }}>
           {PHASES.map(ph => {
             const phState = op.phases[ph.key]
-            const phasePct = calcPhaseProgress(phState, totalItems)
+            // Para el % de avance se cuentan TODOS los artículos perdidos
+            // (de cualquier fase) — ya nunca se van a escanear. Para el
+            // chip "X inc." solo se muestran los detectados EN esta fase.
+            const lostInThisPhase = (op.lostItems || []).filter(li => li.phaseKey === ph.key).length
+            const phasePct = calcPhaseProgress(phState, totalItems, (op.lostItems || []).length)
             const isActive = op.activePhase === ph.key
             return (
               <Box key={ph.key} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -524,8 +552,8 @@ export default function Operations() {
                 <Typography variant="caption" sx={{ minWidth: 32, textAlign: 'right', color: phState.done ? ph.color : 'text.secondary' }}>
                   {phState.done ? '25%' : isActive ? `${Math.round(phasePct / 4)}%` : '—'}
                 </Typography>
-                {phState.incidents.length > 0 && (
-                  <Chip label={`${phState.incidents.length} inc.`} size="small" color="warning" sx={{ fontSize: 10, height: 18 }} />
+                {lostInThisPhase > 0 && (
+                  <Chip label={`${lostInThisPhase} inc.`} size="small" color="warning" sx={{ fontSize: 10, height: 18 }} />
                 )}
                 {phState.forcedClose && (
                   <Chip label="forzado" size="small" color="error" variant="outlined" sx={{ fontSize: 10, height: 18 }} />
@@ -542,44 +570,6 @@ export default function Operations() {
   /* ── Modal forzar cierre ── */
   /* ForceModal y ForceLogModal se renderizan como componentes externos al final del JSX
      para evitar re-renders del padre en cada keystroke */
-
-  /* ── Modal incidencia ── */
-  const IncidentModal = () => (
-    <Dialog open={openIncident} onClose={() => setOpenIncident(false)} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ color: 'warning.main', display: 'flex', alignItems: 'center', gap: 1 }}>
-        <WarningAmberIcon /> Registrar incidencia
-      </DialogTitle>
-      <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
-        {incidentItem && (
-          <Alert severity="info" sx={{ py: 0.5 }}>
-            <Typography variant="caption"><strong>{incidentItem.name}</strong> · {incidentItem.rfid}</Typography>
-          </Alert>
-        )}
-        <TextField
-          select label="Estado del artículo" value={incidentState}
-          onChange={e => setIncidentState(e.target.value)}
-          SelectProps={{ native: true }}
-        >
-          <option value="Perdido">Perdido</option>
-          <option value="En Mantenimiento">En Mantenimiento</option>
-        </TextField>
-        <TextField
-          fullWidth label="Descripción de la incidencia" multiline minRows={2}
-          value={incidentReason} onChange={e => setIncidentReason(e.target.value)}
-          placeholder="Ej: No se encontró al cargar el camión..."
-        />
-        <Alert severity="warning" sx={{ py: 0.5 }}>
-          Se enviará notificación automática vía WhatsApp y correo electrónico.
-        </Alert>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={() => setOpenIncident(false)}>Cancelar</Button>
-        <Button variant="contained" color="warning" disabled={!incidentReason.trim()} onClick={registerIncident}>
-          Registrar y notificar
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
 
   /* ── Render principal ── */
   return (
@@ -686,7 +676,12 @@ export default function Operations() {
         opState={forceLogEvent}
         onClose={() => setOpenForceLog(false)}
       />
-      <IncidentModal />
+      <IncidentDialogExternal
+        open={openIncident}
+        item={incidentItem}
+        onClose={() => setOpenIncident(false)}
+        onConfirm={registerIncident}
+      />
 
       <Snackbar
         open={snack.open} autoHideDuration={4000}
@@ -724,7 +719,17 @@ function useRfidScanMatcher({ open, allItems, isAlreadyHandled, onValidScan, not
   const { isConnected, lastScan, unknownTags, clearLastScan } = useRfidSocket()
   const [scanAlert, setScanAlert] = React.useState(null) // { severity, tone, msg }
   const lastUnknownRef = React.useRef(null)
-  const wasOpenRef = React.useRef(open)
+  const lastSeenScanRef = React.useRef(null) // huella (epc+timestamp) del último lastScan ya "visto" al abrir
+  // OJO: wasOpenRef arranca SIEMPRE en false (no en `open`). Este modal se
+  // monta directamente con open=true (el padre solo lo renderiza cuando ya
+  // está abierto), así que la transición cerrado→abierto NUNCA ocurre dentro
+  // de este componente — si inicializáramos wasOpenRef con `open`, el efecto
+  // de abajo nunca tomaría línea base en el primer render y cualquier scan
+  // viejo que ya estuviera en el socket compartido (de otra pantalla, de
+  // antes de abrir este modal) se trataría como nuevo. Arrancando en false,
+  // el primer render SIEMPRE cuenta como "se acaba de abrir" y se toma la
+  // línea base correctamente.
+  const wasOpenRef = React.useRef(false)
 
   // Auto-ocultar la alerta luego de unos segundos
   React.useEffect(() => {
@@ -733,22 +738,25 @@ function useRfidScanMatcher({ open, allItems, isAlreadyHandled, onValidScan, not
     return () => clearTimeout(t)
   }, [scanAlert])
 
-  // BUG FIX: el hook de socket no se desmonta al cerrar el modal, así que
-  // `unknownTags` puede traer arrastrado un EPC desconocido de ANTES de abrir
-  // este modal (de una sesión/simulación anterior). Sin esto, al abrir el
-  // modal el efecto de abajo cree que ese EPC viejo es "nuevo" y dispara la
-  // alerta de "Sticker no registrado" sin que el usuario haya pasado nada.
-  // Por eso, al pasar de cerrado→abierto, tomamos como línea base el último
-  // EPC desconocido YA existente, para que solo se avise de EPCs que lleguen
+  // BUG FIX: useRfidSocket ahora comparte UNA sola conexión para toda la
+  // app (ver RfidSocketContext), así que `unknownTags` y `lastScan` pueden
+  // traer arrastrado un EPC de ANTES de abrir este modal — de otra pantalla,
+  // de una simulación anterior en la misma sesión, etc. Sin esto, al abrir
+  // el modal los efectos de abajo creen que ese EPC/scan viejo es "nuevo" y
+  // disparan la alerta de "Sticker no registrado" (o "Registrado
+  // correctamente") sin que el usuario haya pasado nada. Por eso, en el
+  // primer render (y en cualquier transición cerrado→abierto) tomamos como
+  // línea base lo que YA existía, para que solo se avise de lo que llegue
   // de ahora en adelante.
   React.useEffect(() => {
     if (open && !wasOpenRef.current) {
       lastUnknownRef.current = unknownTags && unknownTags.length > 0
         ? unknownTags[unknownTags.length - 1]
         : null
+      lastSeenScanRef.current = lastScan ? `${lastScan.epc}-${lastScan.timestamp}` : null
     }
     wasOpenRef.current = open
-  }, [open, unknownTags])
+  }, [open, unknownTags, lastScan])
 
   // ── 1) ROJO: sticker no registrado ──
   React.useEffect(() => {
@@ -766,6 +774,9 @@ function useRfidScanMatcher({ open, allItems, isAlreadyHandled, onValidScan, not
   // ── Sticker resuelto por el bridge (lastScan.sku = unitId) ──
   React.useEffect(() => {
     if (!lastScan || !open) return
+    const scanKey = `${lastScan.epc}-${lastScan.timestamp}`
+    if (lastSeenScanRef.current === scanKey) return // ya estaba ahí cuando se abrió este modal
+    lastSeenScanRef.current = scanKey
     const unitId = lastScan.sku
     const item = allItems.find(it => it.id === unitId)
 
@@ -1237,7 +1248,7 @@ const OpModalExternal = React.memo(function OpModalExternal({
   const { eventId, phase } = activeModal
   const ev = events.find(e => e.id === eventId)
   if (!ev) return null
-  const op = opStates[eventId] || { phases: { f1: { scanned: [], done: false, incidents: [] }, f2: { scanned: [], done: false, incidents: [] }, f3: { scanned: [], done: false, incidents: [] }, f4: { scanned: [], done: false, incidents: [] } }, totalItems: 0 }
+  const op = opStates[eventId] || { phases: { f1: { scanned: [], done: false, incidents: [] }, f2: { scanned: [], done: false, incidents: [] }, f3: { scanned: [], done: false, incidents: [] }, f4: { scanned: [], done: false, incidents: [] } }, totalItems: 0, lostItems: [] }
   const phaseObj = PHASES.find(p => p.key === phase)
   const phState = op.phases[phase]
 
@@ -1261,9 +1272,13 @@ const OpModalExternal = React.memo(function OpModalExternal({
   })
 
   const scannedIds = phState.scanned.map(s => s.id)
-  const incidentIds = phState.incidents.map(i => i.id)
+  // incidentIds vive a nivel de EVENTO (op.lostItems), no por fase — así un
+  // artículo perdido en una fase anterior sigue excluido de "pendiente" acá.
+  const incidentIds = (op.lostItems || []).map(i => i.id)
   const pendingItems = allItems.filter(i => !scannedIds.includes(i.id) && !incidentIds.includes(i.id))
-  const phasePct = op.totalItems ? Math.min(Math.round(((phState.scanned.length / op.totalItems) * 100)), 100) : 0
+  const phasePct = op.totalItems
+    ? Math.min(Math.round(((phState.scanned.length + incidentIds.length) / op.totalItems) * 100), 100)
+    : 0
   const isActive = op.activePhase === phase
 
   // ── Modal "Elementos pasados": aparece una vez al llegar a 100% ──
@@ -1314,17 +1329,17 @@ const OpModalExternal = React.memo(function OpModalExternal({
           <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
             <Typography variant="body2" color="text.secondary">
               {phState.scanned.length} de {op.totalItems} artículos escaneados
-              {phState.incidents.length > 0 && ` · ${phState.incidents.length} con incidencia`}
+              {incidentIds.length > 0 && ` · ${incidentIds.length} con incidencia`}
             </Typography>
             <Typography variant="body2" fontWeight={600} sx={{ color: phaseObj.color }}>{phasePct}%</Typography>
           </Box>
           <LinearProgress variant="determinate" value={phasePct}
             sx={{ height: 12, borderRadius: 6, '& .MuiLinearProgress-bar': { bgcolor: phaseObj.color } }} />
         </Box>
-        {phState.incidents.length > 0 && (
+        {(op.lostItems || []).length > 0 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             <Typography variant="caption" fontWeight={600}>Artículos con incidencia:</Typography>
-            {phState.incidents.map((inc, i) => (
+            {(op.lostItems || []).map((inc, i) => (
               <Box key={i} sx={{ fontSize: 12 }}>• {inc.name} ({inc.rfid}) → <strong>{inc.state}</strong>: {inc.reason}</Box>
             ))}
           </Alert>
@@ -1362,25 +1377,28 @@ const OpModalExternal = React.memo(function OpModalExternal({
           <List dense disablePadding>
             {allItems.map(item => {
               const scanned = scannedIds.includes(item.id)
-              const incident = phState.incidents.find(i => i.id === item.id)
+              const incident = (op.lostItems || []).find(i => i.id === item.id)
               return (
                 <ListItem key={item.id} sx={{
                   py: 0.5, px: 1, mb: 0.3, borderRadius: 1,
                   bgcolor: scanned ? 'rgba(99,153,34,0.08)' : incident ? 'rgba(186,117,23,0.1)' : 'background.paper',
                   border: '1px solid', borderColor: scanned ? '#639922' : incident ? '#BA7517' : 'divider'
                 }}
-                  secondaryAction={!phState.done && (
+                  secondaryAction={!scanned && !incident && (
                     <Box sx={{ display: 'flex', gap: 0.5 }}>
-                      {!scanned && !incident && op.scanMode === 'manual' && (
+                      {!phState.done && op.scanMode === 'manual' && (
                         <Button size="small" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
                           onClick={() => onManualScan(eventId, phase, item)}>Marcar</Button>
                       )}
-                      {!scanned && !incident && (
-                        <Button size="small" color="warning" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
-                          onClick={() => onIncidentOpen({ ...item, eventId, phaseKey: phase })}>
-                          Incidencia
-                        </Button>
-                      )}
+                      {/* El botón Incidencia queda visible AUNQUE la fase ya
+                          esté forzada/cerrada (phState.done) — así, tras
+                          "Forzar fase", el usuario todavía puede registrar
+                          el motivo del artículo faltante (flujo: 1. forzar
+                          fase → 2. registrar incidencia). */}
+                      <Button size="small" color="warning" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
+                        onClick={() => onIncidentOpen({ ...item, eventId, phaseKey: phase })}>
+                        Incidencia
+                      </Button>
                     </Box>
                   )}>
                   <ListItemIcon sx={{ minWidth: 28 }}>
@@ -1404,7 +1422,7 @@ const OpModalExternal = React.memo(function OpModalExternal({
         <Button onClick={onClose}>Cerrar</Button>
         {!phState.done && (
           <Button variant="contained" color="success"
-            disabled={pendingItems.length > 0 && phState.incidents.length === 0}
+            disabled={pendingItems.length > 0}
             onClick={() => onCompletePhase(eventId, phase)}>
             Completar fase ({phasePct}%)
           </Button>
@@ -1426,7 +1444,7 @@ const OpModalExternal = React.memo(function OpModalExternal({
           orderNumber: ev.orderNumber,
           name: ev.name,
           totalItems: op.totalItems,
-          incidentsCount: Object.values(op.phases).reduce((s, p) => s + (p.incidents?.length || 0), 0)
+          incidentsCount: (op.lostItems || []).length
         }}
         onDismiss={() => setShowCloseModal(false)}
         onSave={() => { setShowCloseModal(false); onFinalizeEvent(eventId) }}
@@ -1492,6 +1510,68 @@ const ForceDialogExternal = React.memo(function ForceDialogExternal({ open, targ
           onClick={handleConfirm}
         >
           Confirmar forzado
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * IncidentDialogExternal — componente EXTERNO al padre, mismo patrón que
+ * ForceDialogExternal. Antes "Registrar incidencia" era un componente
+ * inline redefinido en cada render de Operations, así que React lo
+ * remontaba (perdiendo el foco del textarea) en CADA tecleo — por eso el
+ * motivo solo dejaba escribir un carácter. Acá el estado y motivo viven
+ * LOCALES a este componente y solo suben al padre al confirmar.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+const IncidentDialogExternal = React.memo(function IncidentDialogExternal({ open, item, onClose, onConfirm }) {
+  const [state, setState] = React.useState('Perdido')
+  const [reason, setReason] = React.useState('')
+
+  // Limpiar al cerrar
+  React.useEffect(() => {
+    if (!open) { setState('Perdido'); setReason('') }
+  }, [open])
+
+  const handleConfirm = () => {
+    onConfirm(item, state, reason)
+    setState('Perdido')
+    setReason('')
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle sx={{ color: 'warning.main', display: 'flex', alignItems: 'center', gap: 1 }}>
+        <WarningAmberIcon /> Registrar incidencia
+      </DialogTitle>
+      <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+        {item && (
+          <Alert severity="info" sx={{ py: 0.5 }}>
+            <Typography variant="caption"><strong>{item.name}</strong> · {item.rfid}</Typography>
+          </Alert>
+        )}
+        <TextField
+          select label="Estado del artículo" value={state}
+          onChange={e => setState(e.target.value)}
+          SelectProps={{ native: true }}
+        >
+          <option value="Perdido">Perdido</option>
+          <option value="En Mantenimiento">En Mantenimiento</option>
+        </TextField>
+        <TextField
+          fullWidth label="Descripción de la incidencia" multiline minRows={2}
+          value={reason} onChange={e => setReason(e.target.value)}
+          placeholder="Ej: No se encontró al cargar el camión..."
+          autoFocus
+        />
+        <Alert severity="warning" sx={{ py: 0.5 }}>
+          Se enviará notificación automática vía WhatsApp y correo electrónico.
+        </Alert>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancelar</Button>
+        <Button variant="contained" color="warning" disabled={!reason.trim()} onClick={handleConfirm}>
+          Registrar y notificar
         </Button>
       </DialogActions>
     </Dialog>

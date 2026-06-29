@@ -62,6 +62,18 @@ function getDb() {
     return db
 }
 
+/* Agrega una columna a una tabla existente si todavía no existe — SQLite no
+ * soporta "ADD COLUMN IF NOT EXISTS", así que se revisa pragma table_info()
+ * a mano. Usado para sumar el flujo de aprobación de eliminación
+ * (pending_delete) a bases de datos que ya existían de versiones previas
+ * sin romper los datos que el usuario ya tenía guardados. */
+function ensureColumn(db, table, column, definition) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+    if (!cols.some(c => c.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+    }
+}
+
 function runMigrations(db) {
     db.exec(`
     /* ── Inventario ───────────────────────────────────────────────── */
@@ -221,6 +233,15 @@ function runMigrations(db) {
       user         TEXT
     );
   `)
+
+    // Columnas del flujo de aprobación de eliminación (operador solicita,
+    // admin aprueba/rechaza) — sumadas a productos y eventos.
+    ensureColumn(db, 'products', 'pending_delete', 'INTEGER DEFAULT 0')
+    ensureColumn(db, 'products', 'pending_delete_by', 'TEXT')
+    ensureColumn(db, 'products', 'pending_delete_at', 'TEXT')
+    ensureColumn(db, 'events', 'pending_delete', 'INTEGER DEFAULT 0')
+    ensureColumn(db, 'events', 'pending_delete_by', 'TEXT')
+    ensureColumn(db, 'events', 'pending_delete_at', 'TEXT')
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -241,11 +262,12 @@ function saveProducts(products) {
     const run = db.transaction((list) => {
         db.prepare('DELETE FROM units').run()
         db.prepare('DELETE FROM products').run()
-        const insP = db.prepare(`INSERT INTO products (id, name, sku, rfid_base, category, total, description)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        const insP = db.prepare(`INSERT INTO products (id, name, sku, rfid_base, category, total, description, pending_delete, pending_delete_by, pending_delete_at)
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         const insU = db.prepare(`INSERT INTO units (id, product_id, rfid, state) VALUES (?, ?, ?, ?)`)
         for (const p of list) {
-            insP.run(p.id, p.name, p.sku ?? null, p.rfidBase ?? null, p.category ?? null, p.total ?? 0, p.description ?? null)
+            insP.run(p.id, p.name, p.sku ?? null, p.rfidBase ?? null, p.category ?? null, p.total ?? 0, p.description ?? null,
+                p.pendingDelete ? 1 : 0, p.pendingDeleteBy ?? null, p.pendingDeleteAt ?? null)
             for (const u of p.units || []) {
                 insU.run(u.id, p.id, u.rfid ?? null, u.state || 'Disponible')
             }
@@ -266,6 +288,9 @@ function loadProducts() {
         category: p.category,
         total: p.total,
         description: p.description,
+        pendingDelete: !!p.pending_delete,
+        pendingDeleteBy: p.pending_delete_by,
+        pendingDeleteAt: p.pending_delete_at,
         units: units
             .filter(u => u.product_id === p.id)
             .map(u => ({ id: u.id, rfid: u.rfid, state: u.state }))
@@ -279,12 +304,13 @@ function saveEvents(events) {
         db.prepare('DELETE FROM event_assignment_units').run()
         db.prepare('DELETE FROM event_assignments').run()
         db.prepare('DELETE FROM events').run()
-        const insE = db.prepare(`INSERT INTO events (id, order_number, name, date, location, notes, status, created_at)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        const insE = db.prepare(`INSERT INTO events (id, order_number, name, date, location, notes, status, created_at, pending_delete, pending_delete_by, pending_delete_at)
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         const insA = db.prepare(`INSERT INTO event_assignments (event_id, product_id, qty) VALUES (?, ?, ?)`)
         const insU = db.prepare(`INSERT INTO event_assignment_units (assignment_id, unit_id) VALUES (?, ?)`)
         for (const e of list) {
-            insE.run(e.id, e.orderNumber ?? null, e.name, e.date ?? null, e.location ?? null, e.notes ?? null, e.status || 'Programado', e.createdAt ?? null)
+            insE.run(e.id, e.orderNumber ?? null, e.name, e.date ?? null, e.location ?? null, e.notes ?? null, e.status || 'Programado', e.createdAt ?? null,
+                e.pendingDelete ? 1 : 0, e.pendingDeleteBy ?? null, e.pendingDeleteAt ?? null)
             for (const a of e.assignments || []) {
                 const { lastInsertRowid } = insA.run(e.id, a.productId, a.qty || 0)
                 for (const unitId of a.unitIds || []) {
@@ -310,6 +336,9 @@ function loadEvents() {
         notes: e.notes,
         status: e.status,
         createdAt: e.created_at,
+        pendingDelete: !!e.pending_delete,
+        pendingDeleteBy: e.pending_delete_by,
+        pendingDeleteAt: e.pending_delete_at,
         assignments: assignments
             .filter(a => a.event_id === e.id)
             .map(a => ({

@@ -53,8 +53,8 @@ const isDev = !app.isPackaged
 
 function createSplash() {
   splashWindow = new BrowserWindow({
-    width: 420,
-    height: 300,
+    width: 440,
+    height: 380,
     frame: false,
     transparent: false,
     resizable: false,

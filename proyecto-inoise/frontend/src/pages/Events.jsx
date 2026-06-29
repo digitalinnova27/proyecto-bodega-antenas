@@ -23,7 +23,8 @@ const STATUS_COLORS = {
   Programado: 'primary',
   Confirmado: 'success',
   Suspendido: 'error',
-  Realizado: 'default'
+  Realizado: 'default',
+  Concluido: 'success'
 }
 
 const ASSIGN_PAGE_SIZE = 10
@@ -33,7 +34,7 @@ const AssignPanel = React.memo(function AssignPanel({
   assignCategory, setAssignCategory,
   assignPage, setAssignPage,
   assignmentsDraft, totalAssigned,
-  availableForDraft, setQty
+  availableForDraft, physicalAvailableForDraft, setQty
 }) {
   const filtered = products.filter(p =>
     (!assignCategory || p.category === assignCategory) &&
@@ -63,7 +64,12 @@ const AssignPanel = React.memo(function AssignPanel({
         </Alert>
       )}
       {paginated.map(p => {
+        // maxAvail = solo unidades CON sticker vinculado — es lo único que
+        // se puede asignar a un evento (así no se crean eventos con
+        // equipos "fantasma" que luego no se pueden rastrear por RFID).
         const maxAvail = availableForDraft(p)
+        const physicalAvail = physicalAvailableForDraft ? physicalAvailableForDraft(p) : maxAvail
+        const unlinkedCount = Math.max(physicalAvail - maxAvail, 0)
         const current = assignmentsDraft.find(a => a.productId === p.id)?.qty || 0
         const noStock = (p.total || 0) === 0
         return (
@@ -80,9 +86,12 @@ const AssignPanel = React.memo(function AssignPanel({
                 {noStock ? (
                   <span style={{ color: '#f44336', fontWeight: 600 }}>Sin stock</span>
                 ) : (
-                  <span style={{ color: maxAvail > 0 ? '#66FCF1' : '#f44336' }}>
-                    {maxAvail} disponible{maxAvail !== 1 ? 's' : ''}
+                  <span style={{ color: maxAvail === 0 ? '#f44336' : '#3DDC84', fontWeight: 600 }}>
+                    {maxAvail} disponible{maxAvail !== 1 ? 's' : ''} con sticker
                   </span>
+                )}
+                {!noStock && unlinkedCount > 0 && (
+                  <span style={{ color: '#f44336' }}> · {unlinkedCount} sin sticker (no asignable{unlinkedCount !== 1 ? 's' : ''})</span>
                 )}
               </Typography>
             </Box>
@@ -108,7 +117,10 @@ const AssignPanel = React.memo(function AssignPanel({
 
 export default function Events() {
   const { role } = useAuth()
-  const { products, events, getAvailableQty, getAvailableQtyForEvent, createEvent, updateEvent, deleteEvent } = useInventory()
+  const {
+    products, events, getAvailableQty, getAvailableQtyForEvent, getLinkedAvailableQty,
+    createEvent, updateEvent, deleteEvent, requestDeleteEvent, cancelDeleteEvent
+  } = useInventory()
 
   const [search, setSearch] = React.useState('')
   const [orderSearch, setOrderSearch] = React.useState('')
@@ -133,9 +145,22 @@ export default function Events() {
 
   const getProduct = id => products.find(p => p.id === id)
 
+  // Disponibilidad ASIGNABLE: solo unidades con sticker RFID vinculado.
+  // No se puede asignar una unidad sin sticker a un evento — si no tiene
+  // sticker no hay forma de rastrearla por RFID en Operaciones, y eso
+  // permitiría crear eventos con equipos "asignados" que en realidad no
+  // existen vinculados (información falsa).
   const availableForDraft = React.useCallback((product) => {
     // Si estamos editando un evento existente, excluimos su propia reserva
     // y consultamos disponibilidad para la fecha específica del evento
+    const forDate = form.date || new Date().toISOString().slice(0, 10)
+    return getLinkedAvailableQty(product.id, forDate, currentEvent?.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.date, currentEvent, getLinkedAvailableQty])
+
+  // Disponibilidad FÍSICA total (incluye unidades sin sticker) — solo para
+  // mostrar el aviso informativo de "X sin sticker, no asignables".
+  const physicalAvailableForDraft = React.useCallback((product) => {
     const forDate = form.date || new Date().toISOString().slice(0, 10)
     if (currentEvent) {
       return getAvailableQtyForEvent(product.id, currentEvent.id, forDate)
@@ -163,9 +188,9 @@ export default function Events() {
     assignCategory, setAssignCategory,
     assignPage, setAssignPage,
     assignmentsDraft, totalAssigned,
-    availableForDraft, setQty
+    availableForDraft, physicalAvailableForDraft, setQty
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [products, assignSkuSearch, assignCategory, assignPage, assignmentsDraft, totalAssigned, availableForDraft, setQty])
+  }), [products, assignSkuSearch, assignCategory, assignPage, assignmentsDraft, totalAssigned, availableForDraft, physicalAvailableForDraft, setQty])
 
   const filteredProductsByCategory = (cat) => products.filter(p =>
     (!cat || p.category === cat) &&
@@ -227,14 +252,29 @@ export default function Events() {
     setSnack({ open: true, msg: 'Equipos actualizados. Inventario sincronizado.', severity: 'success' })
   }
 
-  /* ELIMINAR EVENTO */
-  const openDeleteModal = (ev, e) => {
-    e.stopPropagation(); setEventToDelete(ev); setOpenDeleteConfirm(true)
+  /* ELIMINAR EVENTO — flujo de aprobación.
+   * 'direct'  → admin elimina de inmediato (su botón "Deshacer" de siempre).
+   * 'request' → operador solo solicita; el evento queda marcado en rojo
+   *             hasta que un admin lo apruebe o lo rechace.
+   * 'approve' → admin aprueba una solicitud ya pendiente (elimina de verdad). */
+  const [deleteMode, setDeleteMode] = React.useState('direct')
+  const openDeleteModal = (ev, e, mode = 'direct') => {
+    e.stopPropagation(); setEventToDelete(ev); setDeleteMode(mode); setOpenDeleteConfirm(true)
   }
   const handleDeleteConfirm = () => {
-    deleteEvent(eventToDelete.id)
+    if (deleteMode === 'request') {
+      requestDeleteEvent(eventToDelete.id, 'Operador')
+      setSnack({ open: true, msg: 'Solicitud de eliminación enviada. Un administrador debe aprobarla.', severity: 'info' })
+    } else {
+      deleteEvent(eventToDelete.id)
+      setSnack({ open: true, msg: 'Evento eliminado. Inventario restaurado a disponible.', severity: 'warning' })
+    }
     setOpenDeleteConfirm(false); setEventToDelete(null); setOpenDetail(false)
-    setSnack({ open: true, msg: 'Evento eliminado. Inventario restaurado a disponible.', severity: 'warning' })
+  }
+  const handleRejectDelete = (ev, e) => {
+    e.stopPropagation()
+    cancelDeleteEvent(ev.id)
+    setSnack({ open: true, msg: 'Solicitud de eliminación rechazada.', severity: 'success' })
   }
 
   /* PDF */
@@ -263,9 +303,19 @@ export default function Events() {
     window.open(`mailto:?subject=${encodeURIComponent(`Evento ${ev.orderNumber} - ${ev.name}`)}&body=${encodeURIComponent(buildShareText(ev))}`, '_blank')
   }
 
-  const filteredEvents = events.filter(e =>
-    !search || e.name.toLowerCase().includes(search.toLowerCase()) || e.orderNumber?.toLowerCase().includes(search.toLowerCase())
-  )
+  // Próximos/en curso primero; los Concluidos (ya pasaron por todas las
+  // fases de Operaciones) quedan al final, pero siguen visibles acá —
+  // antes desaparecían por completo al cerrarse.
+  const filteredEvents = events
+    .filter(e =>
+      !search || e.name.toLowerCase().includes(search.toLowerCase()) || e.orderNumber?.toLowerCase().includes(search.toLowerCase())
+    )
+    .sort((a, b) => {
+      const aDone = a.status === 'Concluido' ? 1 : 0
+      const bDone = b.status === 'Concluido' ? 1 : 0
+      if (aDone !== bDone) return aDone - bDone
+      return a.date > b.date ? 1 : -1
+    })
 
   const EventDetailContent = ({ ev }) => {
     if (!ev) return null
@@ -347,25 +397,55 @@ export default function Events() {
             {filteredEvents.map((ev, idx) => (
               <React.Fragment key={ev.id}>
                 {idx > 0 && <Divider />}
-                <ListItem sx={{ py: 1.5 }}
+                <ListItem sx={{
+                  py: 1.5,
+                  ...(ev.pendingDelete ? {
+                    bgcolor: 'rgba(244,67,54,0.08)',
+                    borderLeft: '3px solid #f44336'
+                  } : {})
+                }}
                   secondaryAction={
-                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                       <Tooltip title="Descargar PDF"><span>
                         <Button size="small" variant="outlined" color="primary"
                           onClick={() => handleDownloadPDF(ev)} disabled={pdfLoading}
                           startIcon={pdfLoading ? <CircularProgress size={14} /> : <PictureAsPdfIcon />}>PDF</Button>
                       </span></Tooltip>
                       <Button size="small" variant="outlined" onClick={() => openDetailModal(ev)}>Detalle</Button>
-                      {role === 'admin' && (
+
+                      {role === 'admin' && !ev.pendingDelete && ev.status !== 'Concluido' && (
                         <>
                           <Button size="small" variant="outlined" onClick={() => openAssignModal(ev)}>Equipos</Button>
                           <Tooltip title="Deshacer evento y restaurar inventario">
                             <Button size="small" variant="outlined" color="error"
-                              startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e)}>
+                              startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'direct')}>
                               Deshacer
                             </Button>
                           </Tooltip>
                         </>
+                      )}
+
+                      {role === 'admin' && ev.pendingDelete && (
+                        <>
+                          <Tooltip title={`Solicitado por ${ev.pendingDeleteBy || 'Operador'}`}>
+                            <Button size="small" variant="contained" color="error"
+                              startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'approve')}>
+                              Aprobar y eliminar
+                            </Button>
+                          </Tooltip>
+                          <Button size="small" variant="outlined" onClick={(e) => handleRejectDelete(ev, e)}>
+                            Rechazar
+                          </Button>
+                        </>
+                      )}
+
+                      {role === 'operator' && !ev.pendingDelete && ev.status !== 'Concluido' && (
+                        <Tooltip title="Enviar solicitud de eliminación a un administrador">
+                          <Button size="small" variant="outlined" color="error"
+                            startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'request')}>
+                            Solicitar eliminación
+                          </Button>
+                        </Tooltip>
                       )}
                     </Box>
                   }>
@@ -375,6 +455,10 @@ export default function Events() {
                         <Typography variant="body1" fontWeight={600}>{ev.name}</Typography>
                         <Chip label={ev.orderNumber} size="small" color="primary" variant="outlined" sx={{ fontSize: 10 }} />
                         <Chip label={ev.status} size="small" color={STATUS_COLORS[ev.status] || 'default'} />
+                        {ev.pendingDelete && (
+                          <Chip label="Pendiente de eliminación" size="small" color="error"
+                            sx={{ fontWeight: 600 }} />
+                        )}
                       </Box>
                     }
                     secondary={
@@ -440,20 +524,35 @@ export default function Events() {
       {/* MODAL CONFIRMAR ELIMINACIÓN */}
       <Dialog open={openDeleteConfirm} onClose={() => setOpenDeleteConfirm(false)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ color: 'error.main', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <DeleteIcon /> Deshacer Evento
+          <DeleteIcon /> {deleteMode === 'request' ? 'Solicitar eliminación' : 'Deshacer Evento'}
         </DialogTitle>
         <DialogContent>
-          <Typography variant="body1" gutterBottom>
-            ¿Estás seguro de eliminar <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})?
-          </Typography>
-          <Alert severity="warning" sx={{ mt: 1 }}>
-            Todos los equipos reservados volverán a estar <strong>Disponibles</strong> en el inventario.
-          </Alert>
+          {deleteMode === 'request' ? (
+            <>
+              <Typography variant="body1" gutterBottom>
+                ¿Enviar solicitud de eliminación para <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})?
+              </Typography>
+              <Alert severity="info" sx={{ mt: 1 }}>
+                El evento quedará marcado en rojo hasta que un administrador la apruebe o la rechace. No se elimina todavía.
+              </Alert>
+            </>
+          ) : (
+            <>
+              <Typography variant="body1" gutterBottom>
+                {deleteMode === 'approve' ? '¿Aprobar la eliminación de ' : '¿Estás seguro de eliminar '}
+                <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})
+                {deleteMode === 'approve' ? '?' : '?'}
+              </Typography>
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                Todos los equipos reservados volverán a estar <strong>Disponibles</strong> en el inventario.
+              </Alert>
+            </>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenDeleteConfirm(false)}>Cancelar</Button>
           <Button variant="contained" color="error" startIcon={<DeleteIcon />} onClick={handleDeleteConfirm}>
-            Eliminar y restaurar inventario
+            {deleteMode === 'request' ? 'Enviar solicitud' : 'Eliminar y restaurar inventario'}
           </Button>
         </DialogActions>
       </Dialog>

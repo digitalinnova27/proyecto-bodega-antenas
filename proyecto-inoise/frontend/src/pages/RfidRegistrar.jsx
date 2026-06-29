@@ -4,7 +4,7 @@ import {
     Chip, Alert, Divider, CircularProgress, InputAdornment,
     Table, TableHead, TableRow, TableCell, TableBody, Fade, List,
     ListItem, ListItemText, Dialog, DialogTitle, DialogContent, IconButton,
-    Autocomplete
+    Autocomplete, Snackbar, LinearProgress
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
 import LinkIcon from '@mui/icons-material/Link'
@@ -16,6 +16,7 @@ import CancelIcon from '@mui/icons-material/Cancel'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 import CloseIcon from '@mui/icons-material/Close'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
+import LibraryAddIcon from '@mui/icons-material/LibraryAdd'
 import { useInventory } from '../context/InventoryContext'
 import { useRfidSocket } from '../hooks/useRfidSocket'
 import { useAuth } from '../context/AuthContext'
@@ -33,7 +34,16 @@ export default function RfidRegistrar() {
     const { role } = useAuth()
     const currentUser = role === 'admin' ? 'Administrador' : 'Operador'
     const { isConnected, lastScan, unknownTags, clearLastScan } = useRfidSocket()
-    const lastUnknownRef = React.useRef(null)
+    // BUG FIX: useRfidSocket ahora comparte UNA sola conexión para toda la
+    // app (ver RfidSocketContext), así que al entrar a esta pantalla
+    // `lastScan`/`unknownTags` pueden traer arrastrado un scan de ANTES de
+    // abrir esta página (de Operaciones, de una vinculación anterior en la
+    // misma sesión, etc.). Sin esto, el primer render procesaba ese scan
+    // viejo como si el operador recién hubiera pasado un sticker. Por eso
+    // se inicializan estos refs con el valor YA presente al montar, así
+    // solo se reacciona a lo que llegue de ahora en adelante.
+    const lastUnknownRef = React.useRef(unknownTags && unknownTags.length > 0 ? unknownTags[unknownTags.length - 1] : null)
+    const lastSeenScanRef = React.useRef(lastScan ? `${lastScan.epc}-${lastScan.timestamp}` : null)
 
     const [step, setStep] = React.useState('waiting')
     const [currentEpc, setCurrentEpc] = React.useState('')
@@ -47,6 +57,23 @@ export default function RfidRegistrar() {
 
     const [search, setSearch] = React.useState('')
     const [selectedProd, setSelectedProd] = React.useState('')
+
+    /* ────────────────────────────────────────────────────────────────────
+     * MODO POR LOTE — vincular varios stickers al MISMO producto sin tener
+     * que volver a elegirlo cada vez. El operador elige el producto una
+     * sola vez y luego cada sticker escaneado se vincula automáticamente
+     * a la siguiente unidad disponible de ese producto.
+     * ──────────────────────────────────────────────────────────────────── */
+    const [mode, setMode] = React.useState('individual') // 'individual' | 'bulk'
+    const [bulkSearch, setBulkSearch] = React.useState('')
+    const [bulkProductId, setBulkProductId] = React.useState('')
+    const [bulkNotice, setBulkNotice] = React.useState({ open: false, severity: 'success', msg: '' })
+    // Resalta por unos segundos la unidad que se acaba de vincular en la
+    // grilla del lote, y deja un registro visible (no solo el snackbar
+    // que desaparece) de cuál fue la última unidad vinculada.
+    const [justLinkedUnitId, setJustLinkedUnitId] = React.useState(null)
+    const justLinkedTimerRef = React.useRef(null)
+    const [lastBulkLinked, setLastBulkLinked] = React.useState(null) // { unitId, epc, at }
 
     // Familias de SKU existentes (ej. "ILU", "AUD") para sugerir mientras se escribe
     const skuFamilies = React.useMemo(() => {
@@ -62,16 +89,45 @@ export default function RfidRegistrar() {
 
     const [alreadyLinked, setAlreadyLinked] = React.useState(null) // { epc, productName, unitLabel }
 
-    // Captura de scan RFID
-    React.useEffect(() => {
-        if (!lastScan) return
-        const epc = lastScan.epc
-        clearLastScan()
+    // Vincula automáticamente un EPC a la siguiente unidad disponible del
+    // producto fijado en modo lote, sin pedirle al operador que vuelva a
+    // elegir el producto en cada sticker.
+    const handleBulkAutoLink = (epc) => {
+        const prod = products.find(p => p.id === Number(bulkProductId))
+        if (!prod) {
+            setBulkNotice({ open: true, severity: 'warning', msg: 'Selecciona un producto para activar el modo lote.' })
+            return
+        }
+        const avail = prod.units.filter(u => !unitToEpc[u.id] && !registered.some(r => r.unitId === u.id))
+        if (avail.length === 0) {
+            setBulkNotice({ open: true, severity: 'warning', msg: `No quedan unidades disponibles en ${prod.name}.` })
+            return
+        }
+        const unit = avail[0]
+        const entry = {
+            epc, unitId: unit.id,
+            productName: prod.name, sku: prod.sku,
+            timestamp: new Date().toISOString()
+        }
+        linkEpc(epc, unit.id)
+        setRegistered(prev => [entry, ...prev])
+        setBulkNotice({ open: true, severity: 'success', msg: `Vinculado: ${unitLabel(unit.id)} — ${prod.name}` })
 
-        // Verificar si ya está vinculado
+        // Feedback visual persistente (no depende del snackbar, que se
+        // cierra solo): guarda cuál fue la última unidad vinculada y la
+        // resalta brevemente en la grilla de unidades del lote.
+        setLastBulkLinked({ unitId: unit.id, epc, at: new Date().toISOString() })
+        setJustLinkedUnitId(unit.id)
+        clearTimeout(justLinkedTimerRef.current)
+        justLinkedTimerRef.current = setTimeout(() => setJustLinkedUnitId(null), 2200)
+    }
+
+    // Punto único de entrada para cualquier EPC detectado (por antena o
+    // manual): primero revisa si ya está vinculado (aplica en ambos modos),
+    // y si no, decide el flujo según el modo activo.
+    const processEpc = (epc) => {
         const existingUnitId = epcMap[epc]
         if (existingUnitId) {
-            // Buscar a qué producto pertenece
             let productName = 'Producto desconocido'
             let uLabel = existingUnitId
             for (const p of products) {
@@ -88,6 +144,11 @@ export default function RfidRegistrar() {
             return
         }
 
+        if (mode === 'bulk') {
+            handleBulkAutoLink(epc)
+            return
+        }
+
         setAlreadyLinked(null)
         setCurrentEpc(epc)
         setStep('detected')
@@ -95,6 +156,18 @@ export default function RfidRegistrar() {
         setSelectedUnit('')
         setSearch('')
         setNewForm(emptyForm)
+    }
+
+    // Captura de scan RFID
+    React.useEffect(() => {
+        if (!lastScan) return
+        const scanKey = `${lastScan.epc}-${lastScan.timestamp}`
+        if (lastSeenScanRef.current === scanKey) return // ya estaba ahí al entrar a esta página
+        lastSeenScanRef.current = scanKey
+        const epc = lastScan.epc
+        clearLastScan()
+        processEpc(epc)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lastScan])
 
     // Captura de stickers NUEVOS / no registrados (el bridge los manda como
@@ -107,14 +180,8 @@ export default function RfidRegistrar() {
         const epc = unknownTags[unknownTags.length - 1]
         if (lastUnknownRef.current === epc) return
         lastUnknownRef.current = epc
-
-        setAlreadyLinked(null)
-        setCurrentEpc(epc)
-        setStep('detected')
-        setSelectedProd('')
-        setSelectedUnit('')
-        setSearch('')
-        setNewForm(emptyForm)
+        processEpc(epc)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [unknownTags])
 
     React.useEffect(() => { setSelectedUnit('') }, [selectedProd])
@@ -140,6 +207,34 @@ export default function RfidRegistrar() {
             p.category.toLowerCase().includes(q)
         )
     }, [products, search])
+
+    // Filtrado de productos para el selector del modo lote (independiente
+    // del buscador de Opción A, para no mezclar ambos flujos).
+    const bulkFilteredProducts = React.useMemo(() => {
+        if (!bulkSearch.trim()) return products
+        const q = bulkSearch.toLowerCase()
+        return products.filter(p =>
+            p.name.toLowerCase().includes(q) ||
+            p.sku.toLowerCase().includes(q) ||
+            p.category.toLowerCase().includes(q)
+        )
+    }, [products, bulkSearch])
+
+    const bulkProduct = products.find(p => p.id === Number(bulkProductId))
+    const bulkLinkedCount = bulkProduct
+        ? bulkProduct.units.filter(u => Boolean(unitToEpc[u.id]) || registered.some(r => r.unitId === u.id)).length
+        : 0
+    const bulkTotalCount = bulkProduct ? bulkProduct.units.length : 0
+    const bulkAvailableCount = Math.max(bulkTotalCount - bulkLinkedCount, 0)
+    const bulkProgressPct = bulkTotalCount > 0 ? Math.round((bulkLinkedCount / bulkTotalCount) * 100) : 0
+
+    // Al cambiar de producto en el lote (o salir de él) se limpia el
+    // resaltado y el "último vinculado", para no confundir con datos del
+    // producto anterior.
+    React.useEffect(() => {
+        setJustLinkedUnitId(null)
+        setLastBulkLinked(null)
+    }, [bulkProductId])
 
     const handleVincular = async () => {
         if (!currentEpc || !selectedProd || !selectedUnit) return
@@ -185,8 +280,158 @@ export default function RfidRegistrar() {
                 {isConnected ? '🟢 Antena conectada — pasa un sticker por la antena' : '⚫ Antena desconectada — ejecuta: node server/rfid-bridge.js'}
             </Alert>
 
-            {/* PASO 1: Esperando */}
-            {step === 'waiting' && (
+            {/* SELECTOR DE MODO — vinculación individual (un sticker a la vez,
+                eligiendo producto y unidad cada vez) vs. por lote (se fija el
+                producto una sola vez y cada sticker se vincula solo a la
+                siguiente unidad disponible). */}
+            <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                <Button
+                    variant={mode === 'individual' ? 'contained' : 'outlined'}
+                    startIcon={<LinkIcon />}
+                    onClick={() => setMode('individual')}
+                    sx={mode === 'individual' ? { bgcolor: '#66FCF1', color: '#0B0C10', '&:hover': { bgcolor: '#45e8d5' } } : {}}>
+                    Vincular individual
+                </Button>
+                <Button
+                    variant={mode === 'bulk' ? 'contained' : 'outlined'}
+                    startIcon={<LibraryAddIcon />}
+                    onClick={() => setMode('bulk')}
+                    sx={mode === 'bulk' ? { bgcolor: '#66FCF1', color: '#0B0C10', '&:hover': { bgcolor: '#45e8d5' } } : {}}>
+                    Vincular por lote
+                </Button>
+            </Box>
+
+            {/* ═══ MODO POR LOTE ═══ */}
+            {mode === 'bulk' && (
+                <Box sx={{ mb: 2 }}>
+                    <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'divider' }}>
+                        <Typography variant="subtitle2" color="primary" sx={{ mb: 1.5 }}>
+                            Producto del lote
+                        </Typography>
+                        <TextField fullWidth size="small" label="Buscar por nombre o SKU"
+                            value={bulkSearch} onChange={e => setBulkSearch(e.target.value)} sx={{ mb: 1.5 }}
+                            autoComplete="off"
+                            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+                        />
+                        <TextField select fullWidth size="small" label="Producto" value={bulkProductId}
+                            onChange={e => setBulkProductId(e.target.value)}>
+                            <MenuItem value="">— Selecciona —</MenuItem>
+                            {bulkFilteredProducts.map(p => (
+                                <MenuItem key={p.id} value={p.id}>
+                                    <Box>
+                                        <Typography variant="body2">{p.name}</Typography>
+                                        <Typography variant="caption" color="text.secondary">{p.sku} · {p.category}</Typography>
+                                    </Box>
+                                </MenuItem>
+                            ))}
+                        </TextField>
+                    </Paper>
+
+                    {bulkProduct ? (
+                        <Box>
+                            {/* Encabezado del lote: nombre + barra de progreso grande,
+                                para que de un vistazo se sepa cuánto falta. */}
+                            <Paper sx={{ p: 3, mb: 2, border: '2px solid #66FCF1', bgcolor: 'rgba(102,252,241,0.04)' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                        <QrCodeScannerIcon sx={{ fontSize: 32, color: '#66FCF1' }} />
+                                        <Box>
+                                            <Typography variant="h6" sx={{ lineHeight: 1.2 }}>{bulkProduct.name}</Typography>
+                                            <Typography variant="caption" color="text.secondary">{bulkProduct.sku} · Lote activo</Typography>
+                                        </Box>
+                                    </Box>
+                                    <Button size="small" variant="outlined" color="error" startIcon={<CancelIcon />}
+                                        onClick={() => setBulkProductId('')}>
+                                        Cambiar de producto
+                                    </Button>
+                                </Box>
+
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.5 }}>
+                                    <LinearProgress variant="determinate" value={bulkProgressPct}
+                                        color={bulkProgressPct === 100 ? 'success' : 'primary'}
+                                        sx={{ flex: 1, height: 12, borderRadius: 6 }} />
+                                    <Typography variant="body2" fontWeight={700} sx={{ minWidth: 70, textAlign: 'right' }}>
+                                        {bulkLinkedCount}/{bulkTotalCount}
+                                    </Typography>
+                                </Box>
+                                <Typography variant="caption" color="text.secondary">
+                                    {bulkAvailableCount === 0
+                                        ? '✅ Todas las unidades ya están vinculadas'
+                                        : `Pasa el siguiente sticker por la antena — quedan ${bulkAvailableCount} unidad${bulkAvailableCount !== 1 ? 'es' : ''} sin vincular`}
+                                </Typography>
+                            </Paper>
+
+                            {/* Aviso persistente del último vinculado — a diferencia del
+                                snackbar (que se cierra solo a los 3s), este se queda visible
+                                hasta el próximo sticker, para que quede claro qué pasó. */}
+                            {lastBulkLinked && (
+                                <Alert severity="success" icon={<CheckCircleIcon />} sx={{ mb: 2 }}>
+                                    Último vinculado: <strong>{unitLabel(lastBulkLinked.unitId)}</strong>
+                                    {' '}— EPC <code style={{ fontFamily: 'monospace', fontSize: 12 }}>{lastBulkLinked.epc}</code>
+                                </Alert>
+                            )}
+
+                            {/* Grilla visual de unidades: cada casilla representa una unidad
+                                física del producto. Verde con check = ya vinculada; la última
+                                vinculada parpadea/resalta un par de segundos para que se note
+                                de inmediato cuál fue. Gris = todavía sin sticker. */}
+                            <Paper sx={{ p: 2, mb: 2 }}>
+                                <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
+                                    Unidades de {bulkProduct.name}
+                                </Typography>
+                                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 1 }}>
+                                    {bulkProduct.units.map(u => {
+                                        const isLinked = Boolean(unitToEpc[u.id]) || registered.some(r => r.unitId === u.id)
+                                        const isJustLinked = justLinkedUnitId === u.id
+                                        return (
+                                            <Box key={u.id}
+                                                sx={{
+                                                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5,
+                                                    p: 1.2, borderRadius: 2,
+                                                    border: isJustLinked ? '2px solid #66FCF1' : '1px solid',
+                                                    borderColor: isJustLinked ? '#66FCF1' : isLinked ? 'success.main' : 'divider',
+                                                    bgcolor: isJustLinked
+                                                        ? 'rgba(102,252,241,0.18)'
+                                                        : isLinked ? 'rgba(29,158,117,0.10)' : 'transparent',
+                                                    boxShadow: isJustLinked ? '0 0 12px rgba(102,252,241,0.7)' : 'none',
+                                                    transition: 'all .25s ease'
+                                                }}>
+                                                {isLinked
+                                                    ? <CheckCircleIcon sx={{ color: isJustLinked ? '#66FCF1' : '#1D9E75', fontSize: 22 }} />
+                                                    : <RadioButtonUncheckedIcon sx={{ color: 'text.disabled', fontSize: 22 }} />
+                                                }
+                                                <Typography variant="caption" fontWeight={isLinked ? 700 : 400}
+                                                    sx={{ color: isLinked ? 'text.primary' : 'text.disabled' }}>
+                                                    {unitLabel(u.id)}
+                                                </Typography>
+                                            </Box>
+                                        )
+                                    })}
+                                </Box>
+                            </Paper>
+
+                            <Paper sx={{ p: 2, textAlign: 'center' }}>
+                                <Divider sx={{ mb: 2 }}>o ingresa manualmente</Divider>
+                                <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                                    <TextField size="small" label="EPC manual" sx={{ width: 340 }} value={manualEpc}
+                                        onChange={e => setManualEpc(e.target.value)}
+                                        placeholder="ej: E2801160600002094EB9D944"
+                                        onKeyDown={e => { if (e.key === 'Enter' && manualEpc.trim()) { processEpc(manualEpc.trim()); setManualEpc('') } }}
+                                    />
+                                    <Button variant="outlined" onClick={() => { if (manualEpc.trim()) { processEpc(manualEpc.trim()); setManualEpc('') } }}>
+                                        Usar
+                                    </Button>
+                                </Box>
+                            </Paper>
+                        </Box>
+                    ) : (
+                        <Alert severity="info">Selecciona un producto arriba para activar el modo lote.</Alert>
+                    )}
+                </Box>
+            )}
+
+            {/* PASO 1: Esperando (modo individual) */}
+            {mode === 'individual' && step === 'waiting' && (
                 <Paper sx={{ p: 4, textAlign: 'center', mb: 2 }}>
                     <QrCodeScannerIcon sx={{ fontSize: 72, color: 'text.disabled', mb: 2 }} />
                     <Typography variant="h6" color="text.secondary">Esperando sticker...</Typography>
@@ -241,15 +486,17 @@ export default function RfidRegistrar() {
                             </Typography>
                             <Chip label={alreadyLinked.unitLabel} color="warning" sx={{ mb: 2 }} />
                             <Alert severity="warning" sx={{ mt: 1 }}>
-                                Si necesitas usar este sticker en otro producto, ve a "Productos Vinculados" → busca {alreadyLinked.productName} → Revisar → Desvincular, y luego vuelve a escanearlo aquí.
+                                {alreadyLinked.productName === 'Producto desconocido'
+                                    ? 'Este sticker quedó vinculado a un producto que ya fue eliminado. Ve a "Productos Vinculados" → sección "Stickers sin producto válido" → Liberar, y luego vuelve a escanearlo aquí.'
+                                    : `Si necesitas usar este sticker en otro producto, ve a "Productos Vinculados" → busca ${alreadyLinked.productName} → Revisar → Desvincular, y luego vuelve a escanearlo aquí.`}
                             </Alert>
                         </>
                     )}
                 </DialogContent>
             </Dialog>
 
-            {/* PASO 2: Detectado */}
-            {step === 'detected' && (
+            {/* PASO 2: Detectado (modo individual) */}
+            {mode === 'individual' && step === 'detected' && (
                 <Fade in>
                     <Box>
                         <Alert severity="info" sx={{ mb: 2 }} icon={<QrCodeScannerIcon />}>
@@ -401,8 +648,8 @@ export default function RfidRegistrar() {
                 </Fade>
             )}
 
-            {/* PASO 3: Vinculado */}
-            {step === 'done' && registered.length > 0 && (
+            {/* PASO 3: Vinculado (modo individual) */}
+            {mode === 'individual' && step === 'done' && registered.length > 0 && (
                 <Fade in>
                     <Paper sx={{ p: 3, mb: 2, border: '2px solid #1D9E75', bgcolor: '#0a1f18', textAlign: 'center' }}>
                         <CheckCircleIcon sx={{ fontSize: 56, color: '#1D9E75', mb: 1 }} />
@@ -468,6 +715,22 @@ export default function RfidRegistrar() {
                     </Table>
                 </Paper>
             )}
+
+            {/* Feedback de cada vinculación automática en modo lote */}
+            <Snackbar
+                open={bulkNotice.open}
+                autoHideDuration={3000}
+                onClose={() => setBulkNotice(prev => ({ ...prev, open: false }))}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+                <Alert
+                    severity={bulkNotice.severity}
+                    onClose={() => setBulkNotice(prev => ({ ...prev, open: false }))}
+                    sx={{ width: '100%' }}
+                >
+                    {bulkNotice.msg}
+                </Alert>
+            </Snackbar>
         </Box>
     )
 }

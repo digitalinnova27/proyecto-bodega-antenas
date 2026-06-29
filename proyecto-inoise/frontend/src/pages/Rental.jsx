@@ -196,7 +196,7 @@ export default function Rental() {
                 {role === 'admin' && (
                     <Button variant="contained" startIcon={<AddIcon />} onClick={openCreateModal}
                         sx={{ background: '#66FCF1', color: '#0B0C10', '&:hover': { background: '#45e8d5' } }}>
-                        + Nuevo Arriendo
+                        Nuevo Arriendo
                     </Button>
                 )}
             </Paper>

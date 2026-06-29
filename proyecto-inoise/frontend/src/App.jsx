@@ -38,6 +38,7 @@ import RfidRegistrar from './pages/RfidRegistrar'
 import Login from './pages/Login'
 
 import { useAuth } from './context/AuthContext'
+import { RfidSocketProvider } from './context/RfidSocketContext'
 import { HelpTour, HelpButton } from './components/HelpTour'
 
 // Severidad → colores del tema (theme.js / paleta usada en Dashboard.jsx)
@@ -96,6 +97,7 @@ export default function App() {
   }
 
   return (
+    <RfidSocketProvider>
     <Routes>
 
       {/* ================= LOGIN ================= */}
@@ -317,5 +319,6 @@ export default function App() {
         />
       )}
     </Routes>
+    </RfidSocketProvider>
   )
 }

@@ -33,6 +33,23 @@ export default function Products() {
     return map
   }, [epcMap])
 
+  // Stickers "fantasma": EPCs vinculados (en epcMap) a un unitId cuyo
+  // producto ya no existe — típicamente porque el producto se eliminó
+  // antes de que existiera la limpieza automática (ver deleteProduct en
+  // InventoryContext). Sin esto, esos EPCs quedaban invisibles para
+  // siempre: RfidRegistrar los marca como "ya vinculados" a "Producto
+  // desconocido", pero no aparecían en ningún listado para poder
+  // liberarlos y reutilizar el sticker físico en otro producto.
+  const orphanEpcs = React.useMemo(() => {
+    const allUnitIds = new Set(products.flatMap(p => p.units.map(u => u.id)))
+    return Object.entries(epcMap || {})
+      .filter(([, unitId]) => !allUnitIds.has(unitId))
+      .map(([epc, unitId]) => ({ epc, unitId }))
+  }, [epcMap, products])
+
+  const handleFreeOrphan = (epc) => unlinkEpc(epc)
+  const handleFreeAllOrphans = () => orphanEpcs.forEach(o => unlinkEpc(o.epc))
+
   const getLinkedCount = (product) =>
     product.units.filter(u => unitToEpc[u.id]).length
 
@@ -79,6 +96,54 @@ export default function Products() {
           value={search} onChange={e => setSearch(e.target.value)}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }} />
       </Paper>
+
+      {/* Stickers sin producto válido (huérfanos) — EPCs que quedaron
+          vinculados a un producto que ya fue eliminado. Antes de este
+          arreglo no había forma de verlos ni liberarlos desde la UI. */}
+      {orphanEpcs.length > 0 && (
+        <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'warning.main', bgcolor: 'rgba(239,159,39,0.06)' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+            <Typography variant="subtitle2" color="warning.main">
+              Stickers sin producto válido ({orphanEpcs.length})
+            </Typography>
+            <Button size="small" variant="outlined" color="warning" onClick={handleFreeAllOrphans}>
+              Liberar todos
+            </Button>
+          </Box>
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            Estos stickers quedaron vinculados a un producto que ya fue eliminado.
+            Libéralos para poder usarlos en otro producto.
+          </Alert>
+          <List dense disablePadding>
+            {orphanEpcs.map((o, idx) => (
+              <React.Fragment key={o.epc}>
+                {idx > 0 && <Divider />}
+                <ListItem sx={{ py: 0.8 }}
+                  secondaryAction={
+                    <Button size="small" variant="outlined" color="warning"
+                      startIcon={<LinkOffIcon sx={{ fontSize: 14 }} />}
+                      onClick={() => handleFreeOrphan(o.epc)}>
+                      Liberar
+                    </Button>
+                  }>
+                  <ListItemText
+                    primary={
+                      <Typography variant="body2" fontFamily="monospace" sx={{ fontSize: 12 }}>
+                        {o.epc}
+                      </Typography>
+                    }
+                    secondary={
+                      <Typography variant="caption" color="text.disabled">
+                        Producto eliminado · ID anterior: {o.unitId}
+                      </Typography>
+                    }
+                  />
+                </ListItem>
+              </React.Fragment>
+            ))}
+          </List>
+        </Paper>
+      )}
 
       <Paper sx={{ p: 2 }}>
         <List disablePadding>

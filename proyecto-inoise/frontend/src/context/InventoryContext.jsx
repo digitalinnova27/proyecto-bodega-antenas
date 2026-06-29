@@ -137,7 +137,7 @@ export function InventoryProvider({ children }) {
         // Solo si la fecha del evento es >= la fecha consultada
         e.date >= cutoff &&
         // No contar eventos que ya salieron (Ocupado) ni realizados
-        !['Realizado', 'Suspendido'].includes(e.status)
+        !['Realizado', 'Concluido', 'Suspendido'].includes(e.status)
       )
       .flatMap(e => e.assignments || [])
       .filter(a => a.productId === productId)
@@ -171,6 +171,41 @@ export function InventoryProvider({ children }) {
   }
 
   /* ────────────────────────────────────────────────────────────────────────
+   * getLinkedAvailableQty(productId, forDate?, excludeEventId?)
+   *
+   * Igual que getAvailableQty, pero solo cuenta unidades físicamente
+   * 'Disponible' que además tienen un sticker RFID vinculado (epcMap).
+   * Se usa al crear/editar eventos: NO se debe poder asignar una unidad
+   * sin sticker, porque luego no hay forma de rastrearla por RFID en
+   * Operaciones — eso permitiría crear eventos con información falsa
+   * (equipos "asignados" que en realidad no existen vinculados).
+   * ──────────────────────────────────────────────────────────────────────── */
+  const getLinkedAvailableQty = (productId, forDate, excludeEventId) => {
+    const product = products.find(p => p.id === productId)
+    if (!product) return 0
+
+    const cutoff = forDate || new Date().toISOString().slice(0, 10)
+    const unitIdsInPlay = events
+      .filter(e =>
+        e.id !== excludeEventId &&
+        isActiveOnDate(e.date) &&
+        e.date >= cutoff &&
+        !['Realizado', 'Concluido', 'Suspendido'].includes(e.status)
+      )
+      .flatMap(e => e.assignments || [])
+      .filter(a => a.productId === productId)
+      .flatMap(a => a.unitIds || [])
+
+    const linkedUnitIds = new Set(Object.values(epcMap || {}))
+
+    return product.units.filter(u =>
+      u.state === 'Disponible' &&
+      !unitIdsInPlay.includes(u.id) &&
+      linkedUnitIds.has(u.id)
+    ).length
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
    * getAvailableQtyForEvent(productId, eventId, forDate?)
    *
    * Disponibilidad al crear/editar UN evento específico:
@@ -187,7 +222,7 @@ export function InventoryProvider({ children }) {
         e.id !== eventId &&
         isActiveOnDate(e.date) &&
         e.date >= cutoff &&
-        !['Realizado', 'Suspendido'].includes(e.status)
+        !['Realizado', 'Concluido', 'Suspendido'].includes(e.status)
       )
       .flatMap(e => e.assignments || [])
       .filter(a => a.productId === productId)
@@ -311,6 +346,32 @@ export function InventoryProvider({ children }) {
       )
     })))
     setEvents(prev => prev.filter(e => e.id !== eventId))
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+   * Flujo de aprobación de eliminación (operador solicita → admin aprueba).
+   *
+   * El operador NO puede borrar eventos directamente: solo puede marcarlos
+   * con `pendingDelete: true` (la UI los muestra en rojo). El admin ve esa
+   * marca, y desde ahí puede "Aprobar y eliminar" (ejecuta deleteEvent de
+   * verdad) o "Rechazar" (quita la marca y el evento sigue como antes). El
+   * admin sigue pudiendo eliminar directo sin pasar por este flujo (su
+   * botón "Deshacer" de siempre no cambió).
+   * ──────────────────────────────────────────────────────────────────────── */
+  const requestDeleteEvent = (eventId, requestedBy) => {
+    setEvents(prev => prev.map(e =>
+      e.id === eventId
+        ? { ...e, pendingDelete: true, pendingDeleteBy: requestedBy || 'Operador', pendingDeleteAt: new Date().toISOString() }
+        : e
+    ))
+  }
+
+  const cancelDeleteEvent = (eventId) => {
+    setEvents(prev => prev.map(e =>
+      e.id === eventId
+        ? { ...e, pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null }
+        : e
+    ))
   }
 
   /* ── Crear arriendo ── */
@@ -450,11 +511,59 @@ export function InventoryProvider({ children }) {
   const [rentalHistory, setRentalHistory] = useState([])
   const [purchaseHistory, setPurchaseHistory] = useState([])
 
-  /* ── Cerrar evento → mover de Operaciones al Historial de Eventos ── */
+  // Etiquetas de fase para el Reporte de Operaciones (PHASES vive en
+  // Operations.jsx; acá solo se necesita el texto para guardarlo en el
+  // historial, así el reporte mensual no depende de que Operations.jsx
+  // esté montado).
+  const PHASE_LABELS = { f1: 'Despacho bodega', f2: 'Recepción evento', f3: 'Despacho evento', f4: 'Recepción bodega' }
+
+  /* ── Cerrar evento → mover de Operaciones al Historial de Eventos ──
+   * Se guarda el detalle completo (artículos, fases aprobadas e
+   * incidencias/pérdidas con su fase y ubicación) para el Reporte de
+   * Operaciones mensual. Antes solo se guardaba el conteo agregado de
+   * incidencias, lo que hacía imposible saber QUÉ artículo se perdió,
+   * en QUÉ fase y en QUÉ evento. */
   const closeEventToHistory = (event, opState, closedBy) => {
     if (!event) return
     const phases = opState?.phases || {}
-    const incidentsCount = Object.values(phases).reduce((s, p) => s + (p.incidents?.length || 0), 0)
+    // lostItems vive a nivel de EVENTO (no por fase) — un artículo perdido
+    // se registra una sola vez y queda excluido de "pendiente" en todas las
+    // fases siguientes (ver Operations.jsx). Por eso el conteo/detalle de
+    // pérdidas se lee de opState.lostItems, no de phases[key].incidents.
+    const lostItems = opState?.lostItems || []
+    const incidentsCount = lostItems.length
+
+    const items = (event.assignments || []).map(a => {
+      const prod = products.find(p => p.id === a.productId)
+      return {
+        productId: a.productId,
+        name: prod?.name || 'Producto eliminado',
+        sku: prod?.sku || '—',
+        qty: a.qty
+      }
+    })
+
+    const phasesApproved = Object.entries(phases).map(([key, p]) => ({
+      key,
+      label: PHASE_LABELS[key] || key,
+      done: !!p.done,
+      forced: !!p.forcedClose
+    }))
+
+    const lossDetails = lostItems.map(inc => ({
+      item: inc.name || '—',
+      sku: inc.sku || '—',
+      // Se guarda la clave (F1/F2/F3/F4) Y la etiqueta completa por separado,
+      // así el PDF y la vista pueden mostrar ambas sin ambigüedad (antes solo
+      // se guardaba el label, y "Despacho" por sí solo no distingue F1
+      // "Despacho bodega" de F3 "Despacho evento").
+      phaseKey: inc.phaseKey || null,
+      phase: `${(inc.phaseKey || '').toUpperCase()} · ${PHASE_LABELS[inc.phaseKey] || inc.phaseKey || '—'}`,
+      state: inc.state || 'Perdido',
+      reason: inc.reason || '',
+      location: event.location || ''
+    }))
+
     const entry = {
       id: Date.now(),
       orderNumber: event.orderNumber,
@@ -465,16 +574,33 @@ export function InventoryProvider({ children }) {
       incidentsCount,
       forcedClose: !!opState?.forcedBy,
       closedAt: new Date().toISOString(),
-      closedBy: closedBy || 'Administrador'
+      closedBy: closedBy || 'Administrador',
+      items,
+      phasesApproved,
+      lossDetails
     }
     setEventHistory(prev => [entry, ...prev])
-    // Sale de Operaciones (filteredEvents se calcula sobre `events`)
-    setEvents(prev => prev.filter(e => e.id !== event.id))
+    // Ya NO se elimina de `events`: antes desaparecía por completo, lo que
+    // hacía que tampoco se pudiera ver en la página de Eventos (la lista
+    // activa y el Historial comparten el mismo evento de origen). Ahora se
+    // marca como "Concluido" y se mantiene en `events`, así sigue visible
+    // en Eventos (con su estado) y en el filtro "Realizados" de Operaciones,
+    // a la vez que su detalle completo queda en el Historial de Eventos.
+    setEvents(prev => prev.map(e => e.id === event.id ? { ...e, status: 'Concluido' } : e))
   }
 
   /* ── Cerrar arriendo → mover de Operaciones al Historial de Rentas ── */
   const closeRentalToHistory = (rental, totalItems, closedBy) => {
     if (!rental) return
+    const items = (rental.assignments || []).map(a => {
+      const prod = products.find(p => p.id === a.productId)
+      return {
+        productId: a.productId,
+        name: prod?.name || 'Producto eliminado',
+        sku: prod?.sku || '—',
+        qty: a.qty
+      }
+    })
     const entry = {
       id: Date.now(),
       orderNumber: rental.orderNumber,
@@ -482,9 +608,11 @@ export function InventoryProvider({ children }) {
       clientName: rental.clientName || '',
       date: rental.date,
       endDate: rental.endDate || '',
+      location: rental.location || '',
       totalItems: totalItems ?? (rental.assignments || []).reduce((s, a) => s + a.qty, 0),
       closedAt: new Date().toISOString(),
-      closedBy: closedBy || 'Administrador'
+      closedBy: closedBy || 'Administrador',
+      items
     }
     setRentalHistory(prev => [entry, ...prev])
     setRentals(prev => prev.filter(r => r.id !== rental.id))
@@ -515,7 +643,35 @@ export function InventoryProvider({ children }) {
   // ahora es una baja directa; el flujo de aprobación admin/operador para
   // esta acción se agrega en una etapa siguiente.
   const deleteProduct = (productId) => {
+    // Antes esto borraba el producto sin soltar sus stickers RFID: el
+    // epcMap (que vive en el bridge, separado de la lista de productos)
+    // se quedaba con EPC → unitId apuntando a un producto que ya no
+    // existe. Esos stickers quedaban "fantasma": al volver a escanearlos
+    // RfidRegistrar los marcaba como "ya vinculados" a "Producto
+    // desconocido" y no había forma de liberarlos desde la UI, porque
+    // Productos Vinculados solo lista productos reales. Por eso ahora
+    // se desvinculan sus EPCs ANTES de quitar el producto de la lista.
+    unlinkAllForProduct(productId)
     setProducts(prev => prev.filter(p => p.id !== productId))
+  }
+
+  /* Mismo flujo de aprobación que los eventos, pero para productos del
+   * inventario: el operador solo marca `pendingDelete`, el admin aprueba
+   * (deleteProduct real) o rechaza (vuelve a quedar normal). */
+  const requestDeleteProduct = (productId, requestedBy) => {
+    setProducts(prev => prev.map(p =>
+      p.id === productId
+        ? { ...p, pendingDelete: true, pendingDeleteBy: requestedBy || 'Operador', pendingDeleteAt: new Date().toISOString() }
+        : p
+    ))
+  }
+
+  const cancelDeleteProduct = (productId) => {
+    setProducts(prev => prev.map(p =>
+      p.id === productId
+        ? { ...p, pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null }
+        : p
+    ))
   }
 
   const addProduct = (data, user) => {
@@ -599,11 +755,12 @@ export function InventoryProvider({ children }) {
     <InventoryContext.Provider value={{
       products, setProducts,
       events, setEvents,
-      getReservedQty, getAvailableQty, getAvailableQtyForEvent,
+      getReservedQty, getAvailableQty, getAvailableQtyForEvent, getLinkedAvailableQty,
       countByState,
       createEvent, updateEvent, deleteEvent,
+      requestDeleteEvent, cancelDeleteEvent,
       rentals, setRentals, createRental, deleteRental,
-      addProduct, deleteProduct, nextSkuForFamily,
+      addProduct, deleteProduct, requestDeleteProduct, cancelDeleteProduct, nextSkuForFamily,
       opStates, setOpStates,
       epcMap, linkEpc, unlinkEpc, unlinkAllForProduct,
       markUnitOccupied, markUnitAvailable, markUnitBackFromRental,

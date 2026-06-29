@@ -37,27 +37,6 @@ export default function Antennas() {
   const { isConnected: bridgeUp, lastScan, lastReadAt } = useRfidSocket()
   const { products, epcMap } = useInventory()
 
-  // "isConnected" del hook solo dice que el WebSocket llegó al bridge —
-  // y el bridge corre siempre dentro de Electron, conectado o no haya
-  // ninguna antena física enchufada al PC. La única señal de que existe
-  // hardware real es haber recibido al menos un paquete UDP desde que se
-  // abrió la app (lastReadAt). Sin esto, "Activa" se mostraba en verde
-  // aunque no hubiera ningún lector conectado.
-  const isConnected = bridgeUp && lastReadAt !== null
-
-  // Modal "Revisar lecturas"
-  const [reviewAntenna, setReviewAntenna] = React.useState(null) // antena cuyas lecturas se están revisando
-
-  /* ── Resuelve a qué elemento/unidad pertenece un EPC ── */
-  const resolveAssignedElement = (epc) => {
-    const unitId = epcMap?.[epc]
-    if (!unitId) return 'Sticker no vinculado a ningún elemento'
-    const productId = String(unitId).split('-')[0]
-    const product = products.find(p => String(p.id) === productId)
-    if (!product) return 'Sticker no vinculado a ningún elemento'
-    return `${product.name} — ${unitNumberLabel(unitId)}`
-  }
-
   const [stats, setStats] = React.useState({
     totalScans: 0,
     uniqueTags: 0,
@@ -80,6 +59,42 @@ export default function Antennas() {
     return () => clearInterval(interval)
   }, [])
 
+  // "isConnected" del hook solo dice que el WebSocket llegó al bridge —
+  // y el bridge corre siempre dentro de Electron, conectado o no haya
+  // ninguna antena física enchufada al PC. La única señal de que existe
+  // hardware real es haber recibido al menos un paquete UDP desde que se
+  // abrió la app (lastReadAt). Sin esto, "Activa" se mostraba en verde
+  // aunque no hubiera ningún lector conectado.
+  //
+  // OJO: lastReadAt vive en el estado de ESTE componente, y cada vez que
+  // se entra a la página /antennas se abre un WebSocket nuevo (useRfidSocket
+  // crea su propia conexión). Si el sticker se escaneó mientras el usuario
+  // estaba en OTRA pantalla (p. ej. RfidRegistrar), ese evento nunca llega
+  // a esta instancia del hook y lastReadAt queda en null aquí, aunque el
+  // bridge sí recibió la lectura — por eso la tarjeta mostraba "Offline" y
+  // ocultaba "Revisar lecturas" pese a tener scans recientes en stats
+  // (que viene de /api/stats, independiente de la página activa).
+  // Para evitar ese falso "Offline", también se considera activa la antena
+  // si el bridge reportó una lectura hace menos de 15s vía /api/stats.
+  const RECENT_MS = 15000
+  const recentlyActive = stats.lastScanTime
+    ? (Date.now() - new Date(stats.lastScanTime).getTime()) < RECENT_MS
+    : false
+  const isConnected = bridgeUp && (lastReadAt !== null || recentlyActive)
+
+  // Modal "Revisar lecturas"
+  const [reviewAntenna, setReviewAntenna] = React.useState(null) // antena cuyas lecturas se están revisando
+
+  /* ── Resuelve a qué elemento/unidad pertenece un EPC ── */
+  const resolveAssignedElement = (epc) => {
+    const unitId = epcMap?.[epc]
+    if (!unitId) return 'Sticker no vinculado a ningún elemento'
+    const productId = String(unitId).split('-')[0]
+    const product = products.find(p => String(p.id) === productId)
+    if (!product) return 'Sticker no vinculado a ningún elemento'
+    return `${product.name} — ${unitNumberLabel(unitId)}`
+  }
+
   const fmtDate = (iso) => {
     if (!iso) return '—'
     const d = new Date(iso)
@@ -96,16 +111,24 @@ export default function Antennas() {
   }
 
   const signalPct = rssiToPct(stats.lastSignal)
-  const signalLabel = signalPct !== null
+  const hasRssi = signalPct !== null
+  // Si el lector no tiene RSSI=1 activado en Reader.ini, no llega dato de
+  // señal — pero eso NO significa que la antena esté fallando: sigue
+  // conectada y leyendo stickers normalmente. Antes la barra se quedaba en
+  // 0% (rojo) solo por faltar ese dato, lo que se veía como una falla real.
+  // Ahora: conectada sin RSSI = barra llena en verde ("Conectada"); sin
+  // conexión = barra vacía en rojo.
+  const signalLabel = hasRssi
     ? `${signalPct}% (${stats.lastSignal} dBm)`
-    : isConnected ? 'Sin datos RSSI' : '0%'
+    : isConnected ? 'Conectada' : 'Sin conexión'
 
   const antennas = [
     {
       id: 1,
       name: 'Antena 1 — VF-747 / VA-991R 9dBi',
       active: isConnected,
-      signalPct: isConnected ? (signalPct ?? 0) : 0,
+      signalPct: isConnected ? (hasRssi ? signalPct : 100) : 0,
+      hasRssi,
       signalLabel,
       lastRead: fmtDate(stats.lastScanTime),
       totalScans: stats.totalScans,
@@ -165,7 +188,7 @@ export default function Antennas() {
                   {ant.signalLabel}
                 </Typography>
               </Box>
-              {ant.active && stats.lastSignal === null && (
+              {ant.active && !ant.hasRssi && (
                 <Typography variant="caption" color="text.disabled" sx={{ fontSize: 10 }}>
                   RSSI no disponible — activa RSSI=1 en Reader.ini
                 </Typography>
@@ -191,8 +214,12 @@ export default function Antennas() {
             </Box>
           </Box>
 
-          {/* Botón para revisar lecturas (en vez de lista creciente inline) */}
-          {ant.active && ant.recentScans.length > 0 && (
+          {/* Botón para revisar lecturas (en vez de lista creciente inline).
+              No se condiciona a ant.active: las lecturas ya guardadas en el
+              bridge deben poder revisarse aunque la tarjeta momentáneamente
+              muestre "Offline" (p. ej. recién se abrió esta pantalla y aún
+              no llegó ningún paquete nuevo por el WebSocket de esta sesión). */}
+          {ant.recentScans.length > 0 && (
             <Box sx={{ mt: 1, display: 'flex', justifyContent: 'flex-end' }}>
               <Button
                 size="small"

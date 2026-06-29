@@ -130,7 +130,7 @@ export function useNotifications() {
         events.forEach(e => {
             const diff = daysFromToday(e.date)
             if (diff == null || diff < 0 || diff > EVENT_WINDOW_DAYS) return
-            if (['Realizado', 'Suspendido'].includes(e.status)) return
+            if (['Realizado', 'Concluido', 'Suspendido'].includes(e.status)) return
             list.push({
                 id: `event-soon-${e.id}`,
                 severity: 'info',

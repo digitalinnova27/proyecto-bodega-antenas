@@ -1,19 +1,99 @@
 .login-container {
   height: 100vh;
-  background: radial-gradient(circle at top, #111827, #020617);
+  width: 100vw;
+  background: #000;
   display: flex;
   flex-direction: column;
-  justify-content: center;
   align-items: center;
   overflow: hidden;
   color: #fff;
+  position: relative;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+/* Contenedor central (cards + formulario): ocupa el espacio elástico y
+   se centra ahí — así el logo de abajo nunca se superpone, sin importar
+   el tamaño de la ventana. */
+.login-main {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== FLECHA VOLVER ===== */
+.back-arrow {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  background: rgba(255,255,255,0.06);
+  border: 1.5px solid rgba(255,255,255,0.25);
+  border-radius: 14px;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  opacity: 0;
+  animation: arrowFade 0.3s ease forwards;
+  animation-delay: 0.15s;
+}
+
+.back-arrow svg {
+  width: 30px;
+  height: 30px;
+  display: block;
+}
+
+.back-arrow:hover {
+  background: rgba(255,255,255,0.14);
+  transform: translateX(-4px);
+}
+
+.back-arrow:active {
+  transform: translateX(-2px) scale(0.95);
+}
+
+@keyframes arrowFade {
+  to { opacity: 1; }
+}
+
+/* ===== LOGO INFERIOR (pantalla de selección de perfil) =====
+   Vive en el flujo normal (no absoluto) para que se adapte solo al alto
+   y ancho de la ventana sin pisar nunca a las tarjetas de perfil. */
+.login-logo {
+  flex: 0 0 auto;
+  width: clamp(160px, 26vw, 440px);
+  max-height: 16vh;
+  height: auto;
+  object-fit: contain;
+  margin-top: 20px;
+  opacity: 1;
+  max-width: 90vw;
+  transition: opacity 0.25s ease, transform 0.25s ease, margin-top 0.25s ease, max-height 0.25s ease;
+}
+
+.login-logo.hide {
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+  transform: translateY(10px);
+  pointer-events: none;
 }
 
 /* ===== CARDS ===== */
 .cards {
   display: flex;
-  gap: 40px;
-  transition: all 0.8s ease-in-out;
+  gap: clamp(16px, 4vw, 40px);
+  transition: gap 0.35s ease-in-out;
 }
 
 .cards.selected {
@@ -22,25 +102,29 @@
 
 /* ===== CARD ===== */
 .card {
-  width: 260px;
-  height: 340px;
+  width: clamp(190px, 22vw, 260px);
+  height: clamp(240px, 38vh, 340px);
   background: #1f2933;
   border-radius: 16px;
-  padding: 24px;
+  padding: clamp(14px, 2vw, 24px);
   cursor: pointer;
   text-align: center;
   box-shadow: 0 20px 50px rgba(0,0,0,.4);
   position: relative;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 
   transition:
-    transform 0.8s cubic-bezier(.22,1,.36,1),
-    opacity 0.6s ease;
+    transform 0.35s cubic-bezier(.22,1,.36,1),
+    opacity 0.3s ease;
 }
 
 .card img {
-  width: 120px;
-  height: 120px;
+  width: clamp(80px, 14vh, 120px);
+  height: clamp(80px, 14vh, 120px);
   object-fit: contain;
   margin-bottom: 16px;
 }
@@ -75,8 +159,8 @@
 
 /* ===== FORMULARIO ===== */
 .credentials {
-  margin-top: 40px;
-  width: 260px;
+  margin-top: 32px;
+  width: clamp(220px, 24vw, 260px);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -86,18 +170,20 @@
   pointer-events: none;
 
   transition:
-    opacity 0.6s ease,
-    transform 0.6s ease;
+    opacity 0.3s ease,
+    transform 0.3s ease;
 
-  transition-delay: 0.4s;
   z-index: 5;
 }
 
-/* Mostrar formulario */
+/* Mostrar formulario — el delay va solo acá (al aparecer), así que al
+   volver a las tarjetas (al sacar esta clase) la transición no hereda
+   ningún retraso y se ve inmediata, no "pegada". */
 .credentials.show {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+  transition-delay: 0.25s;
 }
 
 /* Inputs animados uno a uno */

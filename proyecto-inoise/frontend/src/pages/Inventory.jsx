@@ -24,7 +24,10 @@ const stateColors = {
 const todayStr = () => new Date().toISOString().slice(0, 10)
 
 export default function Inventory() {
-  const { products, setProducts, getAvailableQty, getReservedQty, addProduct, deleteProduct, nextSkuForFamily } = useInventory()
+  const {
+    products, setProducts, getAvailableQty, getReservedQty,
+    addProduct, deleteProduct, requestDeleteProduct, cancelDeleteProduct, nextSkuForFamily
+  } = useInventory()
   const { role } = useAuth()
   const currentUser = role === 'admin' ? 'Administrador' : 'Operador'
 
@@ -35,6 +38,8 @@ export default function Inventory() {
   const [draftDetail, setDraftDetail] = React.useState(null)
   const [openAdd, setOpenAdd] = React.useState(false)
   const [confirmDeleteProduct, setConfirmDeleteProduct] = React.useState(false)
+  // 'direct' (admin elimina ya) | 'request' (operador solo solicita) | 'approve' (admin aprueba una solicitud pendiente)
+  const [deleteMode, setDeleteMode] = React.useState('direct')
   const [newProduct, setNewProduct] = React.useState({ name: '', skuFamily: '', sku: '', category: '', qty: '', description: '' })
   const [page, setPage] = React.useState(1)
 
@@ -93,11 +98,25 @@ export default function Inventory() {
     setDraftDetail(null)
   }
 
+  const openDeleteProductModal = (mode) => {
+    setDeleteMode(mode)
+    setConfirmDeleteProduct(true)
+  }
+
   const handleDeleteProduct = () => {
-    deleteProduct(detail.id)
+    if (deleteMode === 'request') {
+      requestDeleteProduct(detail.id, currentUser)
+    } else {
+      deleteProduct(detail.id)
+    }
     setConfirmDeleteProduct(false)
     setDetail(null)
     setDraftDetail(null)
+  }
+
+  const handleRejectDeleteProduct = (p, e) => {
+    e.stopPropagation()
+    cancelDeleteProduct(p.id)
   }
 
   const handleAddProduct = () => {
@@ -198,11 +217,20 @@ export default function Inventory() {
           </TableHead>
           <TableBody>
             {paginated.map(p => (
-              <TableRow key={p.id} sx={p.total === 0 ? { opacity: 0.5, bgcolor: 'rgba(244,67,54,0.06)' } : {}}>
+              <TableRow key={p.id} sx={
+                p.pendingDelete
+                  ? { bgcolor: 'rgba(244,67,54,0.1)', borderLeft: '3px solid #f44336' }
+                  : p.total === 0 ? { opacity: 0.5, bgcolor: 'rgba(244,67,54,0.06)' } : {}
+              }>
                 <TableCell>
                   {p.name}
                   {p.total === 0 && (
                     <Chip size="small" label="Sin stock" color="error" sx={{ ml: 1 }} />
+                  )}
+                  {p.pendingDelete && (
+                    <Tooltip title={`Solicitado por ${p.pendingDeleteBy || 'Operador'}`}>
+                      <Chip size="small" label="Pendiente de eliminación" color="error" sx={{ ml: 1, fontWeight: 600 }} />
+                    </Tooltip>
                   )}
                 </TableCell>
                 <TableCell>{p.sku}</TableCell>
@@ -217,10 +245,24 @@ export default function Inventory() {
                   </TableCell>
                 ))}
                 <TableCell>
-                  <Button size="small" variant="outlined"
-                    onClick={() => { setDetail(p); setDraftDetail(JSON.parse(JSON.stringify(p))) }}>
-                    Detalle
-                  </Button>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <Button size="small" variant="outlined"
+                      onClick={() => { setDetail(p); setDraftDetail(JSON.parse(JSON.stringify(p))) }}>
+                      Detalle
+                    </Button>
+                    {role === 'admin' && p.pendingDelete && (
+                      <>
+                        <Button size="small" variant="contained" color="error"
+                          onClick={() => { setDetail(p); openDeleteProductModal('approve') }}>
+                          Aprobar
+                        </Button>
+                        <Button size="small" variant="outlined"
+                          onClick={(e) => handleRejectDeleteProduct(p, e)}>
+                          Rechazar
+                        </Button>
+                      </>
+                    )}
+                  </Box>
                 </TableCell>
               </TableRow>
             ))}
@@ -271,9 +313,24 @@ export default function Inventory() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button color="error" onClick={() => setConfirmDeleteProduct(true)} sx={{ mr: 'auto' }}>
-            Eliminar producto
-          </Button>
+          {detail?.pendingDelete ? (
+            role === 'admin' ? (
+              <Box sx={{ mr: 'auto', display: 'flex', gap: 1 }}>
+                <Button variant="contained" color="error" onClick={() => openDeleteProductModal('approve')}>
+                  Aprobar y eliminar
+                </Button>
+                <Button variant="outlined" onClick={(e) => handleRejectDeleteProduct(detail, e)}>
+                  Rechazar solicitud
+                </Button>
+              </Box>
+            ) : (
+              <Chip label="Pendiente de aprobación del administrador" color="error" sx={{ mr: 'auto' }} />
+            )
+          ) : (
+            <Button color="error" onClick={() => openDeleteProductModal(role === 'admin' ? 'direct' : 'request')} sx={{ mr: 'auto' }}>
+              {role === 'admin' ? 'Eliminar producto' : 'Solicitar eliminación'}
+            </Button>
+          )}
           <Button onClick={() => { setDetail(null); setDraftDetail(null) }}>Cancelar</Button>
           <Button variant="contained" onClick={saveDetailChanges}>Guardar cambios</Button>
         </DialogActions>
@@ -281,16 +338,31 @@ export default function Inventory() {
 
       {/* ═══ MODAL CONFIRMAR ELIMINACIÓN DE PRODUCTO ═══ */}
       <Dialog open={confirmDeleteProduct} onClose={() => setConfirmDeleteProduct(false)} maxWidth="xs" fullWidth>
-        <DialogTitle sx={{ color: 'error.main' }}>Eliminar producto</DialogTitle>
+        <DialogTitle sx={{ color: 'error.main' }}>
+          {deleteMode === 'request' ? 'Solicitar eliminación' : 'Eliminar producto'}
+        </DialogTitle>
         <DialogContent>
-          <Typography>
-            ¿Seguro que quieres eliminar <strong>{detail?.name}</strong> y todas sus unidades del inventario?
-            Esta acción no se puede deshacer.
-          </Typography>
+          {deleteMode === 'request' ? (
+            <>
+              <Typography gutterBottom>
+                ¿Enviar solicitud de eliminación de <strong>{detail?.name}</strong>?
+              </Typography>
+              <Alert severity="info" sx={{ mt: 1 }}>
+                Quedará marcado en rojo en el inventario hasta que un administrador la apruebe o la rechace. No se elimina todavía.
+              </Alert>
+            </>
+          ) : (
+            <Typography>
+              ¿Seguro que quieres eliminar <strong>{detail?.name}</strong> y todas sus unidades del inventario?
+              Esta acción no se puede deshacer.
+            </Typography>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfirmDeleteProduct(false)}>Cancelar</Button>
-          <Button variant="contained" color="error" onClick={handleDeleteProduct}>Eliminar definitivamente</Button>
+          <Button variant="contained" color="error" onClick={handleDeleteProduct}>
+            {deleteMode === 'request' ? 'Enviar solicitud' : 'Eliminar definitivamente'}
+          </Button>
         </DialogActions>
       </Dialog>
 

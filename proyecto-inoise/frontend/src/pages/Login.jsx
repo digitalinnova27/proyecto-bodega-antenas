@@ -18,7 +18,7 @@ export default function Login() {
   const handleSelectRole = (role) => {
     setSelectedRole(role)
     setError('')
-    setTimeout(() => setStep('credentials'), 400)
+    setTimeout(() => setStep('credentials'), 300)
   }
 
   const handleLogin = () => {
@@ -39,56 +39,80 @@ export default function Login() {
     if (e.key === 'Enter' && step === 'credentials') handleLogin()
   }
 
+  const handleBack = () => {
+    setStep('role')
+    setSelectedRole(null)
+    setUser('')
+    setPassword('')
+    setError('')
+  }
+
   return (
     <div className="login-container">
 
-      <div className={`cards ${selectedRole ? 'selected' : ''}`}>
-        {(step === 'role' || selectedRole === 'admin') && (
-          <div
-            className={`card admin ${selectedRole === 'admin' ? 'active' : ''}`}
-            onClick={() => step === 'role' && handleSelectRole('admin')}
-          >
-            <img src={adminImg} alt="Administrador" />
-            <h2>Administrador</h2>
-            <p>Control total del sistema</p>
-          </div>
-        )}
+      {step === 'credentials' && (
+        <button className="back-arrow" onClick={handleBack} aria-label="Volver">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 12H5M11 18l-6-6 6-6" />
+          </svg>
+        </button>
+      )}
 
-        {(step === 'role' || selectedRole === 'operator') && (
-          <div
-            className={`card operator ${selectedRole === 'operator' ? 'active' : ''}`}
-            onClick={() => step === 'role' && handleSelectRole('operator')}
-          >
-            <img src={operadorImg} alt="Operador" />
-            <h2>Operador</h2>
-            <p>Gestión operativa</p>
-          </div>
-        )}
+      <div className="login-main">
+        <div className={`cards ${selectedRole ? 'selected' : ''}`}>
+          {(step === 'role' || selectedRole === 'admin') && (
+            <div
+              className={`card admin ${selectedRole === 'admin' ? 'active' : ''}`}
+              onClick={() => step === 'role' && handleSelectRole('admin')}
+            >
+              <img src={adminImg} alt="Administrador" />
+              <h2>Administrador</h2>
+              <p>Control total del sistema</p>
+            </div>
+          )}
+
+          {(step === 'role' || selectedRole === 'operator') && (
+            <div
+              className={`card operator ${selectedRole === 'operator' ? 'active' : ''}`}
+              onClick={() => step === 'role' && handleSelectRole('operator')}
+            >
+              <img src={operadorImg} alt="Operador" />
+              <h2>Operador</h2>
+              <p>Gestión operativa</p>
+            </div>
+          )}
+        </div>
+
+        <div className={`credentials ${step === 'credentials' ? 'show' : ''}`}>
+          <input
+            type="text"
+            placeholder="Usuario"
+            value={user}
+            onChange={e => { setUser(e.target.value); setError('') }}
+            onKeyDown={handleKeyDown}
+          />
+          <input
+            type="password"
+            placeholder="Contraseña"
+            value={password}
+            onChange={e => { setPassword(e.target.value); setError('') }}
+            onKeyDown={handleKeyDown}
+          />
+          {error && (
+            <p style={{ color: '#E24B4A', fontSize: 12, margin: '4px 0 0', textAlign: 'center' }}>
+              {error}
+            </p>
+          )}
+          <button onClick={handleLogin}>Ingresar</button>
+        </div>
       </div>
 
-      <div className={`credentials ${step === 'credentials' ? 'show' : ''}`}>
-        <input
-          type="text"
-          placeholder="Usuario"
-          value={user}
-          onChange={e => { setUser(e.target.value); setError('') }}
-          onKeyDown={handleKeyDown}
-        />
-        <input
-          type="password"
-          placeholder="Contraseña"
-          value={password}
-          onChange={e => { setPassword(e.target.value); setError('') }}
-          onKeyDown={handleKeyDown}
-        />
-        {error && (
-          <p style={{ color: '#E24B4A', fontSize: 12, margin: '4px 0 0', textAlign: 'center' }}>
-            {error}
-          </p>
-        )}
-        <button onClick={handleLogin}>Ingresar</button>
-      </div>
+      <img
+        src="/logo-header.png"
+        alt="Orbitag"
+        className={`login-logo ${step === 'credentials' ? 'hide' : ''}`}
+      />
 
     </div>
   )
-} 
+}
