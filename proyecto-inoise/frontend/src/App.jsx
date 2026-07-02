@@ -68,7 +68,7 @@ const ANTENNA_STATUS_STYLE = {
 }
 
 export default function App() {
-  const { role, logout } = useAuth()
+  const { role, logout, currentUser } = useAuth()
   const navigate = useNavigate()
 
   const [open, setOpen] = React.useState(true)
@@ -260,10 +260,14 @@ export default function App() {
                   </Box>
 
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <Typography variant="caption">
-                      {role === 'admin'
-                        ? 'Modo Administrador'
-                        : 'Modo Operador'}
+                    <Typography variant="caption" sx={{ textAlign: 'right' }}>
+                      {currentUser
+                        ? `${currentUser.nombre} ${currentUser.apellido}`
+                        : role === 'admin' ? 'Administrador' : 'Operador'}
+                      <br />
+                      <span style={{ opacity: 0.6, fontSize: '0.9em' }}>
+                        {role === 'admin' ? 'Administrador' : 'Operador'}
+                      </span>
                     </Typography>
 
                     <Button

@@ -18,6 +18,7 @@
 const path = require('path')
 const { app } = require('electron')
 const Database = require('better-sqlite3')
+const crypto = require('crypto')
 
 let db = null
 
@@ -232,6 +233,32 @@ function runMigrations(db) {
       qty          INTEGER,
       user         TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id        TEXT PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      user      TEXT,
+      action    TEXT NOT NULL,
+      detail    TEXT,
+      category  TEXT
+    );
+
+    /* ── Usuarios del sistema ─────────────────────────────────────────
+     * role: admin (max 1) | operador (N)
+     * avatar: id del preset elegido (av1..av8)
+     * password_hash: pbkdf2 con salt -- formato: <salt_hex>:<hash_hex> */
+    CREATE TABLE IF NOT EXISTS users (
+      id            TEXT PRIMARY KEY,
+      role          TEXT NOT NULL DEFAULT 'operador',
+      nombre        TEXT NOT NULL,
+      apellido      TEXT NOT NULL,
+      email         TEXT,
+      cargo         TEXT,
+      avatar        TEXT,
+      username      TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at    TEXT
+    );
   `)
 
     // Columnas del flujo de aprobación de eliminación (operador solicita,
@@ -242,6 +269,8 @@ function runMigrations(db) {
     ensureColumn(db, 'events', 'pending_delete', 'INTEGER DEFAULT 0')
     ensureColumn(db, 'events', 'pending_delete_by', 'TEXT')
     ensureColumn(db, 'events', 'pending_delete_at', 'TEXT')
+    // PIN de acceso rápido — NULL = sin PIN configurado
+    ensureColumn(db, 'users', 'pin_hash', 'TEXT')
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -587,6 +616,144 @@ function loadPurchaseHistory() {
     }))
 }
 
+function saveAuditLog(list) {
+    const db = getDb()
+    const run = db.transaction((items) => {
+        db.prepare('DELETE FROM audit_log').run()
+        const ins = db.prepare(`INSERT INTO audit_log (id, timestamp, user, action, detail, category)
+                                 VALUES (?, ?, ?, ?, ?, ?)`)
+        for (const e of items) {
+            ins.run(String(e.id), e.timestamp ?? null, e.user ?? null, e.action ?? '', e.detail ?? null, e.category ?? null)
+        }
+    })
+    run(list)
+}
+
+function loadAuditLog() {
+    const db = getDb()
+    return db.prepare('SELECT * FROM audit_log ORDER BY timestamp DESC').all().map(e => ({
+        id: e.id, timestamp: e.timestamp, user: e.user, action: e.action, detail: e.detail, category: e.category
+    }))
+}
+
+/* ── Usuarios ───────────────────────────────────────────────────────────
+ * Las contraseñas se hashean con scrypt (builtin de Node) antes de guardarse.
+ * El formato almacenado es "${salt}:${hash}" donde salt y hash son hex.
+ * El proceso main es el único que toca crypto — el renderer nunca ve
+ * contraseñas en texto plano ni hashes en el contexto React. */
+function _hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex')
+    const hash = crypto.pbkdf2Sync(String(password), salt, 10000, 64, 'sha256').toString('hex')
+    return salt + ':' + hash
+}
+
+function _verifyPassword(password, stored) {
+    try {
+        if (!stored || stored.indexOf(':') === -1) return false
+        const colonIdx = stored.indexOf(':')
+        const storedSalt = stored.substring(0, colonIdx)
+        const storedHash = stored.substring(colonIdx + 1)
+        const verify = crypto.pbkdf2Sync(String(password), storedSalt, 10000, 64, 'sha256').toString('hex')
+        return verify === storedHash
+    } catch (err) {
+        console.error('[Auth] verify error:', err.message)
+        return false
+    }
+}
+
+function _mapUser(u) {
+    return {
+        id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
+        email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
+        username: u.username, passwordHash: u.password_hash,
+        hasPin: !!u.pin_hash,
+        createdAt: u.created_at
+    }
+}
+
+function loadUsers() {
+    const db = getDb()
+    return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all().map(_mapUser)
+}
+
+function createUser(data, plainPassword) {
+    const db = getDb()
+    const id = `usr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const hash = _hashPassword(plainPassword)
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO users (id, role, nombre, apellido, email, cargo, avatar, username, password_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, data.role, data.nombre, data.apellido,
+           data.email || null, data.cargo || null, data.avatar || null,
+           data.username, hash, now)
+    return { id, ...data, passwordHash: hash, createdAt: now }
+}
+
+function updateUser(id, fields, plainPassword) {
+    const db = getDb()
+    if (plainPassword) {
+        const hash = _hashPassword(plainPassword)
+        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?, password_hash=? WHERE id=?`)
+          .run(fields.nombre, fields.apellido, fields.email || null,
+               fields.cargo || null, fields.avatar || null, fields.username, hash, id)
+    } else {
+        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=? WHERE id=?`)
+          .run(fields.nombre, fields.apellido, fields.email || null,
+               fields.cargo || null, fields.avatar || null, fields.username, id)
+    }
+}
+
+function deleteUser(id) {
+    const db = getDb()
+    db.prepare('DELETE FROM users WHERE id=?').run(id)
+}
+
+function authLogin(username, plainPassword) {
+    const db = getDb()
+    const u = db.prepare('SELECT * FROM users WHERE username=?').get(username)
+    if (!u) return null
+    if (!_verifyPassword(plainPassword, u.password_hash)) return null
+    return {
+        id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
+        email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
+        username: u.username, hasPin: !!u.pin_hash, createdAt: u.created_at
+    }
+}
+
+function countAdmins() {
+    const db = getDb()
+    return db.prepare("SELECT COUNT(*) as cnt FROM users WHERE role='admin'").get().cnt
+}
+
+/* ── PIN de acceso rápido ───────────────────────────────────────────────
+ * Se guarda como SHA-256(userId + ':' + pin) — no necesita salt fuerte
+ * porque es solo un código numérico de 4 dígitos sin valor de credencial
+ * completa; el PIN siempre se usa como un segundo factor ligero, no como
+ * reemplazo de la contraseña principal.  */
+function setUserPin(userId, pin) {
+    const db = getDb()
+    const hash = crypto.createHash('sha256').update(userId + ':' + String(pin)).digest('hex')
+    db.prepare('UPDATE users SET pin_hash=? WHERE id=?').run(hash, userId)
+}
+
+function removeUserPin(userId) {
+    const db = getDb()
+    db.prepare('UPDATE users SET pin_hash=NULL WHERE id=?').run(userId)
+}
+
+function authLoginPin(userId, pin) {
+    const db = getDb()
+    const u = db.prepare('SELECT * FROM users WHERE id=?').get(userId)
+    if (!u || !u.pin_hash) return null
+    const hash = crypto.createHash('sha256').update(userId + ':' + String(pin)).digest('hex')
+    if (hash !== u.pin_hash) return null
+    return {
+        id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
+        email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
+        username: u.username, hasPin: true, createdAt: u.created_at
+    }
+}
+
 /* ── Carga inicial completa (un solo viaje IPC al montar la app) ── */
 function loadAll() {
     return {
@@ -597,7 +764,8 @@ function loadAll() {
         epcMap: loadEpcMap(),
         eventHistory: loadEventHistory(),
         rentalHistory: loadRentalHistory(),
-        purchaseHistory: loadPurchaseHistory()
+        purchaseHistory: loadPurchaseHistory(),
+        auditLog: loadAuditLog()
     }
 }
 
@@ -617,5 +785,8 @@ module.exports = {
     saveEpcMap, loadEpcMap,
     saveEventHistory, loadEventHistory,
     saveRentalHistory, loadRentalHistory,
-    savePurchaseHistory, loadPurchaseHistory
+    savePurchaseHistory, loadPurchaseHistory,
+    saveAuditLog, loadAuditLog,
+    loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
+    setUserPin, removeUserPin, authLoginPin
 }

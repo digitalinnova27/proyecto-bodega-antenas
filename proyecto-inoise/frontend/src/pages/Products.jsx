@@ -3,9 +3,10 @@ import {
   Box, Typography, Paper, List, ListItem, ListItemText,
   Chip, Button, Dialog, DialogTitle, DialogContent,
   DialogActions, Checkbox, Alert, Divider, TextField,
-  InputAdornment, LinearProgress
+  InputAdornment, LinearProgress, MenuItem
 } from '@mui/material'
 import SearchIcon from '@mui/icons-material/Search'
+import SortIcon from '@mui/icons-material/Sort'
 import LinkIcon from '@mui/icons-material/Link'
 import LinkOffIcon from '@mui/icons-material/LinkOff'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
@@ -22,6 +23,7 @@ export default function Products() {
   const { products, epcMap, unlinkEpc, unlinkAllForProduct } = useInventory()
 
   const [search, setSearch] = React.useState('')
+  const [sortBy, setSortBy] = React.useState('az')
   const [openModal, setOpenModal] = React.useState(false)
   const [modalProduct, setModalProduct] = React.useState(null)
   const [toUnlink, setToUnlink] = React.useState([])
@@ -53,12 +55,33 @@ export default function Products() {
   const getLinkedCount = (product) =>
     product.units.filter(u => unitToEpc[u.id]).length
 
-  const filteredProducts = products.filter(p =>
-    !search ||
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    p.sku.toLowerCase().includes(search.toLowerCase()) ||
-    p.category.toLowerCase().includes(search.toLowerCase())
-  )
+  const filteredProducts = React.useMemo(() => {
+    const filtered = products.filter(p =>
+      !search ||
+      p.name.toLowerCase().includes(search.toLowerCase()) ||
+      p.sku.toLowerCase().includes(search.toLowerCase()) ||
+      p.category.toLowerCase().includes(search.toLowerCase())
+    )
+    const arr = [...filtered]
+    switch (sortBy) {
+      case 'az':
+        return arr.sort((a, b) => a.name.localeCompare(b.name, 'es'))
+      case 'qty-desc':
+        return arr.sort((a, b) => b.units.length - a.units.length)
+      case 'qty-asc':
+        return arr.sort((a, b) => a.units.length - b.units.length)
+      case 'linked':
+        return arr.sort((a, b) => getLinkedCount(b) - getLinkedCount(a))
+      case 'unlinked':
+        return arr.sort((a, b) => {
+          const aU = a.units.length - getLinkedCount(a)
+          const bU = b.units.length - getLinkedCount(b)
+          return bU - aU
+        })
+      default:
+        return arr
+    }
+  }, [products, search, sortBy, getLinkedCount])
 
   const openReview = (product) => {
     setModalProduct(product)
@@ -92,9 +115,26 @@ export default function Products() {
       <Typography variant="h5" sx={{ mb: 2 }}>Productos Vinculados</Typography>
 
       <Paper sx={{ p: 2, mb: 2 }}>
-        <TextField fullWidth size="small" placeholder="Buscar por nombre, SKU o categoría..."
-          value={search} onChange={e => setSearch(e.target.value)}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }} />
+        <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+          <TextField
+            size="small" placeholder="Buscar por nombre, SKU o categoría..."
+            value={search} onChange={e => setSearch(e.target.value)}
+            sx={{ flex: 1, minWidth: 200 }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          />
+          <TextField
+            select size="small" label="Ordenar" value={sortBy}
+            onChange={e => setSortBy(e.target.value)}
+            sx={{ minWidth: 210 }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SortIcon fontSize="small" /></InputAdornment> }}
+          >
+            <MenuItem value="az">A → Z (nombre)</MenuItem>
+            <MenuItem value="qty-desc">Cantidad (mayor a menor)</MenuItem>
+            <MenuItem value="qty-asc">Cantidad (menor a mayor)</MenuItem>
+            <MenuItem value="linked">Vinculados primero</MenuItem>
+            <MenuItem value="unlinked">No vinculados primero</MenuItem>
+          </TextField>
+        </Box>
       </Paper>
 
       {/* Stickers sin producto válido (huérfanos) — EPCs que quedaron

@@ -6,7 +6,10 @@ const http = require('http')
 const {
   getDb, closeDb, loadAll,
   saveProducts, saveEvents, saveRentals, saveOpStates,
-  saveEpcMap, saveEventHistory, saveRentalHistory, savePurchaseHistory
+  saveEpcMap, saveEventHistory, saveRentalHistory, savePurchaseHistory,
+  saveAuditLog,
+  loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
+  setUserPin, removeUserPin, authLoginPin
 } = require('./db')
 
 /* ── Puente IPC para persistencia (paso 3) ──
@@ -42,6 +45,19 @@ function registerIpcHandlers() {
   ipcMain.handle('db:save-event-history', wrap((list) => saveEventHistory(list)))
   ipcMain.handle('db:save-rental-history', wrap((list) => saveRentalHistory(list)))
   ipcMain.handle('db:save-purchase-history', wrap((list) => savePurchaseHistory(list)))
+  ipcMain.handle('db:save-audit-log', wrap((list) => saveAuditLog(list)))
+
+  // ── Usuarios (autenticación real) ──────────────────────────────────────
+  ipcMain.handle('db:load-users', wrap(() => loadUsers()))
+  ipcMain.handle('db:create-user', wrap((data, pass) => createUser(data, pass)))
+  ipcMain.handle('db:update-user', wrap((id, fields, pass) => updateUser(id, fields, pass || null)))
+  ipcMain.handle('db:delete-user', wrap((id) => deleteUser(id)))
+  ipcMain.handle('db:auth-login', wrap((username, pass) => authLogin(username, pass)))
+  ipcMain.handle('db:count-admins', wrap(() => countAdmins()))
+  // ── PIN de acceso rápido ───────────────────────────────────────────────
+  ipcMain.handle('db:set-user-pin', wrap((userId, pin) => setUserPin(userId, pin)))
+  ipcMain.handle('db:remove-user-pin', wrap((userId) => removeUserPin(userId)))
+  ipcMain.handle('db:auth-login-pin', wrap((userId, pin) => authLoginPin(userId, pin)))
 }
 
 let mainWindow

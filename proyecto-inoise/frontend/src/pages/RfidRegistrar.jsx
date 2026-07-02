@@ -31,8 +31,8 @@ const unitLabel = (id) => {
 
 export default function RfidRegistrar() {
     const { products, addProduct, linkEpc, epcMap, nextSkuForFamily } = useInventory()
-    const { role } = useAuth()
-    const currentUser = role === 'admin' ? 'Administrador' : 'Operador'
+    const { role, currentUser: authUser } = useAuth()
+    const currentUser = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
     const { isConnected, lastScan, unknownTags, clearLastScan } = useRfidSocket()
     // BUG FIX: useRfidSocket ahora comparte UNA sola conexión para toda la
     // app (ver RfidSocketContext), así que al entrar a esta pantalla

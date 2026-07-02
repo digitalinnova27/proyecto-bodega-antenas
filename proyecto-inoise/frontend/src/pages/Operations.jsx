@@ -89,8 +89,8 @@ const calcPhaseProgress = (phase, totalItems, lostCount = 0) => {
 
 /* ─── Componente principal ──────────────────────────────────────────────────── */
 export default function Operations() {
-  const { role } = useAuth()
-  const roleLabel = role === 'admin' ? 'Administrador' : 'Operador'
+  const { role, currentUser: authUser } = useAuth()
+  const roleLabel = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
   const {
     events, products, rentals, updateEvent, setEvents, epcMap, markUnitOccupied, markUnitAvailable, closeEventToHistory,
     // opStates: { [eventId]: opState } — vive en InventoryContext para que el

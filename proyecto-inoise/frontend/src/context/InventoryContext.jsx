@@ -68,6 +68,7 @@ export function InventoryProvider({ children }) {
         if (d.eventHistory) setEventHistory(d.eventHistory)
         if (d.rentalHistory) setRentalHistory(d.rentalHistory)
         if (d.purchaseHistory) setPurchaseHistory(d.purchaseHistory)
+        if (d.auditLog) setAuditLog(d.auditLog)
         // epcMap: el bridge (server/rfid-bridge.js) sigue siendo la fuente
         // de verdad para resolver escaneos reales — el efecto de abajo que
         // hace fetch a BRIDGE_URL puede sobreescribir esto si el bridge
@@ -299,6 +300,7 @@ export function InventoryProvider({ children }) {
     }
 
     setEvents(prev => [newEvent, ...prev])
+    addAuditEntry('Evento creado', `${newEvent.orderNumber} · ${newEvent.name}`, 'evento')
     return newEvent
   }
 
@@ -331,6 +333,7 @@ export function InventoryProvider({ children }) {
     setEvents(prev => prev.map(e =>
       e.id === eventId ? { ...e, ...formData, assignments: enrichedAssignments } : e
     ))
+    addAuditEntry('Evento modificado', `${oldEvent?.orderNumber} · ${formData.name || oldEvent?.name}`, 'evento')
   }
 
   /* ── Eliminar (deshacer) evento — libera sus unidades reales ── */
@@ -346,6 +349,7 @@ export function InventoryProvider({ children }) {
       )
     })))
     setEvents(prev => prev.filter(e => e.id !== eventId))
+    addAuditEntry('Evento eliminado', `${ev?.orderNumber} · ${ev?.name}`, 'evento')
   }
 
   /* ────────────────────────────────────────────────────────────────────────
@@ -402,6 +406,7 @@ export function InventoryProvider({ children }) {
       createdAt: new Date().toISOString()
     }
     setRentals(prev => [newRental, ...prev])
+    addAuditEntry('Arriendo creado', `${newRental.orderNumber} · ${newRental.name}${newRental.clientName ? ' · ' + newRental.clientName : ''}`, 'arriendo')
     return newRental
   }
 
@@ -418,6 +423,7 @@ export function InventoryProvider({ children }) {
           : u
       )
     })))
+    addAuditEntry('Arriendo eliminado', `${rental?.orderNumber} · ${rental?.name}`, 'arriendo')
   }
 
   /* ── Agregar producto ── */
@@ -510,6 +516,24 @@ export function InventoryProvider({ children }) {
   const [eventHistory, setEventHistory] = useState([])
   const [rentalHistory, setRentalHistory] = useState([])
   const [purchaseHistory, setPurchaseHistory] = useState([])
+  const [auditLog, setAuditLog] = useState([])
+
+  /* ── Registrar entrada de auditoría ───────────────────────────────────
+   * Cada acción relevante del sistema (crear/cerrar/eliminar evento,
+   * arriendo o producto) agrega una entrada con: timestamp, usuario que
+   * la realizó, descripción de la acción, detalle (N° orden + nombre) y
+   * categoría (evento | arriendo | producto | sistema). */
+  const addAuditEntry = React.useCallback((action, detail, category, user = 'Sistema') => {
+    const entry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      user,
+      action,
+      detail: detail || '',
+      category: category || 'sistema'
+    }
+    setAuditLog(prev => [entry, ...prev])
+  }, [])
 
   // Etiquetas de fase para el Reporte de Operaciones (PHASES vive en
   // Operations.jsx; acá solo se necesita el texto para guardarlo en el
@@ -580,6 +604,7 @@ export function InventoryProvider({ children }) {
       lossDetails
     }
     setEventHistory(prev => [entry, ...prev])
+    addAuditEntry('Evento cerrado (Operaciones)', `${event.orderNumber} · ${event.name}`, 'evento', closedBy)
     // Ya NO se elimina de `events`: antes desaparecía por completo, lo que
     // hacía que tampoco se pudiera ver en la página de Eventos (la lista
     // activa y el Historial comparten el mismo evento de origen). Ahora se
@@ -616,6 +641,7 @@ export function InventoryProvider({ children }) {
     }
     setRentalHistory(prev => [entry, ...prev])
     setRentals(prev => prev.filter(r => r.id !== rental.id))
+    addAuditEntry('Arriendo cerrado (Operaciones)', `${rental.orderNumber} · ${rental.name}${rental.clientName ? ' · ' + rental.clientName : ''}`, 'arriendo', closedBy)
   }
 
   // Dado el prefijo de familia SKU (ej. "AUD"), busca el correlativo más
@@ -651,8 +677,10 @@ export function InventoryProvider({ children }) {
     // desconocido" y no había forma de liberarlos desde la UI, porque
     // Productos Vinculados solo lista productos reales. Por eso ahora
     // se desvinculan sus EPCs ANTES de quitar el producto de la lista.
+    const prod = products.find(p => p.id === productId)
     unlinkAllForProduct(productId)
     setProducts(prev => prev.filter(p => p.id !== productId))
+    addAuditEntry('Producto eliminado', `${prod?.name || '—'} (${prod?.sku || '—'})`, 'producto')
   }
 
   /* Mismo flujo de aprobación que los eventos, pero para productos del
@@ -692,6 +720,7 @@ export function InventoryProvider({ children }) {
       }))
     }
     setProducts(prev => [...prev, newProduct])
+    addAuditEntry('Producto ingresado', `${data.name} (${data.sku}) · ${qty} unidades`, 'producto', user)
     setPurchaseHistory(prev => [{
       id: id + 1,
       date: new Date().toISOString(),
@@ -751,6 +780,11 @@ export function InventoryProvider({ children }) {
     window.api.savePurchaseHistory(purchaseHistory).catch(() => { })
   }, [purchaseHistory, isHydrated])
 
+  React.useEffect(() => {
+    if (!isHydrated || !window.api) return
+    window.api.saveAuditLog(auditLog).catch(() => { })
+  }, [auditLog, isHydrated])
+
   return (
     <InventoryContext.Provider value={{
       products, setProducts,
@@ -766,7 +800,8 @@ export function InventoryProvider({ children }) {
       markUnitOccupied, markUnitAvailable, markUnitBackFromRental,
       isActiveOnDate,
       eventHistory, rentalHistory, purchaseHistory,
-      closeEventToHistory, closeRentalToHistory
+      closeEventToHistory, closeRentalToHistory,
+      auditLog, addAuditEntry
     }}>
       {children}
     </InventoryContext.Provider>

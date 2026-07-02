@@ -30,5 +30,17 @@ contextBridge.exposeInMainWorld('api', {
   saveEpcMap: (epcMap) => ipcRenderer.invoke('db:save-epc-map', epcMap),
   saveEventHistory: (list) => ipcRenderer.invoke('db:save-event-history', list),
   saveRentalHistory: (list) => ipcRenderer.invoke('db:save-rental-history', list),
-  savePurchaseHistory: (list) => ipcRenderer.invoke('db:save-purchase-history', list)
+  savePurchaseHistory: (list) => ipcRenderer.invoke('db:save-purchase-history', list),
+  saveAuditLog: (list) => ipcRenderer.invoke('db:save-audit-log', list),
+  // ── Usuarios ──────────────────────────────────────────────────────────
+  loadUsers: () => ipcRenderer.invoke('db:load-users'),
+  createUser: (data, pass) => ipcRenderer.invoke('db:create-user', data, pass),
+  updateUser: (id, fields, pass) => ipcRenderer.invoke('db:update-user', id, fields, pass),
+  deleteUser: (id) => ipcRenderer.invoke('db:delete-user', id),
+  authLogin: (username, pass) => ipcRenderer.invoke('db:auth-login', username, pass),
+  countAdmins: () => ipcRenderer.invoke('db:count-admins'),
+  // ── PIN de acceso rápido ──────────────────────────────────────────────
+  setUserPin: (userId, pin) => ipcRenderer.invoke('db:set-user-pin', userId, pin),
+  removeUserPin: (userId) => ipcRenderer.invoke('db:remove-user-pin', userId),
+  authLoginPin: (userId, pin) => ipcRenderer.invoke('db:auth-login-pin', userId, pin)
 })

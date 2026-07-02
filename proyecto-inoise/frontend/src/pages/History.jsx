@@ -1,11 +1,12 @@
 import React from 'react'
 import {
   Box, Typography, Paper, Table, TableHead, TableRow, TableCell, TableBody,
-  Tabs, Tab, Chip, IconButton, Collapse, TextField, InputAdornment
+  Tabs, Tab, Chip, IconButton, Collapse, TextField, InputAdornment, Stack
 } from '@mui/material'
 import EventIcon from '@mui/icons-material/Event'
 import HandshakeIcon from '@mui/icons-material/Handshake'
 import Inventory2Icon from '@mui/icons-material/Inventory2'
+import AssessmentIcon from '@mui/icons-material/Assessment'
 import SearchIcon from '@mui/icons-material/Search'
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown'
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp'
@@ -283,8 +284,143 @@ function PurchasesHistoryTable({ rows, query }) {
   )
 }
 
+/* ─── Auditoría ─── */
+const AUDIT_CATEGORY_COLORS = {
+  evento: 'primary',
+  arriendo: 'secondary',
+  producto: 'success',
+  sistema: 'default'
+}
+
+const AUDIT_CATEGORY_LABELS = {
+  evento: 'Evento',
+  arriendo: 'Arriendo',
+  producto: 'Producto',
+  sistema: 'Sistema'
+}
+
+function filterByPeriod(entries, period) {
+  if (period === 'all') return entries
+  const now = new Date()
+  const startOf = (unit) => {
+    const d = new Date(now)
+    if (unit === 'day') { d.setHours(0, 0, 0, 0) }
+    else if (unit === 'week') { d.setDate(d.getDate() - d.getDay()); d.setHours(0, 0, 0, 0) }
+    else if (unit === 'month') { d.setDate(1); d.setHours(0, 0, 0, 0) }
+    return d
+  }
+  const since = period === 'day' ? startOf('day') : period === 'week' ? startOf('week') : startOf('month')
+  return entries.filter(e => e.timestamp && new Date(e.timestamp) >= since)
+}
+
+function AuditTable({ entries }) {
+  const [period, setPeriod] = React.useState('all')
+  const [catFilter, setCatFilter] = React.useState('all')
+
+  const filtered = React.useMemo(() => {
+    let list = filterByPeriod(entries, period)
+    if (catFilter !== 'all') list = list.filter(e => e.category === catFilter)
+    return list
+  }, [entries, period, catFilter])
+
+  const periodOptions = [
+    { value: 'day', label: 'Hoy' },
+    { value: 'week', label: 'Esta semana' },
+    { value: 'month', label: 'Este mes' },
+    { value: 'all', label: 'Todo' }
+  ]
+  const catOptions = [
+    { value: 'all', label: 'Todos' },
+    { value: 'evento', label: 'Eventos' },
+    { value: 'arriendo', label: 'Arriendos' },
+    { value: 'producto', label: 'Productos' },
+    { value: 'sistema', label: 'Sistema' }
+  ]
+
+  if (entries.length === 0) {
+    return (
+      <Box sx={{ p: 6, textAlign: 'center' }}>
+        <AssessmentIcon sx={{ fontSize: 40, color: 'text.secondary', mb: 1 }} />
+        <Typography color="text.secondary">Aún no hay movimientos registrados.</Typography>
+      </Box>
+    )
+  }
+
+  return (
+    <Box>
+      {/* Filtro período */}
+      <Stack direction="row" spacing={0.5} sx={{ mb: 1 }} flexWrap="wrap">
+        <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', mr: 0.5 }}>Período:</Typography>
+        {periodOptions.map(o => (
+          <Chip
+            key={o.value}
+            label={o.label}
+            size="small"
+            onClick={() => setPeriod(o.value)}
+            color={period === o.value ? 'primary' : 'default'}
+            variant={period === o.value ? 'filled' : 'outlined'}
+            sx={{ cursor: 'pointer' }}
+          />
+        ))}
+      </Stack>
+
+      {/* Filtro categoría */}
+      <Stack direction="row" spacing={0.5} sx={{ mb: 2 }} flexWrap="wrap">
+        <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', mr: 0.5 }}>Categoría:</Typography>
+        {catOptions.map(o => (
+          <Chip
+            key={o.value}
+            label={o.label}
+            size="small"
+            onClick={() => setCatFilter(o.value)}
+            color={catFilter === o.value ? (o.value === 'all' ? 'primary' : AUDIT_CATEGORY_COLORS[o.value] || 'primary') : 'default'}
+            variant={catFilter === o.value ? 'filled' : 'outlined'}
+            sx={{ cursor: 'pointer' }}
+          />
+        ))}
+      </Stack>
+
+      {filtered.length === 0 ? (
+        <Box sx={{ p: 3, textAlign: 'center' }}>
+          <Typography color="text.secondary">Sin movimientos para los filtros seleccionados.</Typography>
+        </Box>
+      ) : (
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Fecha / Hora</TableCell>
+              <TableCell>Usuario</TableCell>
+              <TableCell>Acción</TableCell>
+              <TableCell>Detalle</TableCell>
+              <TableCell>Categoría</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {filtered.map(e => (
+              <TableRow key={e.id} hover>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>{fmtDateTime(e.timestamp)}</TableCell>
+                <TableCell>{e.user || 'Sistema'}</TableCell>
+                <TableCell>{e.action}</TableCell>
+                <TableCell sx={{ color: 'text.secondary', fontSize: 13 }}>{e.detail || '—'}</TableCell>
+                <TableCell>
+                  <Chip
+                    label={AUDIT_CATEGORY_LABELS[e.category] || e.category || '—'}
+                    size="small"
+                    color={AUDIT_CATEGORY_COLORS[e.category] || 'default'}
+                    variant="outlined"
+                  />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Box>
+  )
+}
+
 export default function History() {
-  const { eventHistory, rentalHistory, purchaseHistory } = useInventory()
+  const { eventHistory, rentalHistory, purchaseHistory, auditLog } = useInventory()
   const [tab, setTab] = React.useState(0)
   const [query, setQuery] = React.useState('')
 
@@ -292,19 +428,22 @@ export default function History() {
     <Box>
       <Typography variant="h5" sx={{ mb: 2 }}>Historial</Typography>
 
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <TextField
-          fullWidth size="small" placeholder="Buscar por N° orden, nombre, lugar, cliente, producto o SKU…"
-          value={query} onChange={e => setQuery(e.target.value)}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
-        />
-      </Paper>
+      {tab !== 3 && (
+        <Paper sx={{ p: 2, mb: 2 }}>
+          <TextField
+            fullWidth size="small" placeholder="Buscar por N° orden, nombre, lugar, cliente, producto o SKU…"
+            value={query} onChange={e => setQuery(e.target.value)}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          />
+        </Paper>
+      )}
 
       <Paper sx={{ mb: 0 }}>
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ px: 1 }}>
+        <Tabs value={tab} onChange={(_, v) => { setTab(v); setQuery('') }} sx={{ px: 1 }}>
           <Tab icon={<EventIcon sx={{ fontSize: 18 }} />} iconPosition="start" label={`Historial de Eventos (${eventHistory.length})`} />
           <Tab icon={<HandshakeIcon sx={{ fontSize: 18 }} />} iconPosition="start" label={`Historial de Rentas (${rentalHistory.length})`} />
           <Tab icon={<Inventory2Icon sx={{ fontSize: 18 }} />} iconPosition="start" label={`Historial de Compras (${purchaseHistory.length})`} />
+          <Tab icon={<AssessmentIcon sx={{ fontSize: 18 }} />} iconPosition="start" label={`Auditoría (${(auditLog || []).length})`} />
         </Tabs>
       </Paper>
 
@@ -312,6 +451,7 @@ export default function History() {
         {tab === 0 && <EventsHistoryTable rows={eventHistory} query={query} />}
         {tab === 1 && <RentalsHistoryTable rows={rentalHistory} query={query} />}
         {tab === 2 && <PurchasesHistoryTable rows={purchaseHistory} query={query} />}
+        {tab === 3 && <AuditTable entries={auditLog || []} />}
       </Paper>
     </Box>
   )

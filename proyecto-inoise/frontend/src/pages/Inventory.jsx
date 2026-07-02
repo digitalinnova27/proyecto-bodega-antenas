@@ -28,8 +28,8 @@ export default function Inventory() {
     products, setProducts, getAvailableQty, getReservedQty,
     addProduct, deleteProduct, requestDeleteProduct, cancelDeleteProduct, nextSkuForFamily
   } = useInventory()
-  const { role } = useAuth()
-  const currentUser = role === 'admin' ? 'Administrador' : 'Operador'
+  const { role, currentUser: authUser } = useAuth()
+  const currentUser = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
 
   const [categories, setCategories] = React.useState([])
   const [filter, setFilter] = React.useState({ sku: '', category: '', state: '' })

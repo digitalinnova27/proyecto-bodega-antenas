@@ -2,7 +2,7 @@ import React from 'react'
 import {
   Box, Typography, Paper, Chip, LinearProgress, Alert, Divider,
   Button, Dialog, DialogTitle, DialogContent, IconButton,
-  List, ListItem, ListItemText, ListItemIcon
+  List, ListItem, ListItemText, ListItemIcon, Tabs, Tab
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
 import WifiOffIcon from '@mui/icons-material/WifiOff'
@@ -10,19 +10,24 @@ import CloseIcon from '@mui/icons-material/Close'
 import HistoryIcon from '@mui/icons-material/History'
 import NfcIcon from '@mui/icons-material/Nfc'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
-import CancelIcon from '@mui/icons-material/Cancel'
+import RepeatIcon from '@mui/icons-material/Repeat'
+import EventIcon from '@mui/icons-material/Event'
+import HandshakeIcon from '@mui/icons-material/Handshake'
 import { useRfidSocket } from '../hooks/useRfidSocket'
 import { useInventory } from '../context/InventoryContext'
 
-// Convierte "3-5" → "Unidad 5"
-const unitNumberLabel = (id) => {
-  const parts = String(id).split('-')
-  return `Unidad ${parts[parts.length - 1]}`
+const PHASE_LABELS = {
+  f1: 'Despacho bodega',
+  f2: 'Recepción evento',
+  f3: 'Despacho evento',
+  f4: 'Recepción bodega'
 }
 
-// Marca cada lectura como "única" (primera vez que se ve ese EPC en la sesión)
-// o "repetida" (el mismo EPC ya había sido leído antes). El array llega
-// ordenado de más reciente a más antigua, así que se recorre al revés
+// Convierte "3-5" → "Unidad 5"
+const unitNumberLabel = (id) => `Unidad ${String(id).split('-').pop()}`
+
+// Marca cada lectura como "única" (primera vez en la sesión) o "repetida".
+// El array viene ordenado de más reciente a más antigua, se recorre al revés
 // para detectar cuál fue la primera lectura cronológica de cada tag.
 const flagDuplicateScans = (scans) => {
   const seen = new Set()
@@ -35,7 +40,7 @@ const flagDuplicateScans = (scans) => {
 
 export default function Antennas() {
   const { isConnected: bridgeUp, lastScan, lastReadAt } = useRfidSocket()
-  const { products, epcMap } = useInventory()
+  const { products, epcMap, events, rentals, opStates } = useInventory()
 
   const [stats, setStats] = React.useState({
     totalScans: 0,
@@ -65,17 +70,6 @@ export default function Antennas() {
   // hardware real es haber recibido al menos un paquete UDP desde que se
   // abrió la app (lastReadAt). Sin esto, "Activa" se mostraba en verde
   // aunque no hubiera ningún lector conectado.
-  //
-  // OJO: lastReadAt vive en el estado de ESTE componente, y cada vez que
-  // se entra a la página /antennas se abre un WebSocket nuevo (useRfidSocket
-  // crea su propia conexión). Si el sticker se escaneó mientras el usuario
-  // estaba en OTRA pantalla (p. ej. RfidRegistrar), ese evento nunca llega
-  // a esta instancia del hook y lastReadAt queda en null aquí, aunque el
-  // bridge sí recibió la lectura — por eso la tarjeta mostraba "Offline" y
-  // ocultaba "Revisar lecturas" pese a tener scans recientes en stats
-  // (que viene de /api/stats, independiente de la página activa).
-  // Para evitar ese falso "Offline", también se considera activa la antena
-  // si el bridge reportó una lectura hace menos de 15s vía /api/stats.
   const RECENT_MS = 15000
   const recentlyActive = stats.lastScanTime
     ? (Date.now() - new Date(stats.lastScanTime).getTime()) < RECENT_MS
@@ -83,16 +77,71 @@ export default function Antennas() {
   const isConnected = bridgeUp && (lastReadAt !== null || recentlyActive)
 
   // Modal "Revisar lecturas"
-  const [reviewAntenna, setReviewAntenna] = React.useState(null) // antena cuyas lecturas se están revisando
+  const [reviewAntenna, setReviewAntenna] = React.useState(null)
+  const [scanTab, setScanTab] = React.useState(0)
 
-  /* ── Resuelve a qué elemento/unidad pertenece un EPC ── */
-  const resolveAssignedElement = (epc) => {
-    const unitId = epcMap?.[epc]
-    if (!unitId) return 'Sticker no vinculado a ningún elemento'
-    const productId = String(unitId).split('-')[0]
+  // ── Datos derivados para el modal ──────────────────────────────────────
+
+  // Scans con flag de unique/repetida
+  const flagged = React.useMemo(
+    () => flagDuplicateScans(reviewAntenna?.recentScans || []),
+    [reviewAntenna]
+  )
+  const uniqueScans = React.useMemo(() => flagged.filter(s => s.isUnique), [flagged])
+  const repeatedScans = React.useMemo(() => flagged.filter(s => !s.isUnique), [flagged])
+
+  // Cruzar scans crudos (bridge) con los scanned de cada evento/fase en opStates.
+  // phases[key].scanned = [{ id: unitId, name, sku, ... }]
+  // epcMap[epc] = unitId
+  // Si el unitId de un scan aparece en algún phase.scanned, ese scan
+  // pertenece a ese evento + fase.
+  const eventSections = React.useMemo(() => {
+    if (!reviewAntenna || flagged.length === 0) return []
+    return events
+      .filter(ev => opStates[ev.id])
+      .map(ev => {
+        const op = opStates[ev.id]
+        const phases = Object.entries(op.phases || {}).map(([key, ph]) => {
+          const scannedUids = new Set((ph.scanned || []).map(s => s.id))
+          const scans = flagged.filter(sc => {
+            const uid = epcMap[sc.epc]
+            return uid && scannedUids.has(uid)
+          })
+          return { key, label: PHASE_LABELS[key] || key, done: !!ph.done, forced: !!ph.forcedClose, scans }
+        }).filter(ph => ph.scans.length > 0)
+        return { ev, phases }
+      })
+      .filter(sec => sec.phases.length > 0)
+  }, [reviewAntenna, flagged, events, opStates, epcMap])
+
+  const rentalSections = React.useMemo(() => {
+    if (!reviewAntenna || flagged.length === 0) return []
+    return (rentals || [])
+      .filter(r => opStates[r.id])
+      .map(r => {
+        const op = opStates[r.id]
+        const phases = Object.entries(op.phases || {}).map(([key, ph]) => {
+          const scannedUids = new Set((ph.scanned || []).map(s => s.id))
+          const scans = flagged.filter(sc => {
+            const uid = epcMap[sc.epc]
+            return uid && scannedUids.has(uid)
+          })
+          return { key, label: PHASE_LABELS[key] || key, done: !!ph.done, forced: !!ph.forcedClose, scans }
+        }).filter(ph => ph.scans.length > 0)
+        return { r, phases }
+      })
+      .filter(sec => sec.phases.length > 0)
+  }, [reviewAntenna, flagged, rentals, opStates, epcMap])
+
+  // ── Helpers ──────────────────────────────────────────────────────────
+
+  const resolveScan = (epc) => {
+    const uid = epcMap?.[epc]
+    if (!uid) return { label: 'Sticker no vinculado', sub: epc }
+    const productId = String(uid).split('-')[0]
     const product = products.find(p => String(p.id) === productId)
-    if (!product) return 'Sticker no vinculado a ningún elemento'
-    return `${product.name} — ${unitNumberLabel(unitId)}`
+    if (!product) return { label: 'Producto eliminado', sub: epc }
+    return { label: `${product.name} — ${unitNumberLabel(uid)}`, sub: epc }
   }
 
   const fmtDate = (iso) => {
@@ -103,7 +152,6 @@ export default function Antennas() {
   }
 
   // Señal: RSSI viene en dBm (negativo), convertir a porcentaje
-  // RSSI típico: -30 dBm (excelente) a -90 dBm (muy débil)
   const rssiToPct = (rssi) => {
     if (rssi === null || rssi === undefined) return null
     const clamped = Math.max(-90, Math.min(-30, rssi))
@@ -112,12 +160,6 @@ export default function Antennas() {
 
   const signalPct = rssiToPct(stats.lastSignal)
   const hasRssi = signalPct !== null
-  // Si el lector no tiene RSSI=1 activado en Reader.ini, no llega dato de
-  // señal — pero eso NO significa que la antena esté fallando: sigue
-  // conectada y leyendo stickers normalmente. Antes la barra se quedaba en
-  // 0% (rojo) solo por faltar ese dato, lo que se veía como una falla real.
-  // Ahora: conectada sin RSSI = barra llena en verde ("Conectada"); sin
-  // conexión = barra vacía en rojo.
   const signalLabel = hasRssi
     ? `${signalPct}% (${stats.lastSignal} dBm)`
     : isConnected ? 'Conectada' : 'Sin conexión'
@@ -138,6 +180,53 @@ export default function Antennas() {
     { id: 2, name: 'Antena 2', active: false, signalPct: 0, signalLabel: '0%', lastRead: '—', totalScans: 0, uniqueTags: 0, recentScans: [] },
     { id: 3, name: 'Antena 3', active: false, signalPct: 0, signalLabel: '0%', lastRead: '—', totalScans: 0, uniqueTags: 0, recentScans: [] },
   ]
+
+  // ── Render de una fila de scan ────────────────────────────────────────
+  const renderScanRow = (scan, i) => {
+    const { label, sub } = resolveScan(scan.epc)
+    return (
+      <ListItem key={`${scan.epc}-${i}`} sx={{ py: 0.7, px: 0 }} disableGutters>
+        <ListItemIcon sx={{ minWidth: 28 }}>
+          <NfcIcon sx={{ fontSize: 15 }} color="primary" />
+        </ListItemIcon>
+        <ListItemText
+          primary={<Typography variant="body2" fontWeight={600} sx={{ lineHeight: 1.3 }}>{label}</Typography>}
+          secondary={
+            <Box sx={{ display: 'flex', gap: 0.8, alignItems: 'center', flexWrap: 'wrap', mt: 0.2 }}>
+              <Typography variant="caption" fontFamily="monospace" sx={{ fontSize: 10, color: 'text.secondary' }}>
+                {sub}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {new Date(scan.at).toLocaleTimeString('es-CL')}
+              </Typography>
+              {scan.rssi && (
+                <Chip label={`${scan.rssi} dBm`} size="small" sx={{ fontSize: 10, height: 16 }} />
+              )}
+            </Box>
+          }
+        />
+      </ListItem>
+    )
+  }
+
+  // ── Render de una sección de fase (dentro de un evento/arriendo) ──────
+  const renderPhaseSection = (ph) => (
+    <Box key={ph.key} sx={{ mb: 1.5, pl: 1.5, borderLeft: '2px solid', borderColor: ph.done ? 'success.main' : 'divider' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8, mb: 0.5 }}>
+        <Typography variant="caption" color="text.secondary" fontWeight={700} sx={{ textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          {ph.key.toUpperCase()} · {ph.label}
+        </Typography>
+        {ph.done && (
+          <Chip label={ph.forced ? 'Forzada' : 'Completa'} size="small"
+            color={ph.forced ? 'warning' : 'success'} sx={{ fontSize: 10, height: 18 }} />
+        )}
+        <Chip label={`${ph.scans.length} lect.`} size="small" variant="outlined" sx={{ fontSize: 10, height: 18 }} />
+      </Box>
+      <List dense disablePadding>
+        {ph.scans.map((sc, i) => renderScanRow(sc, i))}
+      </List>
+    </Box>
+  )
 
   return (
     <Box>
@@ -214,18 +303,13 @@ export default function Antennas() {
             </Box>
           </Box>
 
-          {/* Botón para revisar lecturas (en vez de lista creciente inline).
-              No se condiciona a ant.active: las lecturas ya guardadas en el
-              bridge deben poder revisarse aunque la tarjeta momentáneamente
-              muestre "Offline" (p. ej. recién se abrió esta pantalla y aún
-              no llegó ningún paquete nuevo por el WebSocket de esta sesión). */}
           {ant.recentScans.length > 0 && (
             <Box sx={{ mt: 1, display: 'flex', justifyContent: 'flex-end' }}>
               <Button
                 size="small"
                 variant="outlined"
                 startIcon={<HistoryIcon />}
-                onClick={() => setReviewAntenna(ant)}
+                onClick={() => { setScanTab(0); setReviewAntenna(ant) }}
               >
                 Revisar lecturas ({ant.recentScans.length})
               </Button>
@@ -234,14 +318,14 @@ export default function Antennas() {
         </Paper>
       ))}
 
-      {/* Modal "Revisar lecturas" */}
+      {/* ── Modal "Revisar lecturas" con secciones ───────────────────── */}
       <Dialog
         open={!!reviewAntenna}
         onClose={() => setReviewAntenna(null)}
         fullWidth
-        maxWidth="sm"
+        maxWidth="md"
       >
-        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 0 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <HistoryIcon />
             Lecturas — {reviewAntenna?.name}
@@ -250,55 +334,129 @@ export default function Antennas() {
             <CloseIcon />
           </IconButton>
         </DialogTitle>
-        <DialogContent dividers>
-          {(!reviewAntenna?.recentScans || reviewAntenna.recentScans.length === 0) ? (
-            <Typography variant="body2" color="text.secondary">Sin lecturas registradas.</Typography>
-          ) : (
-            <List dense disablePadding>
-              {flagDuplicateScans(reviewAntenna.recentScans).map((scan, i) => (
-                <ListItem key={i} divider sx={{ py: 1.2, alignItems: 'flex-start' }}>
-                  <ListItemIcon sx={{ minWidth: 36, mt: 0.5 }}>
-                    <NfcIcon color={scan.isUnique ? 'primary' : 'disabled'} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Typography variant="body1" fontWeight={700} fontFamily="monospace" sx={{ wordBreak: 'break-all' }}>
-                          {scan.epc}
-                        </Typography>
-                        {scan.isUnique
-                          ? <CheckCircleIcon sx={{ color: 'success.main', fontSize: 20 }} titleAccess="Lectura única" />
-                          : <CancelIcon sx={{ color: 'error.main', fontSize: 20 }} titleAccess="Lectura repetida" />
-                        }
-                      </Box>
-                    }
-                    secondary={
-                      <Box sx={{ mt: 0.5 }}>
-                        <Typography variant="body2" color="text.primary">
-                          {resolveAssignedElement(scan.epc)}
-                        </Typography>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.3 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {new Date(scan.at).toLocaleString('es-CL')}
-                          </Typography>
-                          {scan.rssi && (
-                            <Chip label={`${scan.rssi} dBm`} size="small" sx={{ fontSize: 10, height: 18 }} />
-                          )}
-                          <Chip
-                            label={scan.isUnique ? 'Única' : 'Repetida'}
-                            size="small"
-                            color={scan.isUnique ? 'success' : 'error'}
-                            variant="outlined"
-                            sx={{ fontSize: 10, height: 18 }}
-                          />
-                        </Box>
-                      </Box>
-                    }
-                  />
-                </ListItem>
-              ))}
-            </List>
+
+        {/* Tabs de secciones */}
+        <Tabs
+          value={scanTab}
+          onChange={(_, v) => setScanTab(v)}
+          sx={{ px: 3, borderBottom: 1, borderColor: 'divider' }}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          <Tab
+            icon={<CheckCircleIcon sx={{ fontSize: 16 }} />}
+            iconPosition="start"
+            label={`Únicas (${uniqueScans.length})`}
+            sx={{ minHeight: 44, fontSize: 13 }}
+          />
+          <Tab
+            icon={<RepeatIcon sx={{ fontSize: 16 }} />}
+            iconPosition="start"
+            label={`Repetidas (${repeatedScans.length})`}
+            sx={{ minHeight: 44, fontSize: 13 }}
+          />
+          <Tab
+            icon={<EventIcon sx={{ fontSize: 16 }} />}
+            iconPosition="start"
+            label={`Eventos (${eventSections.length})`}
+            sx={{ minHeight: 44, fontSize: 13 }}
+          />
+          <Tab
+            icon={<HandshakeIcon sx={{ fontSize: 16 }} />}
+            iconPosition="start"
+            label={`Arriendos (${rentalSections.length})`}
+            sx={{ minHeight: 44, fontSize: 13 }}
+          />
+        </Tabs>
+
+        <DialogContent dividers sx={{ minHeight: 280, maxHeight: '70vh' }}>
+
+          {/* ── Tab 0: Lecturas únicas ── */}
+          {scanTab === 0 && (
+            uniqueScans.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">Sin lecturas únicas registradas.</Typography>
+            ) : (
+              <>
+                <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                  {uniqueScans.length} tag{uniqueScans.length !== 1 ? 's' : ''} leído{uniqueScans.length !== 1 ? 's' : ''} por primera vez en esta sesión.
+                </Typography>
+                <List dense disablePadding>
+                  {uniqueScans.map((sc, i) => (
+                    <React.Fragment key={`u-${sc.epc}-${i}`}>
+                      {i > 0 && <Divider sx={{ my: 0.3 }} />}
+                      {renderScanRow(sc, i)}
+                    </React.Fragment>
+                  ))}
+                </List>
+              </>
+            )
           )}
+
+          {/* ── Tab 1: Lecturas repetidas ── */}
+          {scanTab === 1 && (
+            repeatedScans.length === 0 ? (
+              <Box>
+                <Alert severity="success" sx={{ mb: 1 }}>Sin lecturas repetidas — cada tag se leyó solo una vez.</Alert>
+              </Box>
+            ) : (
+              <>
+                <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                  {repeatedScans.length} lectura{repeatedScans.length !== 1 ? 's' : ''} de tags que ya habían sido detectados antes en esta sesión.
+                </Typography>
+                <List dense disablePadding>
+                  {repeatedScans.map((sc, i) => (
+                    <React.Fragment key={`r-${sc.epc}-${i}`}>
+                      {i > 0 && <Divider sx={{ my: 0.3 }} />}
+                      {renderScanRow(sc, i)}
+                    </React.Fragment>
+                  ))}
+                </List>
+              </>
+            )
+          )}
+
+          {/* ── Tab 2: Por evento y fase ── */}
+          {scanTab === 2 && (
+            eventSections.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                Ningún scan de esta sesión coincide con artículos escaneados en operaciones de eventos activos.
+              </Typography>
+            ) : (
+              eventSections.map(({ ev, phases }) => (
+                <Box key={ev.id} sx={{ mb: 3 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <EventIcon sx={{ fontSize: 18, color: 'primary.main' }} />
+                    <Typography variant="subtitle2" fontWeight={700}>{ev.name}</Typography>
+                    <Chip label={ev.orderNumber} size="small" color="primary" variant="outlined" sx={{ fontSize: 10 }} />
+                    <Chip label={ev.status} size="small" sx={{ fontSize: 10 }} />
+                  </Box>
+                  {phases.map(ph => renderPhaseSection(ph))}
+                </Box>
+              ))
+            )
+          )}
+
+          {/* ── Tab 3: Por arriendo y fase ── */}
+          {scanTab === 3 && (
+            rentalSections.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                Ningún scan de esta sesión coincide con artículos escaneados en operaciones de arriendos activos.
+              </Typography>
+            ) : (
+              rentalSections.map(({ r, phases }) => (
+                <Box key={r.id} sx={{ mb: 3 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <HandshakeIcon sx={{ fontSize: 18, color: 'primary.main' }} />
+                    <Typography variant="subtitle2" fontWeight={700}>{r.name}</Typography>
+                    <Chip label={r.orderNumber} size="small" color="primary" variant="outlined" sx={{ fontSize: 10 }} />
+                    {r.clientName && <Chip label={r.clientName} size="small" variant="outlined" sx={{ fontSize: 10 }} />}
+                  </Box>
+                  {phases.map(ph => renderPhaseSection(ph))}
+                </Box>
+              ))
+            )
+          )}
+
         </DialogContent>
       </Dialog>
     </Box>

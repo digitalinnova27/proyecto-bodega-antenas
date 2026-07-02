@@ -439,7 +439,7 @@ export default function Events() {
                         </>
                       )}
 
-                      {role === 'operator' && !ev.pendingDelete && ev.status !== 'Concluido' && (
+                      {role === 'operador' && !ev.pendingDelete && ev.status !== 'Concluido' && (
                         <Tooltip title="Enviar solicitud de eliminación a un administrador">
                           <Button size="small" variant="outlined" color="error"
                             startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'request')}>
