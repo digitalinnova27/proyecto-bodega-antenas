@@ -551,6 +551,12 @@ export default function Login() {
   const { login, loginPin, loadUsers, hasAnyUsers, loginUsers } = useAuth()
   const navigate = useNavigate()
 
+  // Config leída síncronamente al montar (antes del primer render)
+  const [appCfg] = useState(() => {
+    try { return window.api?.getConfig?.() || {} } catch { return {} }
+  })
+  const isClientMode = appCfg.mode === 'client'
+
   // 'loading' | 'setup' | 'firstRun' | 'login'
   const [phase, setPhase] = useState('loading')
   const [adminExists, setAdminExists] = useState(false)
@@ -591,11 +597,12 @@ export default function Login() {
       return
     }
 
-    // Modo cliente: esperar que AuthContext resuelva (puede tardar si hay latencia)
+    // Modo cliente: saltar directo al formulario de operador (sin elección de rol)
     if (cfg.mode === 'client') {
       if (hasAnyUsers === null) return // cargando
-      // En cliente siempre se muestra login — el admin ya creó los usuarios
       setPhase('login')
+      setSelectedRole('operador')
+      setLoginStep('credentials')
       return
     }
 
@@ -629,7 +636,8 @@ export default function Login() {
     const res = await login(username, password)
     setLoginLoading(false)
     if (!res.ok) { setLoginError(res.error || 'Credenciales incorrectas'); return }
-    if (res.user.role !== selectedRole) {
+    // En modo cliente no validamos rol (solo existe el operador en este equipo)
+    if (!isClientMode && res.user.role !== selectedRole) {
       setLoginError('El usuario no corresponde al perfil seleccionado')
       return
     }
@@ -766,7 +774,7 @@ export default function Login() {
 
   return (
     <div className="login-container">
-      {loginStep === 'credentials' && (
+      {loginStep === 'credentials' && !isClientMode && (
         <button className="back-arrow" onClick={handleBack} aria-label="Volver">
           <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"
             strokeLinecap="round" strokeLinejoin="round">
