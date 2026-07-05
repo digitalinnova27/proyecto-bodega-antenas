@@ -48,7 +48,10 @@ contextBridge.exposeInMainWorld('api', {
   // ── Configuración de modo (servidor / cliente) ─────────────────────────
   // getConfig es síncrono para que api.js y socket.js puedan leerlo en tiempo
   // de módulo (antes del primer render), antes de que cualquier fetch ocurra.
-  getConfig:    () => ipcRenderer.sendSync('get-config'),
-  saveConfig:   (cfg) => ipcRenderer.invoke('save-config', cfg),
-  verifyServer: (url) => ipcRenderer.invoke('verify-server', url)
+  getConfig:      () => ipcRenderer.sendSync('get-config'),
+  saveConfig:     (cfg) => ipcRenderer.invoke('save-config', cfg),
+  verifyServer:   (url) => ipcRenderer.invoke('verify-server', url),
+  // Auto-descubrimiento UDP: escucha broadcasts del servidor en la red local.
+  // Resuelve { ok:true, url } si encuentra uno en 8s, { ok:false, error } si no.
+  discoverServer: () => ipcRenderer.invoke('discover-server')
 })

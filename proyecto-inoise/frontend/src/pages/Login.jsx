@@ -414,9 +414,50 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
 /* ─── Pantalla de setup inicial (primera vez, sin config) ──────────────── */
 function SetupScreen({ onDone }) {
   const [step, setStep] = useState('choice') // 'choice' | 'connect'
-  const [serverUrl, setServerUrl] = useState('')
-  const [verifying, setVerifying] = useState(false)
-  const [error, setError] = useState('')
+
+  // Auto-descubrimiento
+  const [discovering, setDiscovering]   = useState(false)
+  const [discoveredUrl, setDiscoveredUrl] = useState(null)  // URL encontrada por UDP
+
+  // Fallback manual
+  const [serverUrl, setServerUrl]   = useState('')
+  const [verifying, setVerifying]   = useState(false)
+  const [error, setError]           = useState('')
+  const [showManual, setShowManual] = useState(false) // true si UDP no encontró nada
+
+  // Al entrar al paso 'connect', lanzar auto-descubrimiento UDP
+  useEffect(() => {
+    if (step !== 'connect') return
+    // Reset states
+    setDiscovering(true)
+    setDiscoveredUrl(null)
+    setShowManual(false)
+    setError('')
+    setServerUrl('')
+
+    // Si no hay Electron (modo web / sin preload) saltar directo al manual
+    if (!window.api?.discoverServer) {
+      setDiscovering(false)
+      setShowManual(true)
+      return
+    }
+
+    window.api.discoverServer().then(res => {
+      setDiscovering(false)
+      if (res?.ok && res?.url) {
+        setDiscoveredUrl(res.url)
+        setServerUrl(res.url)
+      } else {
+        // Tiempo agotado — mostrar formulario manual
+        setShowManual(true)
+        setError('No se encontró servidor automáticamente. Ingresa la IP del administrador.')
+      }
+    }).catch(() => {
+      setDiscovering(false)
+      setShowManual(true)
+      setError('Error en auto-descubrimiento. Ingresa la IP del administrador.')
+    })
+  }, [step])
 
   const cardBase = {
     background: 'rgba(31,40,51,0.95)',
@@ -428,15 +469,13 @@ function SetupScreen({ onDone }) {
   }
 
   const handleChooseServer = async () => {
-    // Este equipo es el servidor principal → guardar config y continuar
     await window.api?.saveConfig?.({ mode: 'server' })
     onDone('server')
   }
 
-  const handleVerifyAndConnect = async () => {
+  const handleConnect = async (urlToUse) => {
     setError('')
-    // Normalizar URL
-    let url = serverUrl.trim()
+    let url = (urlToUse || serverUrl).trim()
     if (!url) { setError('Ingresa la IP del servidor'); return }
     if (!url.startsWith('http')) url = `http://${url}`
     if (!/:\d+$/.test(url)) url = `${url}:3005`
@@ -451,12 +490,26 @@ function SetupScreen({ onDone }) {
     onDone('client')
   }
 
-  const inputStyle = {
+  const inputStyle = (hasErr) => ({
     padding: '11px 14px', borderRadius: 8,
-    border: `1.5px solid ${error ? '#E24B4A' : 'rgba(255,255,255,0.2)'}`,
+    border: `1.5px solid ${hasErr ? '#E24B4A' : 'rgba(255,255,255,0.2)'}`,
     background: 'rgba(255,255,255,0.07)', color: '#fff',
     fontSize: 15, width: '100%', boxSizing: 'border-box',
     outline: 'none', fontFamily: 'inherit'
+  })
+
+  const btnPrimary = (disabled) => ({
+    marginTop: 16, width: '100%', padding: '13px', borderRadius: 8,
+    border: 'none', background: '#66FCF1', color: '#000',
+    fontWeight: 700, fontSize: 15,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.7 : 1, animation: 'none'
+  })
+
+  const btnSecondary = {
+    marginTop: 10, width: '100%', padding: '10px', borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.15)', background: 'transparent',
+    color: '#C5C6C7', fontSize: 14, cursor: 'pointer', animation: 'none'
   }
 
   if (step === 'connect') {
@@ -465,42 +518,110 @@ function SetupScreen({ onDone }) {
         <h2 style={{ color: '#66FCF1', marginBottom: 6, fontSize: 20 }}>
           Conectar al servidor
         </h2>
-        <p style={{ color: '#C5C6C7', fontSize: 13, marginBottom: 24 }}>
-          Ingresa la IP del PC principal. El administrador puede verla
-          en la sección <strong>Información del sistema</strong>.
-        </p>
-        <input
-          style={inputStyle}
-          placeholder="192.168.1.100  ó  192.168.1.100:3005"
-          value={serverUrl}
-          onChange={e => { setServerUrl(e.target.value); setError('') }}
-          onKeyDown={e => e.key === 'Enter' && handleVerifyAndConnect()}
-          autoFocus
-        />
-        {error && (
-          <p style={{ color: '#E24B4A', fontSize: 12, marginTop: 8 }}>{error}</p>
+
+        {/* ── Estado: buscando ── */}
+        {discovering && (
+          <div style={{ padding: '32px 0' }}>
+            {/* Spinner animado */}
+            <div style={{
+              width: 48, height: 48, margin: '0 auto 20px',
+              border: '4px solid rgba(102,252,241,0.2)',
+              borderTopColor: '#66FCF1',
+              borderRadius: '50%',
+              animation: 'spin 0.9s linear infinite'
+            }} />
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            <p style={{ color: '#66FCF1', fontWeight: 600, margin: '0 0 6px', fontSize: 15 }}>
+              Buscando servidor en la red…
+            </p>
+            <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, margin: 0 }}>
+              Esto puede tardar hasta 8 segundos
+            </p>
+          </div>
         )}
-        <button
-          onClick={handleVerifyAndConnect}
-          disabled={verifying}
-          style={{
-            marginTop: 16, width: '100%', padding: '13px', borderRadius: 8,
-            border: 'none', background: '#66FCF1', color: '#000',
-            fontWeight: 700, fontSize: 15,
-            cursor: verifying ? 'not-allowed' : 'pointer',
-            opacity: verifying ? 0.7 : 1,
-            animation: 'none'
-          }}
-        >
-          {verifying ? 'Verificando…' : 'Conectar'}
-        </button>
+
+        {/* ── Estado: servidor encontrado ── */}
+        {!discovering && discoveredUrl && (
+          <div style={{ padding: '8px 0 4px' }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
+            <p style={{ color: '#66FCF1', fontWeight: 600, margin: '0 0 4px', fontSize: 15 }}>
+              Servidor encontrado
+            </p>
+            <p style={{
+              color: 'rgba(255,255,255,0.55)', fontSize: 13,
+              background: 'rgba(102,252,241,0.06)',
+              border: '1px solid rgba(102,252,241,0.2)',
+              borderRadius: 8, padding: '8px 14px',
+              margin: '12px 0 0', wordBreak: 'break-all'
+            }}>
+              {discoveredUrl}
+            </p>
+            {error && (
+              <p style={{ color: '#E24B4A', fontSize: 12, marginTop: 8 }}>{error}</p>
+            )}
+            <button
+              onClick={() => handleConnect(discoveredUrl)}
+              disabled={verifying}
+              style={btnPrimary(verifying)}
+            >
+              {verifying ? 'Verificando…' : 'Conectar'}
+            </button>
+            <button
+              onClick={() => { setDiscoveredUrl(null); setShowManual(true); setError('') }}
+              style={btnSecondary}
+            >
+              Ingresar IP manualmente
+            </button>
+          </div>
+        )}
+
+        {/* ── Estado: fallback manual (UDP falló o usuario lo eligió) ── */}
+        {!discovering && !discoveredUrl && showManual && (
+          <div>
+            {error && (
+              <p style={{ color: 'rgba(255,200,100,0.85)', fontSize: 12, margin: '0 0 16px' }}>
+                {error}
+              </p>
+            )}
+            <p style={{ color: '#C5C6C7', fontSize: 13, margin: '0 0 16px' }}>
+              Ingresa la IP del PC del administrador.
+              Puedes verla en <strong>Ajustes → Información del sistema</strong>.
+            </p>
+            <input
+              style={inputStyle(!!error && !serverUrl)}
+              placeholder="192.168.1.100  ó  192.168.1.100:3005"
+              value={serverUrl}
+              onChange={e => { setServerUrl(e.target.value); setError('') }}
+              onKeyDown={e => e.key === 'Enter' && handleConnect()}
+              autoFocus
+            />
+            {error && serverUrl && (
+              <p style={{ color: '#E24B4A', fontSize: 12, marginTop: 8 }}>{error}</p>
+            )}
+            <button
+              onClick={() => handleConnect()}
+              disabled={verifying}
+              style={btnPrimary(verifying)}
+            >
+              {verifying ? 'Verificando…' : 'Conectar'}
+            </button>
+            <button
+              onClick={() => {
+                setShowManual(false)
+                setError('')
+                setServerUrl('')
+                setStep('connect') // re-trigger useEffect → nueva búsqueda
+              }}
+              style={btnSecondary}
+            >
+              🔄 Buscar de nuevo
+            </button>
+          </div>
+        )}
+
         <button
           onClick={() => { setStep('choice'); setError('') }}
-          style={{
-            marginTop: 10, width: '100%', padding: '10px', borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.15)', background: 'transparent',
-            color: '#C5C6C7', fontSize: 14, cursor: 'pointer', animation: 'none'
-          }}
+          style={{ ...btnSecondary, marginTop: 14, color: 'rgba(255,255,255,0.35)', fontSize: 12, border: 'none' }}
         >
           ← Volver
         </button>

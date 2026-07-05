@@ -3,6 +3,10 @@ const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 const http = require('http')
+const dgram = require('dgram')
+
+// Puerto UDP para auto-descubrimiento en red local
+const DISCOVERY_PORT = 3006
 
 // ── Configuración persistente (inoise-config.json en userData) ────────────────
 // Se escribe una sola vez en la pantalla de setup y se lee en cada arranque.
@@ -103,6 +107,44 @@ ipcMain.handle('verify-server', (_e, url) => {
     })
     req.on('error', (err) => resolve({ ok: false, error: err.message }))
     req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Tiempo agotado (5s)' }) })
+  })
+})
+
+// ── Auto-descubrimiento UDP ───────────────────────────────────────────────────
+// El cliente escucha en el puerto UDP 3006 durante 8 segundos esperando que
+// el servidor anuncie su URL. Si lo recibe resuelve { ok:true, url }, si no
+// resuelve { ok:false, error }. Usado desde SetupScreen antes de que el usuario
+// tenga que escribir la IP manualmente.
+ipcMain.handle('discover-server', () => {
+  return new Promise((resolve) => {
+    const listener = dgram.createSocket('udp4')
+
+    const timeout = setTimeout(() => {
+      try { listener.close() } catch {}
+      resolve({ ok: false, error: 'No se encontró servidor en la red (8s)' })
+    }, 8000)
+
+    listener.on('message', (msg) => {
+      try {
+        const data = JSON.parse(msg.toString())
+        if (data.service === 'iNOISE' && data.url) {
+          clearTimeout(timeout)
+          try { listener.close() } catch {}
+          resolve({ ok: true, url: data.url })
+        }
+      } catch {}
+    })
+
+    listener.on('error', (err) => {
+      clearTimeout(timeout)
+      try { listener.close() } catch {}
+      resolve({ ok: false, error: err.message })
+    })
+
+    listener.bind(DISCOVERY_PORT, () => {
+      // setBroadcast permite recibir paquetes de broadcast en este socket
+      try { listener.setBroadcast(true) } catch {}
+    })
   })
 })
 
@@ -250,6 +292,22 @@ app.whenReady().then(async () => {
     try {
       serverInfo = await startServer()
       console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
+
+      // UDP broadcaster — anuncia la URL del servidor en la red local cada 2s
+      // para que los PCs cliente puedan descubrirlo sin ingresar la IP a mano.
+      const broadcaster = dgram.createSocket('udp4')
+      broadcaster.on('error', (err) => {
+        console.error('[UDP] Error en broadcaster:', err.message)
+        try { broadcaster.close() } catch {}
+      })
+      broadcaster.bind(() => {
+        broadcaster.setBroadcast(true)
+        const msg = Buffer.from(JSON.stringify({ service: 'iNOISE', url: serverInfo.networkUrl }))
+        setInterval(() => {
+          broadcaster.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255')
+        }, 2000)
+        console.log(`[iNOISE] UDP auto-descubrimiento activo → puerto ${DISCOVERY_PORT}`)
+      })
     } catch (e) {
       console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
     }
@@ -273,6 +331,18 @@ app.whenReady().then(async () => {
         }
       }
     }
+  }
+
+  // Abrir puerto UDP para auto-descubrimiento (necesario en servidor Y cliente)
+  if (process.platform === 'win32') {
+    const { execSync } = require('child_process')
+    try {
+      execSync(
+        `netsh advfirewall firewall add rule name="iNOISE-UDP-${DISCOVERY_PORT}" ` +
+        `dir=in action=allow protocol=UDP localport=${DISCOVERY_PORT}`,
+        { timeout: 4000, stdio: 'pipe' }
+      )
+    } catch {}
   }
 
   // Exponer info del servidor al renderer via IPC.
