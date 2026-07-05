@@ -700,7 +700,14 @@ export default function Login() {
     )
   }
 
+  // Resetea la config y vuelve al setup (para corregir elección de modo)
+  const handleResetConfig = async () => {
+    await window.api?.saveConfig?.({})
+    window.location.reload()
+  }
+
   // ─── First run ─────────────────────────────────────────────────────────
+  // Solo llega acá en modo servidor sin usuarios. Solo muestra Admin.
   if (phase === 'firstRun') {
     return (
       <div className="login-container">
@@ -708,9 +715,9 @@ export default function Login() {
           {createStep === 'role' && (
             <>
               <p style={{ color: '#66FCF1', marginBottom: 24, fontSize: 16, textAlign: 'center' }}>
-                Bienvenido. Crea la primera cuenta del sistema.
+                Bienvenido. Crea la cuenta de administrador del sistema.
               </p>
-              <div className="cards">
+              <div className="cards" style={{ justifyContent: 'center' }}>
                 <div
                   className="card admin"
                   onClick={() => { setCreateRole('admin'); setCreateStep('form') }}
@@ -719,16 +726,19 @@ export default function Login() {
                   <h2>Administrador</h2>
                   <p>Control total del sistema</p>
                 </div>
-                <div
-                  className={`card operator ${adminExists ? 'disabled' : ''}`}
-                  style={adminExists ? { opacity: 0.4, pointerEvents: 'none' } : {}}
-                  onClick={() => !adminExists && (setCreateRole('operador'), setCreateStep('form'))}
-                >
-                  <img src={operadorImg} alt="Operador" />
-                  <h2>Operador</h2>
-                  <p>{adminExists ? 'Crea el admin primero' : 'Gestión operativa'}</p>
-                </div>
               </div>
+              {/* Escape para quien eligió "Servidor" por error */}
+              <button
+                onClick={handleResetConfig}
+                style={{
+                  marginTop: 28, background: 'none', border: 'none',
+                  color: 'rgba(255,255,255,0.35)', fontSize: 12,
+                  cursor: 'pointer', textDecoration: 'underline',
+                  animation: 'none', opacity: 1
+                }}
+              >
+                ← Este equipo no es el servidor principal
+              </button>
             </>
           )}
 
@@ -995,6 +1005,22 @@ export default function Login() {
         alt="Orbitag"
         className={`login-logo ${loginStep === 'credentials' ? 'hide' : ''}`}
       />
+
+      {/* Enlace de escape para quien eligió el modo equivocado en setup */}
+      {loginStep === 'role' && !isClientMode && (
+        <button
+          onClick={handleResetConfig}
+          style={{
+            position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)',
+            background: 'none', border: 'none',
+            color: 'rgba(255,255,255,0.22)', fontSize: 11,
+            cursor: 'pointer', textDecoration: 'underline',
+            animation: 'none', opacity: 1
+          }}
+        >
+          ← Cambiar configuración de equipo
+        </button>
+      )}
     </div>
   )
 }
