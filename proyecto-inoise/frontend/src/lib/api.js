@@ -9,10 +9,13 @@
  * En navegadores externos (http://192.168.x.x:3001): misma origin, sin proxy.
  */
 
-// En dev (Vite 5173): el proxy de vite.config.js redirige /api → 3001.
-// En prod (Express 3001 sirve el build) y en browsers de red: misma origin.
-// Siempre usamos URLs relativas — nunca conectar directo a otro puerto.
-const API_BASE = ''
+// En modo servidor (o dev): URLs relativas → el proxy de Vite o Express mismo.
+// En modo cliente: URL absoluta al servidor del admin (leída de inoise-config.json).
+function _readConfig() {
+  try { return (typeof window !== 'undefined' && window.api?.getConfig?.()) || {} } catch { return {} }
+}
+const _cfg = _readConfig()
+const API_BASE = _cfg.mode === 'client' ? (_cfg.serverUrl || '') : ''
 
 // Token almacenado en memoria + sessionStorage para sobrevivir recargas
 let _token = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('inoise_token') || null) : null

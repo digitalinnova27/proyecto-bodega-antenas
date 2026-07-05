@@ -19,14 +19,23 @@ import { io } from 'socket.io-client'
 
 let socket = null
 
+// Leer config al iniciar el módulo (síncrono, igual que api.js)
+function _readConfig() {
+  try { return (typeof window !== 'undefined' && window.api?.getConfig?.()) || {} } catch { return {} }
+}
+const _cfg = _readConfig()
+// Modo cliente → conectar al servidor remoto; modo servidor/dev → misma origin
+const _socketUrl = _cfg.mode === 'client' ? (_cfg.serverUrl || '/') : '/'
+
 /**
  * Devuelve (o crea) la instancia única de Socket.io.
- * En dev, el proxy de Vite redirige /socket.io → 3001.
+ * En dev, el proxy de Vite redirige /socket.io → 3005.
  * En prod y browsers de red, misma origin.
+ * En modo cliente, conecta al servidor remoto.
  */
 export function getSocket() {
   if (!socket) {
-    socket = io('/', {
+    socket = io(_socketUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
       reconnectionDelay: 2000

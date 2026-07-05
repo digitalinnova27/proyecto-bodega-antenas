@@ -3,6 +3,25 @@ const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 const http = require('http')
+
+// ── Configuración persistente (inoise-config.json en userData) ────────────────
+// Se escribe una sola vez en la pantalla de setup y se lee en cada arranque.
+// userData sobrevive actualizaciones de la app y reinstalaciones.
+function getConfigPath() {
+  return path.join(app.getPath('userData'), 'inoise-config.json')
+}
+
+function readConfig() {
+  try {
+    const p = getConfigPath()
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
+  } catch {}
+  return {}
+}
+
+function writeConfig(cfg) {
+  fs.writeFileSync(getConfigPath(), JSON.stringify(cfg, null, 2), 'utf8')
+}
 const {
   getDb, closeDb, loadAll,
   saveProducts, saveEvents, saveRentals, saveOpStates,
@@ -60,6 +79,32 @@ function registerIpcHandlers() {
   ipcMain.handle('db:remove-user-pin', wrap((userId) => removeUserPin(userId)))
   ipcMain.handle('db:auth-login-pin', wrap((userId, pin) => authLoginPin(userId, pin)))
 }
+
+// ── IPC de configuración de modo (sync para que el renderer pueda leerlo en
+//    tiempo de módulo, antes del primer render) ─────────────────────────────
+ipcMain.on('get-config', (e) => { e.returnValue = readConfig() })
+
+ipcMain.handle('save-config', (_e, cfg) => {
+  try { writeConfig(cfg); return { ok: true } }
+  catch (e) { return { ok: false, error: e.message } }
+})
+
+ipcMain.handle('verify-server', (_e, url) => {
+  return new Promise((resolve) => {
+    const req = http.get(`${url}/api/health`, { timeout: 5000 }, (res) => {
+      let body = ''
+      res.on('data', d => { body += d })
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body)
+          resolve({ ok: json.ok === true })
+        } catch { resolve({ ok: false, error: 'Respuesta inválida del servidor' }) }
+      })
+    })
+    req.on('error', (err) => resolve({ ok: false, error: err.message }))
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Tiempo agotado (5s)' }) })
+  })
+})
 
 let mainWindow
 let splashWindow
@@ -163,42 +208,51 @@ let serverInfo = null
 app.whenReady().then(async () => {
   createSplash()
 
-  // 1. Inicializar SQLite y registrar handlers IPC (compatibilidad con
-  //    clientes Electron que aún usan window.api directamente).
-  try {
-    getDb()
-    registerIpcHandlers()
-  } catch (e) {
-    console.error('[DB] Error al iniciar SQLite:', e.message)
-  }
+  // Leer configuración persistida para saber si este equipo es servidor o cliente
+  const appConfig = readConfig()
+  const isClientMode = appConfig.mode === 'client'
 
-  // 2. Iniciar servidor Express + Socket.io (multi-usuario / acceso web).
-  //    Puerto 3005 (3001 y 3002 los usa el rfid-bridge).
-  //    Antes de arrancar, liberar el puerto si un proceso anterior quedó colgado.
-  try {
-    if (process.platform === 'win32') {
-      const { execSync } = require('child_process')
-      try {
-        const out = execSync('netstat -ano 2>nul | findstr "3005"', { encoding: 'utf8', timeout: 3000 })
-        const lines = out.split('\n').filter(l => l.includes('LISTENING'))
-        for (const line of lines) {
-          const pid = line.trim().split(/\s+/).pop()
-          if (pid && !isNaN(pid) && Number(pid) !== process.pid) {
-            try { execSync(`taskkill /F /PID ${pid}`, { timeout: 2000 }) } catch {}
-            console.log(`[iNOISE] Proceso antiguo en 3001 (PID ${pid}) liberado`)
-          }
-        }
-        // Dar 500ms para que el SO libere el puerto
-        await new Promise(r => setTimeout(r, 500))
-      } catch {}
+  if (isClientMode) {
+    // ── Modo cliente ──────────────────────────────────────────────────────
+    // Este equipo se conecta al servidor de otro PC. No inicializa SQLite
+    // ni levanta Express — todo va por HTTP al servidor remoto.
+    console.log(`[iNOISE] Modo cliente → ${appConfig.serverUrl}`)
+  } else {
+    // ── Modo servidor (por defecto) ───────────────────────────────────────
+    // 1. Inicializar SQLite y registrar handlers IPC
+    try {
+      getDb()
+      registerIpcHandlers()
+    } catch (e) {
+      console.error('[DB] Error al iniciar SQLite:', e.message)
     }
-  } catch {}
 
-  try {
-    serverInfo = await startServer()
-    console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
-  } catch (e) {
-    console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
+    // 2. Iniciar servidor Express + Socket.io (puerto 3005)
+    //    Liberar el puerto si un proceso anterior quedó colgado.
+    try {
+      if (process.platform === 'win32') {
+        const { execSync } = require('child_process')
+        try {
+          const out = execSync('netstat -ano 2>nul | findstr "3005"', { encoding: 'utf8', timeout: 3000 })
+          const lines = out.split('\n').filter(l => l.includes('LISTENING'))
+          for (const line of lines) {
+            const pid = line.trim().split(/\s+/).pop()
+            if (pid && !isNaN(pid) && Number(pid) !== process.pid) {
+              try { execSync(`taskkill /F /PID ${pid}`, { timeout: 2000 }) } catch {}
+              console.log(`[iNOISE] Proceso antiguo en 3005 (PID ${pid}) liberado`)
+            }
+          }
+          await new Promise(r => setTimeout(r, 500))
+        } catch {}
+      }
+    } catch {}
+
+    try {
+      serverInfo = await startServer()
+      console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
+    } catch (e) {
+      console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
+    }
   }
 
   // Exponer info del servidor al renderer via IPC

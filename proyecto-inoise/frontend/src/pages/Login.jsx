@@ -411,12 +411,147 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
   )
 }
 
+/* ─── Pantalla de setup inicial (primera vez, sin config) ──────────────── */
+function SetupScreen({ onDone }) {
+  const [step, setStep] = useState('choice') // 'choice' | 'connect'
+  const [serverUrl, setServerUrl] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [error, setError] = useState('')
+
+  const cardBase = {
+    background: 'rgba(31,40,51,0.95)',
+    border: '2px solid rgba(102,252,241,0.15)',
+    borderRadius: 16, padding: '28px 24px',
+    cursor: 'pointer', textAlign: 'center',
+    transition: 'border-color 0.2s, transform 0.2s',
+    flex: 1, maxWidth: 280
+  }
+
+  const handleChooseServer = async () => {
+    // Este equipo es el servidor principal → guardar config y continuar
+    await window.api?.saveConfig?.({ mode: 'server' })
+    onDone('server')
+  }
+
+  const handleVerifyAndConnect = async () => {
+    setError('')
+    // Normalizar URL
+    let url = serverUrl.trim()
+    if (!url) { setError('Ingresa la IP del servidor'); return }
+    if (!url.startsWith('http')) url = `http://${url}`
+    if (!/:\d+$/.test(url)) url = `${url}:3005`
+    setVerifying(true)
+    const res = await window.api?.verifyServer?.(url)
+    setVerifying(false)
+    if (!res?.ok) {
+      setError(res?.error || 'No se pudo conectar al servidor')
+      return
+    }
+    await window.api?.saveConfig?.({ mode: 'client', serverUrl: url })
+    onDone('client')
+  }
+
+  const inputStyle = {
+    padding: '11px 14px', borderRadius: 8,
+    border: `1.5px solid ${error ? '#E24B4A' : 'rgba(255,255,255,0.2)'}`,
+    background: 'rgba(255,255,255,0.07)', color: '#fff',
+    fontSize: 15, width: '100%', boxSizing: 'border-box',
+    outline: 'none', fontFamily: 'inherit'
+  }
+
+  if (step === 'connect') {
+    return (
+      <div style={{ width: '100%', maxWidth: 380, textAlign: 'center' }}>
+        <h2 style={{ color: '#66FCF1', marginBottom: 6, fontSize: 20 }}>
+          Conectar al servidor
+        </h2>
+        <p style={{ color: '#C5C6C7', fontSize: 13, marginBottom: 24 }}>
+          Ingresa la IP del PC principal. El administrador puede verla
+          en la sección <strong>Información del sistema</strong>.
+        </p>
+        <input
+          style={inputStyle}
+          placeholder="192.168.1.100  ó  192.168.1.100:3005"
+          value={serverUrl}
+          onChange={e => { setServerUrl(e.target.value); setError('') }}
+          onKeyDown={e => e.key === 'Enter' && handleVerifyAndConnect()}
+          autoFocus
+        />
+        {error && (
+          <p style={{ color: '#E24B4A', fontSize: 12, marginTop: 8 }}>{error}</p>
+        )}
+        <button
+          onClick={handleVerifyAndConnect}
+          disabled={verifying}
+          style={{
+            marginTop: 16, width: '100%', padding: '13px', borderRadius: 8,
+            border: 'none', background: '#66FCF1', color: '#000',
+            fontWeight: 700, fontSize: 15,
+            cursor: verifying ? 'not-allowed' : 'pointer',
+            opacity: verifying ? 0.7 : 1,
+            animation: 'none'
+          }}
+        >
+          {verifying ? 'Verificando…' : 'Conectar'}
+        </button>
+        <button
+          onClick={() => { setStep('choice'); setError('') }}
+          style={{
+            marginTop: 10, width: '100%', padding: '10px', borderRadius: 8,
+            border: '1px solid rgba(255,255,255,0.15)', background: 'transparent',
+            color: '#C5C6C7', fontSize: 14, cursor: 'pointer', animation: 'none'
+          }}
+        >
+          ← Volver
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ width: '100%', maxWidth: 620, textAlign: 'center' }}>
+      <h2 style={{ color: '#66FCF1', marginBottom: 6, fontSize: 22 }}>
+        Configuración inicial
+      </h2>
+      <p style={{ color: '#C5C6C7', fontSize: 14, marginBottom: 32 }}>
+        ¿Cómo deseas usar este equipo?
+      </p>
+      <div style={{ display: 'flex', gap: 20, justifyContent: 'center', flexWrap: 'wrap' }}>
+        <div
+          style={cardBase}
+          onClick={handleChooseServer}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
+        >
+          <div style={{ fontSize: 42, marginBottom: 12 }}>🖥️</div>
+          <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Servidor principal</h3>
+          <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+            Este PC almacena todos los datos. Los demás equipos se conectarán a él.
+          </p>
+        </div>
+        <div
+          style={cardBase}
+          onClick={() => setStep('connect')}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
+        >
+          <div style={{ fontSize: 42, marginBottom: 12 }}>🔗</div>
+          <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Conectarme a otro equipo</h3>
+          <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+            Este PC se conectará al servidor del administrador para ver todos los datos sincronizados.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ─── Pantalla principal de Login ───────────────────────────────────────── */
 export default function Login() {
   const { login, loginPin, loadUsers, hasAnyUsers, loginUsers } = useAuth()
   const navigate = useNavigate()
 
-  // 'loading' | 'firstRun' | 'login'
+  // 'loading' | 'setup' | 'firstRun' | 'login'
   const [phase, setPhase] = useState('loading')
   const [adminExists, setAdminExists] = useState(false)
 
@@ -442,16 +577,41 @@ export default function Login() {
   const [pinError, setPinError]     = useState('')
   const [pinLoading, setPinLoading] = useState(false)
 
-  // Esperar a que AuthContext resuelva /api/auth/status (sin token)
-  // para saber si es primer arranque o pantalla de login normal.
+  // Determinar fase inicial:
+  //  1. Leer config (síncrono, ya disponible desde main.js)
+  //  2. Sin config → mostrar pantalla de setup
+  //  3. Modo cliente → ir directo a login (el server ya tiene usuarios)
+  //  4. Modo servidor → firstRun si no hay usuarios, login si hay
   useEffect(() => {
-    if (hasAnyUsers === null) return // todavía cargando
-    if (hasAnyUsers === false) {
-      setPhase('firstRun')
-    } else {
-      setPhase('login')
+    const cfg = window.api?.getConfig?.() || {}
+
+    // Primera ejecución: aún no eligió modo
+    if (!cfg.mode) {
+      setPhase('setup')
+      return
     }
+
+    // Modo cliente: esperar que AuthContext resuelva (puede tardar si hay latencia)
+    if (cfg.mode === 'client') {
+      if (hasAnyUsers === null) return // cargando
+      // En cliente siempre se muestra login — el admin ya creó los usuarios
+      setPhase('login')
+      return
+    }
+
+    // Modo servidor: flujo normal
+    if (hasAnyUsers === null) return
+    setPhase(hasAnyUsers ? 'login' : 'firstRun')
   }, [hasAnyUsers]) // eslint-disable-line
+
+  const handleSetupDone = (mode) => {
+    if (mode === 'server') {
+      // Recargar para que api.js/socket.js lean el config nuevo
+      window.location.reload()
+    } else {
+      window.location.reload()
+    }
+  }
 
   const handleLoginRoleSelect = (role) => {
     setSelectedRole(role)
@@ -516,6 +676,18 @@ export default function Login() {
     return (
       <div className="login-container" style={{ justifyContent: 'center' }}>
         <p style={{ color: '#C5C6C7' }}>Cargando…</p>
+      </div>
+    )
+  }
+
+  // ─── Setup (primera vez — sin config.json) ─────────────────────────────
+  if (phase === 'setup') {
+    return (
+      <div className="login-container">
+        <div className="login-main" style={{ alignItems: 'center', justifyContent: 'center' }}>
+          <SetupScreen onDone={handleSetupDone} />
+        </div>
+        <img src="/logo-header.png" alt="Orbitag" className="login-logo" />
       </div>
     )
   }

@@ -2,8 +2,8 @@ import React from 'react'
 import {
   Box, Typography, Paper, Avatar, Chip, Divider,
   List, ListItem, ListItemButton, ListItemAvatar, ListItemText,
-  Card, CardContent, TextField, InputAdornment, Tooltip,
-  Table, TableHead, TableRow, TableCell, TableBody,
+  TextField, InputAdornment, Tooltip,
+  Popover, IconButton,
   CircularProgress
 } from '@mui/material'
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
@@ -13,8 +13,8 @@ import SearchIcon from '@mui/icons-material/Search'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import PersonIcon from '@mui/icons-material/Person'
 import BlockIcon from '@mui/icons-material/Block'
-import LoginIcon from '@mui/icons-material/Login'
-import LogoutIcon from '@mui/icons-material/Logout'
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
+import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord'
 import { useAuth } from '../context/AuthContext'
@@ -157,123 +157,272 @@ function dayKey(dateStr) {
 function isToday(dateStr)     { const n = new Date(); return dayKey(dateStr) === `${n.getFullYear()}-${n.getMonth()}-${n.getDate()}` }
 function isYesterday(dateStr) { const y = new Date(); y.setDate(y.getDate() - 1); return dayKey(dateStr) === `${y.getFullYear()}-${y.getMonth()}-${y.getDate()}` }
 
-function SessionAccordion({ sessions, loadingSessions }) {
-  if (loadingSessions) return (
-    <Box sx={{ py: 3, textAlign: 'center' }}><CircularProgress size={24} /></Box>
+/* Fila de una sesión individual */
+function SessionRow({ s }) {
+  const isActive   = !s.logoutAt
+  const dur        = sessionDuration(s.loginAt, s.logoutAt)
+  const loginTime  = s.loginAt  ? new Date(s.loginAt).toLocaleTimeString('es-CL',  { hour: '2-digit', minute: '2-digit' }) : '—'
+  const logoutTime = s.logoutAt ? new Date(s.logoutAt).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) : null
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75, borderTop: '0.5px solid rgba(255,255,255,0.04)' }}>
+      <Box sx={{ color: isActive ? '#4caf50' : '#66FCF1', fontSize: 11, flexShrink: 0, lineHeight: 1 }}>
+        {isActive ? '●' : '↑'}
+      </Box>
+      <Typography variant="caption" sx={{ flex: 1 }}>
+        {loginTime}
+        {logoutTime ? ` — ${logoutTime}` : <span style={{ color: '#4caf50', fontWeight: 600 }}> — activa</span>}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, minWidth: 48, textAlign: 'right' }}>
+        {isActive ? '—' : (dur || '—')}
+      </Typography>
+      {isActive ? (
+        <Chip icon={<FiberManualRecordIcon sx={{ fontSize: '10px !important' }} />}
+          label="Online" size="small" color="success" variant="outlined"
+          sx={{ height: 18, fontSize: 10, flexShrink: 0 }} />
+      ) : (
+        <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0, minWidth: 44, textAlign: 'right' }}>
+          Cerrada
+        </Typography>
+      )}
+    </Box>
   )
+}
+
+/* Grupo colapsable de un día */
+function AccordionGroup({ group, isOpen, onToggle, accent = false }) {
+  return (
+    <Box sx={{ border: `0.5px solid ${accent ? 'rgba(102,252,241,0.3)' : 'rgba(255,255,255,0.08)'}`, borderRadius: 1, overflow: 'hidden' }}>
+      <Box
+        onClick={onToggle}
+        sx={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          px: 1.5, py: 0.875, cursor: 'pointer', userSelect: 'none',
+          bgcolor: accent ? 'rgba(102,252,241,0.04)' : 'rgba(255,255,255,0.025)',
+          '&:hover': { bgcolor: accent ? 'rgba(102,252,241,0.07)' : 'rgba(255,255,255,0.045)' }
+        }}
+      >
+        <Typography variant="caption" fontWeight={600}>{group.label}</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="caption" sx={{ fontSize: 10, color: 'text.disabled', bgcolor: 'rgba(255,255,255,0.06)', px: 0.75, py: 0.25, borderRadius: 0.5 }}>
+            {group.items.length} sesión{group.items.length !== 1 ? 'es' : ''}
+          </Typography>
+          <Typography variant="caption" sx={{ fontSize: 10, color: 'text.disabled', display: 'inline-block', transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+            ▼
+          </Typography>
+        </Box>
+      </Box>
+      {isOpen && group.items.map(s => <SessionRow key={s.id} s={s} />)}
+    </Box>
+  )
+}
+
+const CAL_MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+
+function SessionAccordion({ sessions, loadingSessions }) {
+  /* ── Grupos memoizados (más reciente primero) ───────────────────────────── */
+  const allGroups = React.useMemo(() => {
+    const groups = []
+    const keyMap = {}
+    ;[...sessions]
+      .sort((a, b) => new Date(b.loginAt || 0) - new Date(a.loginAt || 0))
+      .forEach(s => {
+        const k = s.loginAt ? dayKey(s.loginAt) : 'sin-fecha'
+        if (keyMap[k] === undefined) {
+          keyMap[k] = groups.length
+          groups.push({ key: k, label: s.loginAt ? dayLabel(s.loginAt) : 'Sin fecha', items: [], dateStr: s.loginAt })
+        }
+        groups[keyMap[k]].items.push(s)
+      })
+    return groups
+  }, [sessions])
+
+  const displayGroups = allGroups.slice(0, 3)
+
+  /* Días con sesiones para dots del calendario */
+  const sessionDayKeys = React.useMemo(() => new Set(allGroups.map(g => g.key)), [allGroups])
+
+  /* ── Estado (todos los hooks antes de cualquier early return) ───────────── */
+  const [open, setOpen]             = React.useState(new Set())
+  const [calAnchor, setCalAnchor]   = React.useState(null)
+  const [navYear, setNavYear]       = React.useState(() => new Date().getFullYear())
+  const [navMonth, setNavMonth]     = React.useState(() => new Date().getMonth())
+  const [extraGroup, setExtraGroup] = React.useState(null)
+
+  /* Abrir hoy/ayer por defecto una vez que lleguen los datos */
+  const openInitialized = React.useRef(false)
+  React.useEffect(() => {
+    if (!allGroups.length || openInitialized.current) return
+    openInitialized.current = true
+    const defaults = new Set()
+    displayGroups.forEach(g => {
+      if (g.dateStr && (isToday(g.dateStr) || isYesterday(g.dateStr))) defaults.add(g.key)
+    })
+    if (defaults.size === 0 && displayGroups.length > 0) defaults.add(displayGroups[0].key)
+    setOpen(defaults)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allGroups.length])
+
+  const toggle = (k) => setOpen(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n })
+
+  /* ── Rejilla del calendario ─────────────────────────────────────────────── */
+  const calCells = React.useMemo(() => {
+    const first       = new Date(navYear, navMonth, 1).getDay()
+    const daysInMonth = new Date(navYear, navMonth + 1, 0).getDate()
+    const cells       = Array(first).fill(null)
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+    while (cells.length % 7 !== 0) cells.push(null)
+    return cells
+  }, [navYear, navMonth])
+
+  const hasSessions = (day) => Boolean(day) && sessionDayKeys.has(`${navYear}-${navMonth}-${day}`)
+
+  const now       = new Date()
+  const canGoNext = !(navYear === now.getFullYear() && navMonth === now.getMonth())
+
+  const prevMonth = () => {
+    if (navMonth === 0) { setNavYear(y => y - 1); setNavMonth(11) } else setNavMonth(m => m - 1)
+  }
+  const nextMonth = () => {
+    if (!canGoNext) return
+    if (navMonth === 11) { setNavYear(y => y + 1); setNavMonth(0) } else setNavMonth(m => m + 1)
+  }
+
+  const handleDayClick = (day) => {
+    if (!hasSessions(day)) return
+    const k     = `${navYear}-${navMonth}-${day}`
+    const group = allGroups.find(g => g.key === k)
+    if (!group) return
+    setExtraGroup(prev => prev?.key === k ? null : group)
+    setCalAnchor(null)
+  }
+
+  /* ── Early returns (después de todos los hooks) ─────────────────────────── */
+  if (loadingSessions) return <Box sx={{ py: 3, textAlign: 'center' }}><CircularProgress size={24} /></Box>
   if (!sessions.length) return (
     <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
       Sin sesiones registradas
     </Typography>
   )
 
-  /* Agrupar por día manteniendo el orden */
-  const groups = []
-  const keyMap = {}
-  sessions.forEach(s => {
-    const k = s.loginAt ? dayKey(s.loginAt) : 'sin-fecha'
-    if (keyMap[k] === undefined) {
-      keyMap[k] = groups.length
-      groups.push({ key: k, label: s.loginAt ? dayLabel(s.loginAt) : 'Sin fecha', items: [] })
-    }
-    groups[keyMap[k]].items.push(s)
-  })
-
-  /* Hoy y ayer expandidos por defecto */
-  const defaultOpen = new Set(
-    groups.filter(g => g.items[0]?.loginAt && (isToday(g.items[0].loginAt) || isYesterday(g.items[0].loginAt)))
-           .map(g => g.key)
-  )
-  if (defaultOpen.size === 0 && groups.length > 0) defaultOpen.add(groups[0].key)
-
-  const [open, setOpen] = React.useState(defaultOpen)
-  const toggle = (k) => setOpen(prev => {
-    const next = new Set(prev)
-    next.has(k) ? next.delete(k) : next.add(k)
-    return next
-  })
-
+  /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-      {groups.map(({ key, label, items }) => {
-        const isOpen = open.has(key)
-        return (
-          <Box key={key} sx={{ border: '0.5px solid rgba(255,255,255,0.08)', borderRadius: 1, overflow: 'hidden' }}>
+    <Box>
+      {/* 3 días más recientes */}
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+        {displayGroups.map(group => (
+          <AccordionGroup
+            key={group.key}
+            group={group}
+            isOpen={open.has(group.key)}
+            onToggle={() => toggle(group.key)}
+          />
+        ))}
+      </Box>
 
-            {/* Cabecera del grupo */}
+      {/* Botón "Ver historial completo" */}
+      <Box sx={{ mt: 1.5, display: 'flex', justifyContent: 'flex-end' }}>
+        <Box
+          onClick={(e) => setCalAnchor(e.currentTarget)}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: 0.75,
+            px: 1.25, py: 0.5, cursor: 'pointer', borderRadius: 1,
+            border: '0.5px solid rgba(102,252,241,0.2)',
+            bgcolor: 'rgba(102,252,241,0.04)',
+            '&:hover': { bgcolor: 'rgba(102,252,241,0.09)' }
+          }}
+        >
+          <CalendarMonthIcon sx={{ fontSize: 13, color: '#66FCF1' }} />
+          <Typography variant="caption" sx={{ color: '#66FCF1', fontWeight: 500, fontSize: 11 }}>
+            Ver historial completo
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Día seleccionado del calendario */}
+      {extraGroup && (
+        <Box sx={{ mt: 1.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.75 }}>
+            <Typography variant="caption" sx={{ fontSize: 10, color: 'text.disabled', fontStyle: 'italic' }}>
+              Día seleccionado del historial
+            </Typography>
             <Box
-              onClick={() => toggle(key)}
-              sx={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                px: 1.5, py: 0.875, cursor: 'pointer',
-                bgcolor: 'rgba(255,255,255,0.025)',
-                userSelect: 'none',
-                '&:hover': { bgcolor: 'rgba(255,255,255,0.045)' }
-              }}
+              onClick={() => setExtraGroup(null)}
+              sx={{ ml: 'auto', cursor: 'pointer', color: 'text.disabled', fontSize: 13, lineHeight: 1, userSelect: 'none', '&:hover': { color: 'text.secondary' } }}
             >
-              <Typography variant="caption" fontWeight={600}>{label}</Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Typography variant="caption" sx={{
-                  fontSize: 10, color: 'text.disabled',
-                  bgcolor: 'rgba(255,255,255,0.06)', px: 0.75, py: 0.25, borderRadius: 0.5
-                }}>
-                  {items.length} sesión{items.length !== 1 ? 'es' : ''}
-                </Typography>
-                <Typography variant="caption" sx={{
-                  fontSize: 10, color: 'text.disabled',
-                  display: 'inline-block',
-                  transition: 'transform 0.2s',
-                  transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)'
-                }}>▼</Typography>
-              </Box>
+              ✕
             </Box>
-
-            {/* Filas de sesiones */}
-            {isOpen && items.map(s => {
-              const isActive   = !s.logoutAt
-              const dur        = sessionDuration(s.loginAt, s.logoutAt)
-              const loginTime  = s.loginAt  ? new Date(s.loginAt).toLocaleTimeString('es-CL',  { hour: '2-digit', minute: '2-digit' }) : '—'
-              const logoutTime = s.logoutAt ? new Date(s.logoutAt).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) : null
-              return (
-                <Box key={s.id} sx={{
-                  display: 'flex', alignItems: 'center', gap: 1,
-                  px: 1.5, py: 0.75,
-                  borderTop: '0.5px solid rgba(255,255,255,0.04)'
-                }}>
-                  {/* Indicador de tipo */}
-                  <Box sx={{ color: isActive ? '#4caf50' : '#66FCF1', fontSize: 11, flexShrink: 0, lineHeight: 1 }}>
-                    {isActive ? '●' : '↑'}
-                  </Box>
-
-                  {/* Hora inicio — hora fin */}
-                  <Typography variant="caption" sx={{ flex: 1 }}>
-                    {loginTime}
-                    {logoutTime ? ` — ${logoutTime}` : <span style={{ color: '#4caf50', fontWeight: 600 }}> — activa</span>}
-                  </Typography>
-
-                  {/* Duración */}
-                  <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, minWidth: 48, textAlign: 'right' }}>
-                    {isActive ? '—' : (dur || '—')}
-                  </Typography>
-
-                  {/* Estado */}
-                  {isActive ? (
-                    <Chip
-                      icon={<FiberManualRecordIcon sx={{ fontSize: '10px !important' }} />}
-                      label="Online" size="small" color="success" variant="outlined"
-                      sx={{ height: 18, fontSize: 10, flexShrink: 0 }}
-                    />
-                  ) : (
-                    <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0, minWidth: 44, textAlign: 'right' }}>
-                      Cerrada
-                    </Typography>
-                  )}
-                </Box>
-              )
-            })}
           </Box>
-        )
-      })}
+          <AccordionGroup group={extraGroup} isOpen={true} onToggle={() => {}} accent />
+        </Box>
+      )}
+
+      {/* Popover del calendario */}
+      <Popover
+        open={Boolean(calAnchor)}
+        anchorEl={calAnchor}
+        onClose={() => setCalAnchor(null)}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { bgcolor: '#1F2833', border: '0.5px solid rgba(102,252,241,0.18)', p: 1.5, minWidth: 224 } } }}
+      >
+        {/* Navegación de mes */}
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+          <IconButton size="small" onClick={prevMonth} sx={{ p: 0.5, color: 'text.secondary' }}>
+            <ChevronLeftIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+          <Typography variant="caption" fontWeight={600} sx={{ fontSize: 12 }}>
+            {CAL_MONTHS[navMonth]} {navYear}
+          </Typography>
+          <IconButton size="small" onClick={nextMonth} disabled={!canGoNext} sx={{ p: 0.5 }}>
+            <ChevronRightIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Box>
+
+        {/* Encabezado días de semana */}
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', mb: 0.5 }}>
+          {['D','L','M','M','J','V','S'].map((d, i) => (
+            <Typography key={i} variant="caption" sx={{ textAlign: 'center', fontSize: 9, color: 'text.disabled', fontWeight: 700, py: 0.25 }}>
+              {d}
+            </Typography>
+          ))}
+        </Box>
+
+        {/* Celdas de días */}
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 0.25 }}>
+          {calCells.map((day, i) => {
+            const hasS       = hasSessions(day)
+            const k          = day ? `${navYear}-${navMonth}-${day}` : null
+            const isSelected = Boolean(k && extraGroup?.key === k)
+            return (
+              <Box
+                key={i}
+                onClick={() => day && handleDayClick(day)}
+                sx={{
+                  height: 30, display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center', borderRadius: 0.5,
+                  cursor: hasS ? 'pointer' : 'default',
+                  bgcolor: isSelected ? 'rgba(102,252,241,0.15)' : 'transparent',
+                  border: isSelected ? '0.5px solid rgba(102,252,241,0.4)' : '0.5px solid transparent',
+                  '&:hover': hasS ? { bgcolor: isSelected ? 'rgba(102,252,241,0.2)' : 'rgba(102,252,241,0.07)' } : {}
+                }}
+              >
+                {day && (
+                  <>
+                    <Typography variant="caption" sx={{ fontSize: 11, lineHeight: 1, color: hasS ? '#e0e0e0' : 'rgba(255,255,255,0.2)' }}>
+                      {day}
+                    </Typography>
+                    {hasS && <Box sx={{ width: 4, height: 4, borderRadius: '50%', bgcolor: '#66FCF1', mt: 0.25 }} />}
+                  </>
+                )}
+              </Box>
+            )
+          })}
+        </Box>
+
+        <Typography variant="caption" sx={{ display: 'block', mt: 1, fontSize: 9, color: 'text.disabled', textAlign: 'center' }}>
+          • días con sesiones registradas
+        </Typography>
+      </Popover>
     </Box>
   )
 }
@@ -308,7 +457,7 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
   React.useEffect(() => {
     setLoading(true)
     setSessions([])
-    api.get(`/api/sessions/user/${user.id}?limit=20`)
+    api.get(`/api/sessions/user/${user.id}?limit=500`)
       .then(res => { if (res.ok && Array.isArray(res.data)) setSessions(res.data) })
       .catch(() => {})
       .finally(() => setLoading(false))

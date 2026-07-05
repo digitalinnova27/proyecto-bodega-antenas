@@ -44,5 +44,11 @@ contextBridge.exposeInMainWorld('api', {
   removeUserPin: (userId) => ipcRenderer.invoke('db:remove-user-pin', userId),
   authLoginPin: (userId, pin) => ipcRenderer.invoke('db:auth-login-pin', userId, pin),
   // ── Info del servidor embebido (IP + puerto para conexión en red) ─────
-  getServerInfo: () => ipcRenderer.invoke('server:info')
+  getServerInfo: () => ipcRenderer.invoke('server:info'),
+  // ── Configuración de modo (servidor / cliente) ─────────────────────────
+  // getConfig es síncrono para que api.js y socket.js puedan leerlo en tiempo
+  // de módulo (antes del primer render), antes de que cualquier fetch ocurra.
+  getConfig:    () => ipcRenderer.sendSync('get-config'),
+  saveConfig:   (cfg) => ipcRenderer.invoke('save-config', cfg),
+  verifyServer: (url) => ipcRenderer.invoke('verify-server', url)
 })

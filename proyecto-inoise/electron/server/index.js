@@ -111,6 +111,11 @@ const broadcast = (entity, data) => {
   io.emit('data:sync', { entity, data })
 }
 
+// ── Health check (público — usado por PCs cliente para verificar conexión) ────
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'iNOISE', port: PORT })
+})
+
 // ── Rutas de autenticación ────────────────────────────────────────────────────
 
 app.post('/api/auth/login', (req, res) => {
