@@ -253,10 +253,39 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
     }
+
+    // Abrir puerto 3005 (y 5173 en dev) en Windows Firewall para que otros
+    // equipos en la red puedan conectarse. Si la regla ya existe o no hay
+    // permisos, el error se ignora silenciosamente.
+    if (process.platform === 'win32') {
+      const { execSync } = require('child_process')
+      const fwPorts = isDev ? ['3005', '5173'] : ['3005']
+      for (const port of fwPorts) {
+        try {
+          execSync(
+            `netsh advfirewall firewall add rule name="iNOISE-${port}" ` +
+            `dir=in action=allow protocol=TCP localport=${port}`,
+            { timeout: 4000, stdio: 'pipe' }
+          )
+          console.log(`[Firewall] Puerto ${port} abierto en Windows Firewall`)
+        } catch {
+          // Ya existe o sin permisos de administrador — no es crítico
+        }
+      }
+    }
   }
 
-  // Exponer info del servidor al renderer via IPC
-  ipcMain.handle('server:info', () => serverInfo || { port: SERVER_PORT, ip: getLocalIP(), networkUrl: `http://${getLocalIP()}:${SERVER_PORT}` })
+  // Exponer info del servidor al renderer via IPC.
+  // webUrl  = URL para abrir en navegador (Vite en dev, Express en prod)
+  // networkUrl = URL para conexión Electron cliente (siempre puerto 3005)
+  ipcMain.handle('server:info', () => {
+    const ip = getLocalIP()
+    const base = serverInfo || { port: SERVER_PORT, ip, networkUrl: `http://${ip}:${SERVER_PORT}` }
+    return {
+      ...base,
+      webUrl: isDev ? `http://${ip}:5173` : `http://${ip}:${SERVER_PORT}`
+    }
+  })
 
   // Iniciar rfid-bridge DENTRO del proceso de Electron (no como proceso
   // 'node.exe' aparte). Electron ya trae su propio Node embebido en el
