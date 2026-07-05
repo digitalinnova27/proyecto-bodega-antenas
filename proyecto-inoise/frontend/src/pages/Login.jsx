@@ -997,6 +997,51 @@ export default function Login() {
               )}
             </div>
           )}
+
+          {/* ── Escape al fondo del panel de credenciales ─────────────────
+              • Modo cliente: resetear config → volver al setup
+              • Modo servidor viendo operador: cambiar a admin            */}
+          {loginStep === 'credentials' && (
+            <div style={{ marginTop: 14, textAlign: 'center' }}>
+              {isClientMode ? (
+                <button
+                  onClick={handleResetConfig}
+                  style={{
+                    background: 'none', border: 'none', padding: 0,
+                    color: 'rgba(255,255,255,0.28)', fontSize: 11,
+                    cursor: 'pointer', textDecoration: 'underline',
+                    animation: 'none', opacity: 1
+                  }}
+                >
+                  ← Cambiar configuración de equipo
+                </button>
+              ) : selectedRole === 'operador' ? (
+                <button
+                  onClick={() => handleLoginRoleSelect('admin')}
+                  style={{
+                    background: 'none', border: 'none', padding: 0,
+                    color: 'rgba(102,252,241,0.5)', fontSize: 11,
+                    cursor: 'pointer', textDecoration: 'underline',
+                    animation: 'none', opacity: 1
+                  }}
+                >
+                  Ingresar como Administrador →
+                </button>
+              ) : selectedRole === 'admin' ? (
+                <button
+                  onClick={() => handleLoginRoleSelect('operador')}
+                  style={{
+                    background: 'none', border: 'none', padding: 0,
+                    color: 'rgba(255,255,255,0.28)', fontSize: 11,
+                    cursor: 'pointer', textDecoration: 'underline',
+                    animation: 'none', opacity: 1
+                  }}
+                >
+                  ← Ingresar como Operador
+                </button>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1006,7 +1051,7 @@ export default function Login() {
         className={`login-logo ${loginStep === 'credentials' ? 'hide' : ''}`}
       />
 
-      {/* Enlace de escape para quien eligió el modo equivocado en setup */}
+      {/* Enlace de escape en pantalla de selección de rol (modo servidor) */}
       {loginStep === 'role' && !isClientMode && (
         <button
           onClick={handleResetConfig}
