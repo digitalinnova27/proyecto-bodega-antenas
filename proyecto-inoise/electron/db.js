@@ -274,6 +274,22 @@ function runMigrations(db) {
       password_hash TEXT NOT NULL,
       created_at    TEXT
     );
+
+    /* ── Chat interno ─────────────────────────────────────────────────
+     * type: 'text' | 'event_ref' | 'rental_ref'
+     * metadata: JSON — { refId, refNumber, refName } para referencias */
+    CREATE TABLE IF NOT EXISTS messages (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_user   TEXT NOT NULL,
+      to_user     TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      type        TEXT NOT NULL DEFAULT 'text',
+      metadata    TEXT,
+      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      read_at     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_conversation
+      ON messages(from_user, to_user);
   `)
 
     // Columnas del flujo de aprobación de eliminación (operador solicita,
@@ -822,6 +838,7 @@ function loadUserSessions(userId, limit = 30) {
       }))
 }
 
+
 /* ── Carga inicial completa (un solo viaje IPC al montar la app) ── */
 function loadAll() {
     return {
@@ -835,6 +852,51 @@ function loadAll() {
         purchaseHistory: loadPurchaseHistory(),
         auditLog: loadAuditLog()
     }
+}
+
+/* Chat — mensajes internos entre colaboradores */
+
+function getConversation(userA, userB) {
+    const db = getDb()
+    return db.prepare(`
+        SELECT * FROM messages
+        WHERE (from_user = ? AND to_user = ?)
+           OR (from_user = ? AND to_user = ?)
+        ORDER BY created_at ASC
+    `).all(userA, userB, userB, userA)
+}
+
+function createMessage(fromUser, toUser, content, type, metadata) {
+    const db = getDb()
+    type = type || 'text'
+    const info = db.prepare(`
+        INSERT INTO messages (from_user, to_user, content, type, metadata)
+        VALUES (?, ?, ?, ?, ?)
+    `).run(fromUser, toUser, content, type, metadata ? JSON.stringify(metadata) : null)
+    return db.prepare('SELECT * FROM messages WHERE id = ?').get(info.lastInsertRowid)
+}
+
+function markMessageRead(messageId, userId) {
+    const db = getDb()
+    db.prepare(`
+        UPDATE messages SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE id = ? AND to_user = ? AND read_at IS NULL
+    `).run(messageId, userId)
+}
+
+function countUnread(userId) {
+    const db = getDb()
+    return db.prepare(`
+        SELECT COUNT(*) as n FROM messages WHERE to_user = ? AND read_at IS NULL
+    `).get(userId).n
+}
+
+function markConversationRead(userId, withUser) {
+    const db = getDb()
+    db.prepare(`
+        UPDATE messages SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE to_user = ? AND from_user = ? AND read_at IS NULL
+    `).run(userId, withUser)
 }
 
 function closeDb() {
@@ -857,5 +919,6 @@ module.exports = {
     saveAuditLog, loadAuditLog,
     loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
     setUserPin, removeUserPin, authLoginPin, setUserActive,
-    createSession, closeSession, closeAllOpenSessions, loadUserSessions
+    createSession, closeSession, closeAllOpenSessions, loadUserSessions,
+    getConversation, createMessage, markMessageRead, countUnread, markConversationRead
 }

@@ -7,7 +7,8 @@ import {
   Typography,
   IconButton,
   Button,
-  Divider
+  Divider,
+  Tooltip
 } from '@mui/material'
 
 import MenuIcon from '@mui/icons-material/Menu'
@@ -17,11 +18,17 @@ import WifiOffIcon from '@mui/icons-material/WifiOff'
 import EventIcon from '@mui/icons-material/Event'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
+import RefreshIcon from '@mui/icons-material/Refresh'
+import ChatIcon from '@mui/icons-material/Chat'
 import Badge from '@mui/material/Badge'
 import Popover from '@mui/material/Popover'
 
 import Sidebar from './components/Sidebar'
+import ChatPanel from './components/ChatPanel'
+import ChatNotification from './components/ChatNotification'
 import { useNotifications } from './hooks/useNotifications'
+import { useInventory } from './context/InventoryContext'
+import { useChat } from './context/ChatContext'
 
 import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
@@ -40,6 +47,7 @@ import Login from './pages/Login'
 import { useAuth } from './context/AuthContext'
 import { RfidSocketProvider } from './context/RfidSocketContext'
 import { HelpTour, HelpButton } from './components/HelpTour'
+import { AVATARS } from './pages/Login'
 
 // Severidad → colores del tema (theme.js / paleta usada en Dashboard.jsx)
 const NOTIF_COLORS = {
@@ -74,8 +82,11 @@ export default function App() {
   const [open, setOpen] = React.useState(true)
   const [openTour, setOpenTour] = React.useState(false)
   const [anchorEl, setAnchorEl] = React.useState(null)
+  const [chatOpen, setChatOpen] = React.useState(false)
 
   const { notifications, unread, markSeen, markAllSeen, antennaStatus } = useNotifications()
+  const { refreshData, isRefreshing } = useInventory()
+  const { totalUnread } = useChat()
 
   const openNotif = (e) => setAnchorEl(e.currentTarget)
 
@@ -127,7 +138,11 @@ export default function App() {
                       <MenuIcon />
                     </IconButton>
 
-                    <HelpButton onClick={() => setOpenTour(true)} />
+                    {/* Margen para separar del MenuIcon — más visible cuando el sidebar está colapsado */}
+                    <Box sx={{ ml: 2.5 }}>
+                      <HelpButton onClick={() => setOpenTour(true)} />
+                    </Box>
+
                     <IconButton color="inherit" onClick={openNotif}>
                       <Badge badgeContent={unread} color="error">
                         <NotificationsIcon />
@@ -259,21 +274,75 @@ export default function App() {
 
                   </Box>
 
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <Typography variant="caption" sx={{ textAlign: 'right' }}>
-                      {currentUser
-                        ? `${currentUser.nombre} ${currentUser.apellido}`
-                        : role === 'admin' ? 'Administrador' : 'Operador'}
-                      <br />
-                      <span style={{ opacity: 0.6, fontSize: '0.9em' }}>
-                        {role === 'admin' ? 'Administrador' : 'Operador'}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+
+                    {/* Botón de recarga */}
+                    <Tooltip title="Actualizar datos">
+                      <span>
+                        <IconButton
+                          color="inherit"
+                          onClick={refreshData}
+                          disabled={isRefreshing}
+                          sx={{
+                            '& svg': {
+                              animation: isRefreshing ? 'spin 0.8s linear infinite' : 'none',
+                              '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }
+                            }
+                          }}
+                        >
+                          <RefreshIcon />
+                        </IconButton>
                       </span>
-                    </Typography>
+                    </Tooltip>
+
+                    {/* Botón de chat */}
+                    <Tooltip title="Chat del equipo">
+                      <IconButton color="inherit" onClick={() => setChatOpen(v => !v)}>
+                        <Badge badgeContent={totalUnread} color="error" max={9}>
+                          <ChatIcon />
+                        </Badge>
+                      </IconButton>
+                    </Tooltip>
+
+                    {/* Avatar emoji del usuario con tooltip de info */}
+                    {(() => {
+                      const av = AVATARS.find(a => a.id === currentUser?.avatar)
+                      const emoji = av?.emoji ?? '👤'
+                      const color = av?.color ?? '#378ADD'
+                      const nombre = currentUser
+                        ? `${currentUser.nombre} ${currentUser.apellido}`
+                        : (role === 'admin' ? 'Administrador' : 'Operador')
+                      const cargo = currentUser?.cargo || (role === 'admin' ? 'Administrador' : 'Operador')
+                      return (
+                        <Tooltip
+                          title={
+                            <Box sx={{ textAlign: 'center', py: 0.25 }}>
+                              <Typography variant="body2" fontWeight={700}>{nombre}</Typography>
+                              <Typography variant="caption" sx={{ opacity: 0.75 }}>{cargo}</Typography>
+                            </Box>
+                          }
+                          arrow
+                        >
+                          <Box sx={{
+                            width: 34, height: 34, borderRadius: '50%',
+                            bgcolor: color + '33',
+                            border: `2px solid ${color}`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 18, cursor: 'default', userSelect: 'none',
+                            flexShrink: 0
+                          }}>
+                            {emoji}
+                          </Box>
+                        </Tooltip>
+                      )
+                    })()}
 
                     <Button
                       size="small"
                       variant="outlined"
+                      color="error"
                       onClick={handleLogout}
+                      sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
                     >
                       Cerrar sesión
                     </Button>
@@ -323,6 +392,15 @@ export default function App() {
         />
       )}
     </Routes>
+
+    {/* Chat flotante — disponible desde cualquier página */}
+    {role && (
+      <>
+        <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
+        <ChatNotification />
+      </>
+    )}
+
     </RfidSocketProvider>
   )
 }

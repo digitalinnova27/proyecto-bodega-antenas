@@ -26,7 +26,8 @@ const {
   saveAuditLog,
   loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
   setUserPin, removeUserPin, authLoginPin, setUserActive,
-  createSession, closeSession, closeAllOpenSessions, loadUserSessions
+  createSession, closeSession, closeAllOpenSessions, loadUserSessions,
+  getConversation, createMessage, markMessageRead, countUnread, markConversationRead
 } = require('../db')
 
 // ── Constantes ───────────────────────────────────────────────────────────────
@@ -320,6 +321,56 @@ app.put('/api/data/purchase-history', requireAuth, (req, res) => {
 app.put('/api/data/audit-log', requireAuth, (req, res) => {
   const result = safe(() => saveAuditLog(req.body))
   if (result.ok) broadcast('auditLog', req.body)
+  res.json(result)
+})
+
+// ── Chat interno ──────────────────────────────────────────────────────────────
+
+/** GET /api/chat/conversation?with=<userId> — mensajes con otro usuario */
+app.get('/api/chat/conversation', requireAuth, (req, res) => {
+  const { with: withUser } = req.query
+  if (!withUser) return res.json({ ok: false, error: 'Falta parámetro "with"' })
+  const result = safe(() => getConversation(req.user.id, withUser))
+  res.json(result)
+})
+
+/** GET /api/chat/unread — cantidad total de mensajes sin leer */
+app.get('/api/chat/unread', requireAuth, (req, res) => {
+  const result = safe(() => countUnread(req.user.id))
+  res.json({ ok: true, count: result.ok ? result.data : 0 })
+})
+
+/** POST /api/chat/messages — enviar un mensaje */
+app.post('/api/chat/messages', requireAuth, (req, res) => {
+  const { toUser, content, type, metadata } = req.body || {}
+  if (!toUser || !content) return res.json({ ok: false, error: 'toUser y content son obligatorios' })
+
+  const result = safe(() => createMessage(req.user.id, toUser, content, type || 'text', metadata))
+  if (!result.ok) return res.json(result)
+
+  const msg = result.data
+  // Parsear metadata para que llegue como objeto al frontend
+  const outMsg = { ...msg, metadata: msg.metadata ? JSON.parse(msg.metadata) : null }
+
+  // Entregar el mensaje en tiempo real al destinatario (si está conectado)
+  for (const [, data] of onlineUsers) {
+    if (data.userId === toUser) {
+      // Buscar el socket del destinatario
+      const targetSocket = [...io.sockets.sockets.values()]
+        .find(s => onlineUsers.get(s.id)?.userId === toUser)
+      if (targetSocket) targetSocket.emit('chat:message', outMsg)
+      break
+    }
+  }
+
+  res.json({ ok: true, data: outMsg })
+})
+
+/** PATCH /api/chat/conversation/read?with=<userId> — marcar conversación como leída */
+app.patch('/api/chat/conversation/read', requireAuth, (req, res) => {
+  const { with: withUser } = req.query
+  if (!withUser) return res.json({ ok: false, error: 'Falta parámetro "with"' })
+  const result = safe(() => markConversationRead(req.user.id, withUser))
   res.json(result)
 })
 

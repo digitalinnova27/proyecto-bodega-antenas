@@ -136,6 +136,148 @@ function ActivityItem({ icon, color, action, detail, timestamp }) {
   )
 }
 
+/* ─── Acordeón de sesiones agrupadas por día ─────────────────────────────── */
+function dayLabel(dateStr) {
+  const d    = new Date(dateStr)
+  const now  = new Date()
+  const tod  = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yest = new Date(tod); yest.setDate(tod.getDate() - 1)
+  const day  = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const fmt  = (dt) => dt.toLocaleDateString('es-CL', { day: '2-digit', month: 'short' })
+  if (+day === +tod)  return `Hoy — ${fmt(d)}`
+  if (+day === +yest) return `Ayer — ${fmt(d)}`
+  return d.toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+function dayKey(dateStr) {
+  const d = new Date(dateStr)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+
+function isToday(dateStr)     { const n = new Date(); return dayKey(dateStr) === `${n.getFullYear()}-${n.getMonth()}-${n.getDate()}` }
+function isYesterday(dateStr) { const y = new Date(); y.setDate(y.getDate() - 1); return dayKey(dateStr) === `${y.getFullYear()}-${y.getMonth()}-${y.getDate()}` }
+
+function SessionAccordion({ sessions, loadingSessions }) {
+  if (loadingSessions) return (
+    <Box sx={{ py: 3, textAlign: 'center' }}><CircularProgress size={24} /></Box>
+  )
+  if (!sessions.length) return (
+    <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
+      Sin sesiones registradas
+    </Typography>
+  )
+
+  /* Agrupar por día manteniendo el orden */
+  const groups = []
+  const keyMap = {}
+  sessions.forEach(s => {
+    const k = s.loginAt ? dayKey(s.loginAt) : 'sin-fecha'
+    if (keyMap[k] === undefined) {
+      keyMap[k] = groups.length
+      groups.push({ key: k, label: s.loginAt ? dayLabel(s.loginAt) : 'Sin fecha', items: [] })
+    }
+    groups[keyMap[k]].items.push(s)
+  })
+
+  /* Hoy y ayer expandidos por defecto */
+  const defaultOpen = new Set(
+    groups.filter(g => g.items[0]?.loginAt && (isToday(g.items[0].loginAt) || isYesterday(g.items[0].loginAt)))
+           .map(g => g.key)
+  )
+  if (defaultOpen.size === 0 && groups.length > 0) defaultOpen.add(groups[0].key)
+
+  const [open, setOpen] = React.useState(defaultOpen)
+  const toggle = (k) => setOpen(prev => {
+    const next = new Set(prev)
+    next.has(k) ? next.delete(k) : next.add(k)
+    return next
+  })
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+      {groups.map(({ key, label, items }) => {
+        const isOpen = open.has(key)
+        return (
+          <Box key={key} sx={{ border: '0.5px solid rgba(255,255,255,0.08)', borderRadius: 1, overflow: 'hidden' }}>
+
+            {/* Cabecera del grupo */}
+            <Box
+              onClick={() => toggle(key)}
+              sx={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                px: 1.5, py: 0.875, cursor: 'pointer',
+                bgcolor: 'rgba(255,255,255,0.025)',
+                userSelect: 'none',
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.045)' }
+              }}
+            >
+              <Typography variant="caption" fontWeight={600}>{label}</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Typography variant="caption" sx={{
+                  fontSize: 10, color: 'text.disabled',
+                  bgcolor: 'rgba(255,255,255,0.06)', px: 0.75, py: 0.25, borderRadius: 0.5
+                }}>
+                  {items.length} sesión{items.length !== 1 ? 'es' : ''}
+                </Typography>
+                <Typography variant="caption" sx={{
+                  fontSize: 10, color: 'text.disabled',
+                  display: 'inline-block',
+                  transition: 'transform 0.2s',
+                  transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)'
+                }}>▼</Typography>
+              </Box>
+            </Box>
+
+            {/* Filas de sesiones */}
+            {isOpen && items.map(s => {
+              const isActive   = !s.logoutAt
+              const dur        = sessionDuration(s.loginAt, s.logoutAt)
+              const loginTime  = s.loginAt  ? new Date(s.loginAt).toLocaleTimeString('es-CL',  { hour: '2-digit', minute: '2-digit' }) : '—'
+              const logoutTime = s.logoutAt ? new Date(s.logoutAt).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) : null
+              return (
+                <Box key={s.id} sx={{
+                  display: 'flex', alignItems: 'center', gap: 1,
+                  px: 1.5, py: 0.75,
+                  borderTop: '0.5px solid rgba(255,255,255,0.04)'
+                }}>
+                  {/* Indicador de tipo */}
+                  <Box sx={{ color: isActive ? '#4caf50' : '#66FCF1', fontSize: 11, flexShrink: 0, lineHeight: 1 }}>
+                    {isActive ? '●' : '↑'}
+                  </Box>
+
+                  {/* Hora inicio — hora fin */}
+                  <Typography variant="caption" sx={{ flex: 1 }}>
+                    {loginTime}
+                    {logoutTime ? ` — ${logoutTime}` : <span style={{ color: '#4caf50', fontWeight: 600 }}> — activa</span>}
+                  </Typography>
+
+                  {/* Duración */}
+                  <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, minWidth: 48, textAlign: 'right' }}>
+                    {isActive ? '—' : (dur || '—')}
+                  </Typography>
+
+                  {/* Estado */}
+                  {isActive ? (
+                    <Chip
+                      icon={<FiberManualRecordIcon sx={{ fontSize: '10px !important' }} />}
+                      label="Online" size="small" color="success" variant="outlined"
+                      sx={{ height: 18, fontSize: 10, flexShrink: 0 }}
+                    />
+                  ) : (
+                    <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0, minWidth: 44, textAlign: 'right' }}>
+                      Cerrada
+                    </Typography>
+                  )}
+                </Box>
+              )
+            })}
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
 /* ─── Panel de perfil — UN SOLO Paper con secciones internas ──────────────
  * Todas las secciones viven dentro del mismo Paper (background.paper #1F2833)
  * separadas por bordes sutiles. Así no queda ningún hueco negro entre ellas. */
@@ -264,68 +406,7 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
       {/* ── HISTORIAL DE SESIONES ── */}
       <Box sx={{ p: 2.5 }}>
         <SectionLabel>Historial de sesiones</SectionLabel>
-        {loadingSessions ? (
-          <Box sx={{ py: 3, textAlign: 'center' }}><CircularProgress size={24} /></Box>
-        ) : sessions.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
-            Sin sesiones registradas
-          </Typography>
-        ) : (
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ fontWeight: 600, fontSize: 12, borderColor: 'rgba(255,255,255,0.08)' }}>Inicio</TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: 12, borderColor: 'rgba(255,255,255,0.08)' }}>Cierre</TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: 12, borderColor: 'rgba(255,255,255,0.08)' }}>Duración</TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: 12, borderColor: 'rgba(255,255,255,0.08)' }}>IP</TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: 12, borderColor: 'rgba(255,255,255,0.08)' }}>Estado</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {sessions.map((s) => {
-                const isSessionActive = !s.logoutAt
-                const dur = sessionDuration(s.loginAt, s.logoutAt)
-                return (
-                  <TableRow key={s.id} hover sx={{ '& td': { borderColor: 'rgba(255,255,255,0.05)' } }}>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                        <LoginIcon sx={{ fontSize: 13, color: '#66FCF1' }} />
-                        <Typography variant="caption">{fmtDate(s.loginAt)}</Typography>
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      {isSessionActive ? (
-                        <Typography variant="caption" color="success.main" fontWeight={600}>Sesión activa</Typography>
-                      ) : (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <LogoutIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
-                          <Typography variant="caption">{fmtDate(s.logoutAt)}</Typography>
-                        </Box>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="caption" color="text.secondary">{isSessionActive ? '—' : (dur || '—')}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="caption" color="text.secondary" fontFamily="monospace">{s.ip || '—'}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      {isSessionActive ? (
-                        <Chip
-                          icon={<FiberManualRecordIcon sx={{ fontSize: '10px !important' }} />}
-                          label="Online" size="small" color="success" variant="outlined"
-                          sx={{ height: 20, fontSize: 11 }}
-                        />
-                      ) : (
-                        <Typography variant="caption" color="text.disabled">Cerrada</Typography>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
-        )}
+        <SessionAccordion sessions={sessions} loadingSessions={loadingSessions} />
       </Box>
 
     </Paper>

@@ -50,6 +50,7 @@ export function InventoryProvider({ children }) {
    * `undefined` y toda esta capa se desactiva sola sin romper nada — la
    * app sigue funcionando en memoria como antes. */
   const [isHydrated, setIsHydrated] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   // Ref para evitar que las actualizaciones recibidas por Socket.io
   // disparen a su vez los efectos de guardado (loop infinito).
@@ -58,8 +59,9 @@ export function InventoryProvider({ children }) {
   const fromSocket = useRef({})
 
   // ── Carga de datos desde el servidor ─────────────────────────────────────
-  const loadData = React.useCallback(() => {
+  const loadData = React.useCallback((isManualRefresh = false) => {
     if (!getToken()) { setIsHydrated(true); return }
+    if (isManualRefresh) setIsRefreshing(true)
     api.get('/api/data').then(res => {
       if (res?.ok && res.data) {
         const d = res.data
@@ -95,6 +97,7 @@ export function InventoryProvider({ children }) {
       console.error('[InventoryContext] Error al cargar datos:', e)
     }).finally(() => {
       setIsHydrated(true)
+      setIsRefreshing(false)
     })
   }, [])
 
@@ -859,7 +862,8 @@ export function InventoryProvider({ children }) {
       isActiveOnDate,
       eventHistory, rentalHistory, purchaseHistory,
       closeEventToHistory, closeRentalToHistory,
-      auditLog, addAuditEntry
+      auditLog, addAuditEntry,
+      refreshData: () => loadData(true), isRefreshing
     }}>
       {children}
     </InventoryContext.Provider>

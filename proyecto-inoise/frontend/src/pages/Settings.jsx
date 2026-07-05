@@ -704,21 +704,16 @@ function PinManagement() {
 
       {/* ── Ingresar nuevo PIN ── */}
       {phase === 'enterPin' && (
-        <Box sx={{ textAlign: 'center' }}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        <Box sx={{ maxWidth: 260 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
             Ingresa tu nuevo PIN de 4 dígitos
           </Typography>
-          <Box sx={{
-            bgcolor: '#111827', borderRadius: 2, p: 2.5,
-            display: 'inline-block', color: '#fff'
-          }}>
-            <PinPad
-              value={pinFirst}
-              onChange={v => { setPinFirst(v); setPinError('') }}
-              onSubmit={handleFirstPin}
-              disabled={loading}
-            />
-          </Box>
+          <PinPad
+            value={pinFirst}
+            onChange={v => { setPinFirst(v); setPinError('') }}
+            onSubmit={handleFirstPin}
+            disabled={loading}
+          />
           <Box sx={{ mt: 1 }}>
             <Button size="small" onClick={reset}>Cancelar</Button>
           </Box>
@@ -727,22 +722,17 @@ function PinManagement() {
 
       {/* ── Confirmar PIN ── */}
       {phase === 'confirmPin' && (
-        <Box sx={{ textAlign: 'center' }}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Confirma tu PIN
+        <Box sx={{ maxWidth: 260 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Confirmá el PIN
           </Typography>
-          <Box sx={{
-            bgcolor: '#111827', borderRadius: 2, p: 2.5,
-            display: 'inline-block', color: '#fff'
-          }}>
-            <PinPad
-              value={pinSecond}
-              onChange={v => { setPinSecond(v); if (pinError) setPinError('') }}
-              onSubmit={handleConfirmPin}
-              disabled={loading}
-              error={pinError}
-            />
-          </Box>
+          <PinPad
+            value={pinSecond}
+            onChange={v => { setPinSecond(v); if (pinError) setPinError('') }}
+            onSubmit={handleConfirmPin}
+            disabled={loading}
+            error={pinError}
+          />
           <Box sx={{ mt: 1 }}>
             <Button size="small" onClick={() => { setPhase('enterPin'); setPinFirst(''); setPinSecond('') }}>
               ← Reingresar PIN

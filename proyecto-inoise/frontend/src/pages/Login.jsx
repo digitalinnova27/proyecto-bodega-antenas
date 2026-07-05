@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
 import adminImg from '../assets/admin.png'
@@ -38,61 +38,114 @@ function EyeIcon({ open }) {
   )
 }
 
-/* ─── Numpad PIN (exportado para reutilizar en Settings) ─────────────────── */
+/* ─── Input PIN — reemplaza el teclado visual ──────────────────────────────
+ * Campo tipo password con:
+ *  • Asteriscos/puntos por defecto (type="password")
+ *  • Ojo para mostrar/ocultar
+ *  • Acepta solo dígitos (filtra cualquier otro carácter)
+ *  • Teclado numérico en móvil (inputMode="numeric")
+ *  • Auto-envío al llegar a 4 dígitos
+ *  • Auto-foco al montar
+ * Exportado para reutilizar en Settings.jsx                               */
 export function PinPad({ value = '', onChange, onSubmit, disabled = false, error = '' }) {
-  const handleDigit = (d) => {
-    if (value.length >= 4 || disabled) return
-    const next = value + d
-    onChange(next)
-    if (next.length === 4 && onSubmit) onSubmit(next)
+  const [show, setShow] = useState(false)
+  const inputRef = useRef(null)
+
+  // Auto-foco al montar (con pequeño delay para que el DOM esté listo)
+  useEffect(() => {
+    const t = setTimeout(() => { if (inputRef.current) inputRef.current.focus() }, 80)
+    return () => clearTimeout(t)
+  }, [])
+
+  const handleChange = (e) => {
+    // Filtrar cualquier carácter no numérico y limitar a 4 dígitos
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 4)
+    onChange(raw)
+    if (raw.length === 4 && onSubmit) onSubmit(raw)
   }
-  const handleBack = () => {
-    if (disabled) return
-    onChange(value.slice(0, -1))
+
+  const handleKeyDown = (e) => {
+    // Bloquear teclas no numéricas salvo control (backspace, flechas, etc.)
+    const ctrl = e.ctrlKey || e.metaKey
+    const allowed = /^[0-9]$/.test(e.key) || ctrl ||
+      ['Backspace','Delete','Tab','Enter','ArrowLeft','ArrowRight'].includes(e.key)
+    if (!allowed) e.preventDefault()
   }
-  const keys = ['1','2','3','4','5','6','7','8','9','','0','⌫']
+
+  /* ícono ojo — SVG inline para no depender de MUI en este archivo */
+  const EyeIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+  const EyeOffIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
+      <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  )
+
   return (
-    <div>
-      {/* Indicadores de dígito */}
-      <div style={{ display: 'flex', gap: 14, justifyContent: 'center', marginBottom: 18 }}>
-        {[0,1,2,3].map(i => (
-          <div key={i} style={{
-            width: 13, height: 13, borderRadius: '50%',
-            background: i < value.length ? '#66FCF1' : 'rgba(255,255,255,0.2)',
-            transition: 'background 0.12s',
-            boxShadow: i < value.length ? '0 0 6px #66FCF1' : 'none'
-          }} />
-        ))}
+    <div style={{ width: 200, margin: '0 auto' }}>
+      <div style={{ position: 'relative' }}>
+        <input
+          ref={inputRef}
+          type={show ? 'text' : 'password'}
+          value={value}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+          maxLength={4}
+          inputMode="numeric"
+          pattern="[0-9]*"
+          autoComplete="one-time-code"
+          placeholder="••••"
+          style={{
+            width: '100%',
+            padding: '13px 44px 13px 14px',
+            fontSize: 26,
+            letterSpacing: '0.4em',
+            textAlign: 'center',
+            borderRadius: 10,
+            border: `1.5px solid ${error ? '#E24B4A' : 'rgba(255,255,255,0.22)'}`,
+            background: 'rgba(255,255,255,0.07)',
+            color: '#fff',
+            outline: 'none',
+            boxSizing: 'border-box',
+            caretColor: '#66FCF1',
+            transition: 'border-color 0.15s',
+            fontFamily: 'inherit'
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => setShow(s => !s)}
+          tabIndex={-1}
+          title={show ? 'Ocultar PIN' : 'Mostrar PIN'}
+          style={{
+            position: 'absolute', right: 10, top: '50%',
+            transform: 'translateY(-50%)',
+            background: 'none', border: 'none',
+            color: 'rgba(255,255,255,0.45)',
+            cursor: 'pointer', padding: 4,
+            display: 'flex', alignItems: 'center',
+            lineHeight: 1,
+            /* override .credentials button animation that would reset transform */
+            animation: 'none', opacity: 1, marginTop: 0
+          }}
+        >
+          {show ? <EyeOffIcon /> : <EyeIcon />}
+        </button>
       </div>
       {error && (
-        <p style={{ color: '#E24B4A', fontSize: 12, textAlign: 'center', margin: '0 0 10px' }}>
+        <p style={{ color: '#E24B4A', fontSize: 12, margin: '6px 0 0', textAlign: 'center' }}>
           {error}
         </p>
       )}
-      {/* Teclado numérico 3×4 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, maxWidth: 216, margin: '0 auto' }}>
-        {keys.map((k, i) => (
-          <button
-            key={i}
-            type="button"
-            disabled={disabled || k === ''}
-            onClick={() => k === '⌫' ? handleBack() : k && handleDigit(k)}
-            style={{
-              height: 54, borderRadius: 10, border: 'none',
-              background: k === '' ? 'transparent'
-                : k === '⌫' ? 'rgba(255,255,255,0.07)'
-                : 'rgba(255,255,255,0.11)',
-              color: '#fff', fontSize: k === '⌫' ? 18 : 20, fontWeight: 600,
-              cursor: k === '' ? 'default' : 'pointer', outline: 'none',
-              /* override .credentials button animation */
-              animation: 'none', opacity: 1, transform: 'none',
-              marginTop: 0, padding: 0, transition: 'background 0.12s'
-            }}
-          >
-            {k}
-          </button>
-        ))}
-      </div>
     </div>
   )
 }
