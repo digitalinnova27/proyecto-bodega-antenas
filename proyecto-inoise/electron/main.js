@@ -117,7 +117,9 @@ ipcMain.handle('verify-server', (_e, url) => {
 // tenga que escribir la IP manualmente.
 ipcMain.handle('discover-server', () => {
   return new Promise((resolve) => {
-    const listener = dgram.createSocket('udp4')
+    // reuseAddr permite rebindear el puerto aunque un socket anterior esté
+    // en estado de cierre — necesario cuando el usuario intenta varias veces
+    const listener = dgram.createSocket({ type: 'udp4', reuseAddr: true })
 
     const timeout = setTimeout(() => {
       try { listener.close() } catch {}
@@ -295,7 +297,7 @@ app.whenReady().then(async () => {
 
       // UDP broadcaster — anuncia la URL del servidor en la red local cada 2s
       // para que los PCs cliente puedan descubrirlo sin ingresar la IP a mano.
-      const broadcaster = dgram.createSocket('udp4')
+      const broadcaster = dgram.createSocket({ type: 'udp4', reuseAddr: true })
       broadcaster.on('error', (err) => {
         console.error('[UDP] Error en broadcaster:', err.message)
         try { broadcaster.close() } catch {}
