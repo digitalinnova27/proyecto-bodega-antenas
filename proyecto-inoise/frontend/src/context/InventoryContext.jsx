@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState } from 'react'
+import React, { createContext, useContext, useState, useRef } from 'react'
 import { INITIAL_PRODUCTS } from '../excelData'
+import { api, getToken } from '../lib/api'
+import { getSocket } from '../lib/socket'
 
 /* ─── Utilidad de fechas ──────────────────────────────────────────────────── */
 // Compara solo la fecha (sin hora). Devuelve true si eventDate >= today.
@@ -15,8 +17,9 @@ const isActiveOnDate = (eventDateStr) => {
 // (por ahora tratamos cada evento como un día, fácil de extender a rango)
 const eventsOverlapDate = (dateA, dateB) => dateA === dateB
 
-/* ─── Datos iniciales ─────────────────────────────────────────────────────── */
-let orderCounter = 100
+/* ─── Contadores de orden — variables de módulo para sobrevivir re-renders ── */
+let orderCounter = 100        // EVT-XXX
+let rentalCounterGlobal = 200 // RNT-XXX
 
 /* ─── Context ─────────────────────────────────────────────────────────────── */
 const InventoryContext = createContext(null)
@@ -48,38 +51,83 @@ export function InventoryProvider({ children }) {
    * app sigue funcionando en memoria como antes. */
   const [isHydrated, setIsHydrated] = useState(false)
 
-  React.useEffect(() => {
-    if (!window.api) {
-      // No estamos dentro de Electron (ej. navegador suelto en dev) — no
-      // hay nada que cargar, seguimos con los estados iniciales en memoria.
-      setIsHydrated(true)
-      return
-    }
-    window.api.loadAll().then(res => {
+  // Ref para evitar que las actualizaciones recibidas por Socket.io
+  // disparen a su vez los efectos de guardado (loop infinito).
+  // Cuando el servidor emite 'data:sync', marcamos la entidad como
+  // "viene del socket" → el efecto de guardado la saltea.
+  const fromSocket = useRef({})
+
+  // ── Carga de datos desde el servidor ─────────────────────────────────────
+  const loadData = React.useCallback(() => {
+    if (!getToken()) { setIsHydrated(true); return }
+    api.get('/api/data').then(res => {
       if (res?.ok && res.data) {
         const d = res.data
-        // Si la BD ya tiene productos guardados, esos son la fuente de
-        // verdad. Si está vacía (primera vez que corre la app con SQLite),
-        // se mantiene INITIAL_PRODUCTS como semilla inicial.
         if (d.products && d.products.length > 0) setProducts(d.products)
-        if (d.events) setEvents(d.events)
-        if (d.rentals) setRentals(d.rentals)
+        if (d.events) {
+          setEvents(d.events)
+          // Recalcular orderCounter para evitar duplicar números de orden
+          // al recargar la app (el contador arranca en 100 en frío, pero
+          // si ya existen EVT-103 en la BD el próximo sería EVT-101 sin este fix).
+          const maxEvt = d.events.reduce((max, e) => {
+            const m = e.orderNumber?.match(/EVT-(\d+)/)
+            return m ? Math.max(max, parseInt(m[1], 10)) : max
+          }, 100)
+          orderCounter = Math.max(orderCounter, maxEvt)
+        }
+        if (d.rentals) {
+          setRentals(d.rentals)
+          // Mismo fix para rentas
+          const maxRnt = d.rentals.reduce((max, r) => {
+            const m = r.orderNumber?.match(/RNT-(\d+)/)
+            return m ? Math.max(max, parseInt(m[1], 10)) : max
+          }, 200)
+          rentalCounterGlobal = Math.max(rentalCounterGlobal, maxRnt)
+        }
         if (d.opStates) setOpStates(d.opStates)
         if (d.eventHistory) setEventHistory(d.eventHistory)
         if (d.rentalHistory) setRentalHistory(d.rentalHistory)
         if (d.purchaseHistory) setPurchaseHistory(d.purchaseHistory)
         if (d.auditLog) setAuditLog(d.auditLog)
-        // epcMap: el bridge (server/rfid-bridge.js) sigue siendo la fuente
-        // de verdad para resolver escaneos reales — el efecto de abajo que
-        // hace fetch a BRIDGE_URL puede sobreescribir esto si el bridge
-        // está disponible. Si el bridge no responde, queda lo de la BD.
         if (d.epcMap) setEpcMap(d.epcMap)
       }
     }).catch((e) => {
-      console.error('[InventoryContext] Error al cargar BD:', e)
+      console.error('[InventoryContext] Error al cargar datos:', e)
     }).finally(() => {
       setIsHydrated(true)
     })
+  }, [])
+
+  // Carga inicial + re-carga cuando el usuario se autentica
+  React.useEffect(() => {
+    loadData()
+    const onAuth = () => loadData()
+    window.addEventListener('inoise:auth-changed', onAuth)
+    return () => window.removeEventListener('inoise:auth-changed', onAuth)
+  }, [loadData])
+
+  // ── Socket.io — sincronización en tiempo real con otros clientes ──────────
+  React.useEffect(() => {
+    const sock = getSocket()
+    const handler = ({ entity, data }) => {
+      // Marcar que este cambio vino del socket para que el efecto de
+      // guardado no lo reenvíe al servidor (evita el loop).
+      fromSocket.current[entity] = true
+      switch (entity) {
+        case 'products':       setProducts(data);       break
+        case 'events':         setEvents(data);         break
+        case 'rentals':        setRentals(data);        break
+        case 'opStates':       setOpStates(data);       break
+        case 'epcMap':         setEpcMap(data);         break
+        case 'eventHistory':   setEventHistory(data);   break
+        case 'rentalHistory':  setRentalHistory(data);  break
+        case 'purchaseHistory':setPurchaseHistory(data);break
+        case 'auditLog':       setAuditLog(data);       break
+        default: break
+      }
+    }
+    sock.on('data:sync', handler)
+    return () => sock.off('data:sync', handler)
   }, [])
 
   /* ── Progreso de fases por evento (Operaciones) ──
@@ -379,10 +427,9 @@ export function InventoryProvider({ children }) {
   }
 
   /* ── Crear arriendo ── */
-  const rentalCounterRef = React.useRef(200)
   const createRental = (formData, assignments) => {
-    rentalCounterRef.current += 1
-    const num = rentalCounterRef.current
+    rentalCounterGlobal += 1
+    const num = rentalCounterGlobal
     const cleanAssignments = assignments.filter(a => a.qty > 0)
 
     const enrichedAssignments = cleanAssignments.map(a => ({
@@ -524,10 +571,14 @@ export function InventoryProvider({ children }) {
    * la realizó, descripción de la acción, detalle (N° orden + nombre) y
    * categoría (evento | arriendo | producto | sistema). */
   const addAuditEntry = React.useCallback((action, detail, category, user = 'Sistema') => {
+    // Normalizar: si llega el objeto currentUser, extraer el nombre real
+    const userName = (user && typeof user === 'object')
+      ? (`${user.nombre || ''} ${user.apellido || ''}`).trim() || user.username || 'Sistema'
+      : (user || 'Sistema')
     const entry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       timestamp: new Date().toISOString(),
-      user,
+      user: userName,
       action,
       detail: detail || '',
       category: category || 'sistema'
@@ -728,62 +779,69 @@ export function InventoryProvider({ children }) {
       sku: data.sku,
       category: data.category,
       qty,
-      user: user || 'Administrador'
+      user: (user && typeof user === 'object')
+        ? (`${user.nombre || ''} ${user.apellido || ''}`).trim() || user.username || 'Sistema'
+        : (user || 'Sistema')
     }, ...prev])
     return newProduct
   }
 
   /* ────────────────────────────────────────────────────────────────────────
-   * Guardado automático en SQLite — un efecto por entidad, cada uno se
-   * dispara solo cuando ESA entidad cambia (no en cada render del Provider
-   * completo). Todos están guardados por `isHydrated` para no pisar la BD
-   * con datos vacíos antes de que termine la carga inicial (ver el efecto
-   * de loadAll más arriba). Si `window.api` no existe (fuera de Electron),
-   * cada llamada es un no-op seguro. */
-  React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveProducts(products).catch(() => { })
-  }, [products, isHydrated])
+   * Guardado automático en el servidor — un efecto por entidad.
+   * Todos están bloqueados por `isHydrated` para no pisar la BD con datos
+   * vacíos antes de que termine la carga inicial.
+   * Si el cambio viene del socket (fromSocket.current[entity] = true),
+   * se saltea el guardado para evitar el loop de sincronización.
+   * Nota: los efectos deben ser llamadas directas de useEffect (regla de hooks). */
+  const skipOrSave = (entity, path, value) => {
+    if (fromSocket.current[entity]) { fromSocket.current[entity] = false; return }
+    api.put(path, value).catch(() => {})
+  }
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveEvents(events).catch(() => { })
-  }, [events, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('products', '/api/data/products', products)
+  }, [products, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveRentals(rentals).catch(() => { })
-  }, [rentals, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('events', '/api/data/events', events)
+  }, [events, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveOpStates(opStates).catch(() => { })
-  }, [opStates, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('rentals', '/api/data/rentals', rentals)
+  }, [rentals, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveEpcMap(epcMap).catch(() => { })
-  }, [epcMap, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('opStates', '/api/data/op-states', opStates)
+  }, [opStates, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveEventHistory(eventHistory).catch(() => { })
-  }, [eventHistory, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('epcMap', '/api/data/epc-map', epcMap)
+  }, [epcMap, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveRentalHistory(rentalHistory).catch(() => { })
-  }, [rentalHistory, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('eventHistory', '/api/data/event-history', eventHistory)
+  }, [eventHistory, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.savePurchaseHistory(purchaseHistory).catch(() => { })
-  }, [purchaseHistory, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('rentalHistory', '/api/data/rental-history', rentalHistory)
+  }, [rentalHistory, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!isHydrated || !window.api) return
-    window.api.saveAuditLog(auditLog).catch(() => { })
-  }, [auditLog, isHydrated])
+    if (!isHydrated) return
+    skipOrSave('purchaseHistory', '/api/data/purchase-history', purchaseHistory)
+  }, [purchaseHistory, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  React.useEffect(() => {
+    if (!isHydrated) return
+    skipOrSave('auditLog', '/api/data/audit-log', auditLog)
+  }, [auditLog, isHydrated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <InventoryContext.Provider value={{

@@ -243,6 +243,21 @@ function runMigrations(db) {
       category  TEXT
     );
 
+    /* ── Registro de sesiones ─────────────────────────────────────────
+     * Una sesión = un login exitoso. Se cierra al hacer logout explícito
+     * o al reiniciar el servidor (closeAllOpenSessions al arrancar).
+     * user_id referencia al id de la tabla users (sin FK para evitar
+     * problemas si el usuario se elimina — el historial se mantiene). */
+    CREATE TABLE IF NOT EXISTS sessions (
+      id           TEXT PRIMARY KEY,
+      user_id      TEXT NOT NULL,
+      username     TEXT NOT NULL,
+      display_name TEXT,
+      login_at     TEXT NOT NULL,
+      logout_at    TEXT,
+      ip           TEXT
+    );
+
     /* ── Usuarios del sistema ─────────────────────────────────────────
      * role: admin (max 1) | operador (N)
      * avatar: id del preset elegido (av1..av8)
@@ -271,6 +286,8 @@ function runMigrations(db) {
     ensureColumn(db, 'events', 'pending_delete_at', 'TEXT')
     // PIN de acceso rápido — NULL = sin PIN configurado
     ensureColumn(db, 'users', 'pin_hash', 'TEXT')
+    // Habilitado/deshabilitado por el admin (1 = activo, 0 = deshabilitado)
+    ensureColumn(db, 'users', 'active', 'INTEGER NOT NULL DEFAULT 1')
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -667,6 +684,7 @@ function _mapUser(u) {
         email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
         username: u.username, passwordHash: u.password_hash,
         hasPin: !!u.pin_hash,
+        active: u.active !== 0,   // 0 = deshabilitado, 1 o NULL → activo
         createdAt: u.created_at
     }
 }
@@ -691,15 +709,18 @@ function createUser(data, plainPassword) {
 
 function updateUser(id, fields, plainPassword) {
     const db = getDb()
+    const role = fields.role || null  // puede ser 'admin' | 'operador' | null (sin cambio)
     if (plainPassword) {
         const hash = _hashPassword(plainPassword)
-        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?, password_hash=? WHERE id=?`)
-          .run(fields.nombre, fields.apellido, fields.email || null,
-               fields.cargo || null, fields.avatar || null, fields.username, hash, id)
+        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?, password_hash=?${role ? ', role=?' : ''} WHERE id=?`)
+          .run(...[fields.nombre, fields.apellido, fields.email || null,
+               fields.cargo || null, fields.avatar || null, fields.username, hash,
+               ...(role ? [role] : []), id])
     } else {
-        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=? WHERE id=?`)
-          .run(fields.nombre, fields.apellido, fields.email || null,
-               fields.cargo || null, fields.avatar || null, fields.username, id)
+        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?${role ? ', role=?' : ''} WHERE id=?`)
+          .run(...[fields.nombre, fields.apellido, fields.email || null,
+               fields.cargo || null, fields.avatar || null, fields.username,
+               ...(role ? [role] : []), id])
     }
 }
 
@@ -712,11 +733,12 @@ function authLogin(username, plainPassword) {
     const db = getDb()
     const u = db.prepare('SELECT * FROM users WHERE username=?').get(username)
     if (!u) return null
+    if (u.active === 0) return { disabled: true }   // usuario deshabilitado
     if (!_verifyPassword(plainPassword, u.password_hash)) return null
     return {
         id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
         email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
-        username: u.username, hasPin: !!u.pin_hash, createdAt: u.created_at
+        username: u.username, hasPin: !!u.pin_hash, active: true, createdAt: u.created_at
     }
 }
 
@@ -745,13 +767,59 @@ function authLoginPin(userId, pin) {
     const db = getDb()
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(userId)
     if (!u || !u.pin_hash) return null
+    if (u.active === 0) return { disabled: true }   // usuario deshabilitado
     const hash = crypto.createHash('sha256').update(userId + ':' + String(pin)).digest('hex')
     if (hash !== u.pin_hash) return null
     return {
         id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
         email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
-        username: u.username, hasPin: true, createdAt: u.created_at
+        username: u.username, hasPin: true, active: true, createdAt: u.created_at
     }
+}
+
+function setUserActive(id, active) {
+    const db = getDb()
+    db.prepare('UPDATE users SET active=? WHERE id=?').run(active ? 1 : 0, id)
+}
+
+/* ── Sesiones de usuario ────────────────────────────────────────────────────
+ * Registra cada login exitoso con su timestamp e IP. Se cierra al hacer
+ * logout explícito (closeSession) o al reiniciar el servidor
+ * (closeAllOpenSessions — evita sesiones "zombi" de arranques anteriores). */
+
+function createSession(userId, username, displayName, ip) {
+    const db = getDb()
+    const id = `ses-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    db.prepare(`INSERT INTO sessions (id, user_id, username, display_name, login_at, ip)
+                VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, userId, username, displayName || null, new Date().toISOString(), ip || null)
+    return id
+}
+
+function closeSession(id) {
+    if (!id) return
+    const db = getDb()
+    db.prepare(`UPDATE sessions SET logout_at=? WHERE id=? AND logout_at IS NULL`)
+      .run(new Date().toISOString(), id)
+}
+
+/** Cierra todas las sesiones sin logout_at. Llamar al arrancar el servidor
+ *  para limpiar sesiones "zombi" de ejecuciones anteriores. */
+function closeAllOpenSessions() {
+    const db = getDb()
+    db.prepare(`UPDATE sessions SET logout_at=? WHERE logout_at IS NULL`)
+      .run(new Date().toISOString())
+}
+
+function loadUserSessions(userId, limit = 30) {
+    const db = getDb()
+    return db.prepare(`SELECT * FROM sessions WHERE user_id=? ORDER BY login_at DESC LIMIT ?`)
+      .all(userId, limit)
+      .map(s => ({
+          id: s.id, userId: s.user_id, username: s.username,
+          displayName: s.display_name, loginAt: s.login_at,
+          logoutAt: s.logout_at, ip: s.ip
+      }))
 }
 
 /* ── Carga inicial completa (un solo viaje IPC al montar la app) ── */
@@ -788,5 +856,6 @@ module.exports = {
     savePurchaseHistory, loadPurchaseHistory,
     saveAuditLog, loadAuditLog,
     loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
-    setUserPin, removeUserPin, authLoginPin
+    setUserPin, removeUserPin, authLoginPin, setUserActive,
+    createSession, closeSession, closeAllOpenSessions, loadUserSessions
 }

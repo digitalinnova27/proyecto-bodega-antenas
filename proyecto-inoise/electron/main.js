@@ -11,6 +11,7 @@ const {
   loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
   setUserPin, removeUserPin, authLoginPin
 } = require('./db')
+const { startServer, getLocalIP, PORT: SERVER_PORT } = require('./server/index')
 
 /* ── Puente IPC para persistencia (paso 3) ──
  * El renderer (React, contextIsolation: true) no puede tocar better-sqlite3
@@ -156,19 +157,52 @@ function waitForVite(url, retries = 40, delay = 1000) {
   })
 }
 
+// Almacena info del servidor para que el preload la pueda exponer al renderer
+let serverInfo = null
+
 app.whenReady().then(async () => {
   createSplash()
 
-  // Abre/crea la base SQLite y corre las migraciones (CREATE TABLE IF NOT
-  // EXISTS). Esto es solo el paso 1: deja la BD lista en disco. La lectura
-  // y escritura real de datos (productos, eventos, etc.) se conecta en un
-  // paso siguiente, vía IPC, desde InventoryContext.
+  // 1. Inicializar SQLite y registrar handlers IPC (compatibilidad con
+  //    clientes Electron que aún usan window.api directamente).
   try {
     getDb()
     registerIpcHandlers()
   } catch (e) {
     console.error('[DB] Error al iniciar SQLite:', e.message)
   }
+
+  // 2. Iniciar servidor Express + Socket.io (multi-usuario / acceso web).
+  //    Puerto 3005 (3001 y 3002 los usa el rfid-bridge).
+  //    Antes de arrancar, liberar el puerto si un proceso anterior quedó colgado.
+  try {
+    if (process.platform === 'win32') {
+      const { execSync } = require('child_process')
+      try {
+        const out = execSync('netstat -ano 2>nul | findstr "3005"', { encoding: 'utf8', timeout: 3000 })
+        const lines = out.split('\n').filter(l => l.includes('LISTENING'))
+        for (const line of lines) {
+          const pid = line.trim().split(/\s+/).pop()
+          if (pid && !isNaN(pid) && Number(pid) !== process.pid) {
+            try { execSync(`taskkill /F /PID ${pid}`, { timeout: 2000 }) } catch {}
+            console.log(`[iNOISE] Proceso antiguo en 3001 (PID ${pid}) liberado`)
+          }
+        }
+        // Dar 500ms para que el SO libere el puerto
+        await new Promise(r => setTimeout(r, 500))
+      } catch {}
+    }
+  } catch {}
+
+  try {
+    serverInfo = await startServer()
+    console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
+  } catch (e) {
+    console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
+  }
+
+  // Exponer info del servidor al renderer via IPC
+  ipcMain.handle('server:info', () => serverInfo || { port: SERVER_PORT, ip: getLocalIP(), networkUrl: `http://${getLocalIP()}:${SERVER_PORT}` })
 
   // Iniciar rfid-bridge DENTRO del proceso de Electron (no como proceso
   // 'node.exe' aparte). Electron ya trae su propio Node embebido en el

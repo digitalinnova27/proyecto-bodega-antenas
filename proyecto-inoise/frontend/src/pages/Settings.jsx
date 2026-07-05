@@ -3,7 +3,8 @@ import {
   Box, Typography, Paper, FormControlLabel, Switch, Divider,
   Button, TextField, Dialog, DialogTitle, DialogContent, DialogActions,
   Avatar, Chip, IconButton, Alert, CircularProgress, MenuItem,
-  Table, TableHead, TableRow, TableCell, TableBody, InputAdornment
+  Table, TableHead, TableRow, TableCell, TableBody, InputAdornment,
+  Tooltip
 } from '@mui/material'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
@@ -14,6 +15,8 @@ import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import FingerprintIcon from '@mui/icons-material/Fingerprint'
+import WifiIcon from '@mui/icons-material/Wifi'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import { useAuth } from '../context/AuthContext'
 import { AVATARS, CARGO_OPTIONS, PinPad } from './Login'
 
@@ -71,7 +74,7 @@ function validatePassword(pw) {
 function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole }) {
   const [form, setForm] = React.useState({
     nombre: '', apellido: '', email: '', cargo: CARGO_OPTIONS[0],
-    avatar: '', username: '', password: '', confirm: ''
+    avatar: '', username: '', password: '', confirm: '', role: 'operador'
   })
   const [errors, setErrors] = React.useState({})
   const [showPw, setShowPw] = React.useState(false)
@@ -80,20 +83,25 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
 
   React.useEffect(() => {
     if (open) {
+      // BUG-05: si el cargo guardado ya no existe en la lista nueva,
+      // caer al primer elemento para evitar que el select quede vacío.
+      const savedCargo = initialData?.cargo || ''
+      const cargoValue = CARGO_OPTIONS.includes(savedCargo) ? savedCargo : CARGO_OPTIONS[0]
       setForm({
         nombre: initialData?.nombre || '',
         apellido: initialData?.apellido || '',
         email: initialData?.email || '',
-        cargo: initialData?.cargo || CARGO_OPTIONS[0],
+        cargo: cargoValue,
         avatar: initialData?.avatar || '',
         username: initialData?.username || '',
         password: '',
-        confirm: ''
+        confirm: '',
+        role: forceRole || initialData?.role || 'operador'
       })
       setErrors({})
       setSaveError('')
     }
-  }, [open, initialData])
+  }, [open, initialData, forceRole])
 
   const set = (k, v) => {
     setForm(f => ({ ...f, [k]: v }))
@@ -103,9 +111,9 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
 
   const validate = () => {
     const e = {}
-    if (!form.nombre.trim())   e.nombre = 'Requerido'
+    if (!form.nombre.trim()) e.nombre = 'Requerido'
     if (!form.apellido.trim()) e.apellido = 'Requerido'
-    if (!form.avatar)          e.avatar = 'Elige un avatar'
+    if (!form.avatar) e.avatar = 'Elige un avatar'
     if (!form.username || form.username.length < 3) e.username = 'Mínimo 3 caracteres'
     if (/\s/.test(form.username)) e.username = 'Sin espacios'
     if (isCreate) {
@@ -131,7 +139,7 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
       nombre: form.nombre.trim(), apellido: form.apellido.trim(),
       email: form.email.trim(), cargo: form.cargo,
       avatar: form.avatar, username: form.username.trim(),
-      role: forceRole || initialData?.role || 'operador'
+      role: form.role
     }
     const err = await onSave(fields, form.password || null)
     setSaving(false)
@@ -159,6 +167,15 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
           value={form.cargo} onChange={e => set('cargo', e.target.value)}>
           {CARGO_OPTIONS.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
         </TextField>
+
+        {/* BUG-04: selector de rol — solo visible al crear, no al editar */}
+        {isCreate && !forceRole && (
+          <TextField label="Rol del sistema" select size="small" fullWidth sx={{ mb: 2 }}
+            value={form.role} onChange={e => set('role', e.target.value)}>
+            <MenuItem value="operador">Operador</MenuItem>
+            <MenuItem value="admin">Administrador</MenuItem>
+          </TextField>
+        )}
 
         <AvatarPicker value={form.avatar} onChange={v => set('avatar', v)} />
         {errors.avatar && <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1, mt: -1 }}>{errors.avatar}</Typography>}
@@ -231,13 +248,15 @@ function DeleteConfirmModal({ open, user, onConfirm, onClose }) {
 
 /* ─── Sección de gestión de usuarios (solo admin) ───────────────────────── */
 function UserManagement() {
-  const { currentUser, users, updateUser, deleteUser, createUser, verifyAdminPassword } = useAuth()
+  const { currentUser, users, updateUser, deleteUser, createUser, verifyAdminPassword, setUserActive } = useAuth()
 
   const [unlocked, setUnlocked] = React.useState(false)
   const [lockPw, setLockPw] = React.useState('')
   const [lockError, setLockError] = React.useState('')
   const [lockLoading, setLockLoading] = React.useState(false)
   const [showLockPw, setShowLockPw] = React.useState(false)
+  const [togglingId, setTogglingId] = React.useState(null)
+  const [toggleError, setToggleError] = React.useState('')
 
   const [editUser, setEditUser] = React.useState(null)
   const [deleteTarget, setDeleteTarget] = React.useState(null)
@@ -260,7 +279,8 @@ function UserManagement() {
   }
 
   const handleCreateUser = async (fields, password) => {
-    const res = await createUser({ ...fields, role: 'operador' }, password)
+    // El rol viene del formulario (Operador o Administrador, elegido por el admin)
+    const res = await createUser(fields, password)
     if (!res.ok) return res.error || 'Error al crear usuario'
     return null
   }
@@ -268,6 +288,28 @@ function UserManagement() {
   const handleDeleteConfirm = async () => {
     await deleteUser(deleteTarget.id)
     setDeleteTarget(null)
+  }
+
+  const handleToggleActive = async (u) => {
+    setTogglingId(u.id)
+    setToggleError('')
+    const res = await setUserActive(u.id, !u.active)
+    setTogglingId(null)
+    if (!res.ok) setToggleError(res.error || 'Error al cambiar estado')
+  }
+
+  // Un usuario no puede deshabilitarse a sí mismo.
+  // Tampoco se puede deshabilitar al único admin activo.
+  const activeAdmins = users.filter(u => u.role === 'admin' && u.active !== false)
+  const canToggle = (u) => {
+    if (u.id === currentUser?.id) return false
+    if (u.role === 'admin' && u.active !== false && activeAdmins.length <= 1) return false
+    return true
+  }
+  const toggleTooltip = (u) => {
+    if (u.id === currentUser?.id) return 'No podés deshabilitarte a vos mismo'
+    if (u.role === 'admin' && u.active !== false && activeAdmins.length <= 1) return 'No podés deshabilitar al único administrador activo'
+    return u.active !== false ? 'Deshabilitar usuario' : 'Habilitar usuario'
   }
 
   const roleChipColor = (role) => role === 'admin' ? 'warning' : 'default'
@@ -324,6 +366,11 @@ function UserManagement() {
         </Box>
       ) : (
         <>
+          {toggleError && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setToggleError('')}>
+              {toggleError}
+            </Alert>
+          )}
           {/* Lista de usuarios */}
           <Table size="small" sx={{ mb: 2 }}>
             <TableHead>
@@ -333,44 +380,64 @@ function UserManagement() {
                 <TableCell>Cargo</TableCell>
                 <TableCell>Correo</TableCell>
                 <TableCell>Rol</TableCell>
+                <TableCell align="center">Habilitado</TableCell>
                 <TableCell align="right">Acciones</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {users.map(u => (
-                <TableRow key={u.id} hover>
-                  <TableCell>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <UserAvatar avatarId={u.avatar} size={32} />
-                      <Typography variant="body2" fontFamily="monospace">{u.username}</Typography>
-                    </Box>
-                  </TableCell>
-                  <TableCell>{u.nombre} {u.apellido}</TableCell>
-                  <TableCell>{u.cargo || '—'}</TableCell>
-                  <TableCell sx={{ color: 'text.secondary', fontSize: 13 }}>{u.email || '—'}</TableCell>
-                  <TableCell>
-                    <Chip
-                      label={u.role === 'admin' ? 'Admin' : 'Operador'}
-                      size="small"
-                      color={roleChipColor(u.role)}
-                      variant={u.role === 'admin' ? 'filled' : 'outlined'}
-                    />
-                  </TableCell>
-                  <TableCell align="right">
-                    <IconButton size="small" onClick={() => setEditUser(u)} title="Editar">
-                      <EditIcon fontSize="small" />
-                    </IconButton>
-                    <IconButton
-                      size="small" color="error"
-                      disabled={u.id === currentUser?.id}
-                      onClick={() => setDeleteTarget(u)}
-                      title={u.id === currentUser?.id ? 'No puedes eliminar tu propia cuenta' : 'Eliminar'}
-                    >
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {users.map(u => {
+                const isActive = u.active !== false
+                return (
+                  <TableRow
+                    key={u.id} hover
+                    sx={{ opacity: isActive ? 1 : 0.5, transition: 'opacity 0.2s' }}
+                  >
+                    <TableCell>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <UserAvatar avatarId={u.avatar} size={32} />
+                        <Typography variant="body2" fontFamily="monospace">{u.username}</Typography>
+                      </Box>
+                    </TableCell>
+                    <TableCell>{u.nombre} {u.apellido}</TableCell>
+                    <TableCell>{u.cargo || '—'}</TableCell>
+                    <TableCell sx={{ color: 'text.secondary', fontSize: 13 }}>{u.email || '—'}</TableCell>
+                    <TableCell>
+                      <Chip
+                        label={u.role === 'admin' ? 'Admin' : 'Operador'}
+                        size="small"
+                        color={roleChipColor(u.role)}
+                        variant={u.role === 'admin' ? 'filled' : 'outlined'}
+                      />
+                    </TableCell>
+                    <TableCell align="center">
+                      <Tooltip title={toggleTooltip(u)}>
+                        <span>
+                          <Switch
+                            size="small"
+                            checked={isActive}
+                            disabled={!canToggle(u) || togglingId === u.id}
+                            onChange={() => handleToggleActive(u)}
+                            color="success"
+                          />
+                        </span>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell align="right">
+                      <IconButton size="small" onClick={() => setEditUser(u)} title="Editar">
+                        <EditIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton
+                        size="small" color="error"
+                        disabled={u.id === currentUser?.id}
+                        onClick={() => setDeleteTarget(u)}
+                        title={u.id === currentUser?.id ? 'No puedes eliminar tu propia cuenta' : 'Eliminar'}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
 
@@ -400,7 +467,6 @@ function UserManagement() {
         onSave={handleCreateUser}
         initialData={null}
         isCreate={true}
-        forceRole="operador"
       />
 
       {/* Modal eliminar */}
@@ -414,19 +480,81 @@ function UserManagement() {
   )
 }
 
+/* ─── Panel de conexión en red ───────────────────────────────────────────── */
+function NetworkPanel() {
+  const [info, setInfo] = React.useState(null)
+  const [copied, setCopied] = React.useState(false)
+
+  React.useEffect(() => {
+    // En Electron: pregunta al proceso main la IP real de la red local.
+    // En navegador (ya conectado al servidor): usa window.location.
+    if (window.api?.getServerInfo) {
+      window.api.getServerInfo().then(setInfo).catch(() => { })
+    } else {
+      // El navegador ya está conectado → su origin ES el servidor
+      setInfo({ networkUrl: window.location.origin, ip: window.location.hostname })
+    }
+  }, [])
+
+  const networkUrl = info?.networkUrl || '—'
+
+  const copyUrl = () => {
+    navigator.clipboard.writeText(networkUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  return (
+    <Paper sx={{ p: 2, mb: 2 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+        <WifiIcon sx={{ color: '#66FCF1' }} />
+        <Typography variant="subtitle1" fontWeight={600}>Acceso desde otros dispositivos</Typography>
+      </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Abrí esta URL en cualquier dispositivo conectado a la misma red WiFi para usar <strong>ORBITAG</strong> desde el navegador en tiempo real.
+      </Typography>
+
+      <Box sx={{
+        display: 'flex', alignItems: 'center', gap: 1,
+        bgcolor: 'rgba(102,252,241,0.06)',
+        border: '1px solid rgba(102,252,241,0.2)',
+        borderRadius: 2, px: 2, py: 1.5
+      }}>
+        <Typography
+          variant="body1"
+          sx={{ flex: 1, fontFamily: 'monospace', color: '#66FCF1', fontWeight: 500, fontSize: '1rem' }}
+        >
+          {networkUrl}
+        </Typography>
+        <Tooltip title={copied ? '¡Copiado!' : 'Copiar URL'}>
+          <IconButton size="small" onClick={copyUrl} sx={{ color: copied ? '#66FCF1' : 'text.secondary' }}>
+            <ContentCopyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+        El lector RFID debe estar conectado a la PC principal (donde corre el .exe).
+        Los demás dispositivos pueden ver y operar el inventario en tiempo real.
+      </Typography>
+    </Paper>
+  )
+}
+
 /* ─── Gestión de PIN (todos los usuarios) ───────────────────────────────── */
 function PinManagement() {
   const { currentUser, verifyAdminPassword, setUserPin, removeUserPin } = useAuth()
 
   // phase: 'status' | 'verifyForSet' | 'enterPin' | 'confirmPin' | 'verifyForRemove'
-  const [phase, setPhase]       = React.useState('status')
-  const [pwValue, setPwValue]   = React.useState('')
-  const [pwError, setPwError]   = React.useState('')
-  const [showPw, setShowPw]     = React.useState(false)
+  const [phase, setPhase] = React.useState('status')
+  const [pwValue, setPwValue] = React.useState('')
+  const [pwError, setPwError] = React.useState('')
+  const [showPw, setShowPw] = React.useState(false)
   const [pinFirst, setPinFirst] = React.useState('')
   const [pinSecond, setPinSecond] = React.useState('')
   const [pinError, setPinError] = React.useState('')
-  const [loading, setLoading]   = React.useState(false)
+  const [loading, setLoading] = React.useState(false)
   const [successMsg, setSuccessMsg] = React.useState('')
 
   const hasPin = currentUser?.hasPin
@@ -640,6 +768,9 @@ export default function Settings() {
         <FormControlLabel control={<Switch defaultChecked />} label="Notificaciones por correo" />
         <FormControlLabel control={<Switch defaultChecked />} label="Alertas en panel" />
       </Paper>
+
+      {/* Conexión en red — muestra la URL para que otros dispositivos se conecten */}
+      <NetworkPanel />
 
       {/* Acceso rápido PIN — disponible para todos los usuarios */}
       <PinManagement />

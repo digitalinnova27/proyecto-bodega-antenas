@@ -1,0 +1,427 @@
+/**
+ * electron/server/index.js
+ *
+ * Servidor Express + Socket.io embebido en el proceso main de Electron.
+ * Se inicia una sola vez al arrancar la app y:
+ *  - Expone la API REST que reemplaza los handlers IPC (para clientes web)
+ *  - Sirve el build de React como archivos estáticos (clientes en navegador)
+ *  - Transmite cambios en tiempo real via Socket.io a todos los clientes
+ *
+ * Puerto: 3001 (el rfid-bridge ya ocupa el 3002)
+ * Acceso local:   http://localhost:3001
+ * Acceso en red:  http://<IP-local>:3001
+ */
+
+const express  = require('express')
+const http     = require('http')
+const { Server } = require('socket.io')
+const jwt      = require('jsonwebtoken')
+const path     = require('path')
+const os       = require('os')
+
+const {
+  loadAll,
+  saveProducts, saveEvents, saveRentals, saveOpStates,
+  saveEpcMap, saveEventHistory, saveRentalHistory, savePurchaseHistory,
+  saveAuditLog,
+  loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
+  setUserPin, removeUserPin, authLoginPin, setUserActive,
+  createSession, closeSession, closeAllOpenSessions, loadUserSessions
+} = require('../db')
+
+// ── Constantes ───────────────────────────────────────────────────────────────
+// Puerto 3001 lo usa el rfid-bridge para su WebSocket.
+// Puerto 3002 lo usa el rfid-bridge para su HTTP API.
+// Nuestro servidor Express + Socket.io usa el 3005.
+const PORT       = 3005
+const JWT_SECRET = process.env.INOISE_SECRET || 'inoise-bodega-2026'
+
+// ── Usuarios online (en memoria) ──────────────────────────────────────────────
+// Clave: socket.id  Valor: { userId, username, displayName, sessionId }
+// La misma persona puede estar conectada desde varios dispositivos → varias
+// entradas con distinto socket.id pero igual userId.
+const onlineUsers = new Map()
+
+function getOnlineList() {
+  // Deduplica por userId: si el mismo usuario tiene varias pestañas o
+  // dispositivos abiertos, aparece una sola vez en la lista.
+  const seen = new Set()
+  const list = []
+  for (const data of onlineUsers.values()) {
+    if (!seen.has(data.userId)) {
+      seen.add(data.userId)
+      list.push({ userId: data.userId, username: data.username, displayName: data.displayName })
+    }
+  }
+  return list
+}
+
+// ── App Express ───────────────────────────────────────────────────────────────
+const app    = express()
+const server = http.createServer(app)
+const io     = new Server(server, {
+  cors: { origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] }
+})
+
+// CORS manual — más confiable que el paquete 'cors' en entorno Electron/Vite
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  if (req.method === 'OPTIONS') return res.status(204).end()
+  next()
+})
+app.use(express.json({ limit: '20mb' }))
+
+// Servir el build de React para clientes en navegador
+const distPath = path.join(__dirname, '../../frontend/dist')
+app.use(express.static(distPath))
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Ejecuta una función de db.js y devuelve { ok, data } o { ok, error } */
+const safe = (fn) => {
+  try   { return { ok: true,  data: fn() } }
+  catch (e) { return { ok: false, error: e.message } }
+}
+
+/**
+ * Middleware JWT.
+ * Rutas de auth (login) no lo necesitan; todo lo demás sí.
+ */
+const requireAuth = (req, res, next) => {
+  const auth = req.headers.authorization
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ ok: false, error: 'No autorizado' })
+  }
+  try {
+    req.user = jwt.verify(auth.slice(7), JWT_SECRET)
+    next()
+  } catch {
+    res.status(401).json({ ok: false, error: 'Token inválido o expirado' })
+  }
+}
+
+/**
+ * Tras guardar una entidad, emite 'data:sync' a TODOS los clientes
+ * para que actualicen su estado local sin necesidad de hacer re-fetch.
+ */
+const broadcast = (entity, data) => {
+  io.emit('data:sync', { entity, data })
+}
+
+// ── Rutas de autenticación ────────────────────────────────────────────────────
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {}
+  const result = safe(() => authLogin(username, password))
+  if (!result.ok || !result.data) {
+    return res.json({ ok: false, error: 'Usuario o contraseña incorrectos' })
+  }
+  if (result.data.disabled) {
+    return res.json({ ok: false, error: 'Usuario deshabilitado. Contactá al administrador.' })
+  }
+  const u = result.data
+  const token = jwt.sign(u, JWT_SECRET, { expiresIn: '12h' })
+  const displayName = `${u.nombre} ${u.apellido}`.trim()
+  const ip = req.ip || req.connection?.remoteAddress || null
+  const sessionId = safe(() => createSession(u.id, u.username, displayName, ip)).data || null
+  res.json({ ok: true, data: u, token, sessionId })
+})
+
+app.post('/api/auth/login-pin', (req, res) => {
+  const { userId, pin } = req.body || {}
+  const result = safe(() => authLoginPin(userId, pin))
+  if (!result.ok || !result.data) {
+    return res.json({ ok: false, error: 'PIN incorrecto' })
+  }
+  if (result.data.disabled) {
+    return res.json({ ok: false, error: 'Usuario deshabilitado. Contactá al administrador.' })
+  }
+  const u = result.data
+  const token = jwt.sign(u, JWT_SECRET, { expiresIn: '12h' })
+  const displayName = `${u.nombre} ${u.apellido}`.trim()
+  const ip = req.ip || req.connection?.remoteAddress || null
+  const sessionId = safe(() => createSession(u.id, u.username, displayName, ip)).data || null
+  res.json({ ok: true, data: u, token, sessionId })
+})
+
+// Estado público: ¿existen usuarios? + lista mínima para pantalla de login.
+// No requiere token. Solo expone id, displayName, role, hasPin, avatar —
+// sin contraseñas, sin hashes.
+app.get('/api/auth/status', (req, res) => {
+  const usersResult = safe(() => loadUsers())
+  const list = (usersResult.ok && Array.isArray(usersResult.data)) ? usersResult.data : []
+  // Solo usuarios activos en la pantalla de login
+  const activeList = list.filter(u => u.active !== false)
+  const safeList = activeList.map(({ id, username, nombre, apellido, role, hasPin, avatar }) =>
+    ({ id, username, displayName: `${nombre} ${apellido}`.trim(), role, hasPin: Boolean(hasPin), avatar })
+  )
+  res.json({ ok: true, hasUsers: list.length > 0, users: safeList, hasActiveUsers: activeList.length > 0 })
+})
+
+// Logout: cierra la sesión en BD y el cliente limpia su token
+app.post('/api/auth/logout', requireAuth, (req, res) => {
+  const { sessionId } = req.body || {}
+  if (sessionId) safe(() => closeSession(sessionId))
+  res.json({ ok: true })
+})
+
+// Sesiones de un usuario (admin ve cualquiera, operador solo las propias)
+app.get('/api/sessions/user/:id', requireAuth, (req, res) => {
+  const targetId = req.params.id
+  if (req.user.role !== 'admin' && req.user.id !== targetId) {
+    return res.status(403).json({ ok: false, error: 'Sin permiso' })
+  }
+  const limit = Math.min(Number(req.query.limit) || 30, 100)
+  res.json(safe(() => loadUserSessions(targetId, limit)))
+})
+
+// Re-verifica contraseña sin cambiar sesión (para acciones sensibles)
+app.post('/api/auth/verify', requireAuth, (req, res) => {
+  const { password } = req.body || {}
+  const result = safe(() => authLogin(req.user.username, password))
+  res.json({ ok: result.ok && !!result.data })
+})
+
+// ── Rutas de usuarios ─────────────────────────────────────────────────────────
+
+app.get('/api/users', requireAuth, (req, res) => {
+  res.json(safe(() => loadUsers()))
+})
+
+app.get('/api/users/count-admins', requireAuth, (req, res) => {
+  res.json(safe(() => countAdmins()))
+})
+
+app.post('/api/users', (req, res) => {
+  // En first-run (sin ningún usuario) se permite sin token.
+  // En cualquier otro caso se requiere autenticación.
+  const count = safe(() => countAdmins())
+  const isFirstRun = count.ok && count.data === 0
+  if (!isFirstRun) {
+    const auth = req.headers.authorization
+    if (!auth || !auth.startsWith('Bearer ')) {
+      return res.status(401).json({ ok: false, error: 'No autorizado' })
+    }
+    try { req.user = require('jsonwebtoken').verify(auth.slice(7), JWT_SECRET) }
+    catch { return res.status(401).json({ ok: false, error: 'Token inválido o expirado' }) }
+  }
+  const { data, password } = req.body || {}
+  const result = safe(() => createUser(data, password))
+  if (result.ok) io.emit('users:updated')
+  res.json(result)
+})
+
+app.put('/api/users/:id', requireAuth, (req, res) => {
+  const id = req.params.id
+  const { fields, newPassword } = req.body || {}
+  const result = safe(() => updateUser(id, fields, newPassword || null))
+  if (result.ok) io.emit('users:updated')
+  res.json(result)
+})
+
+app.delete('/api/users/:id', requireAuth, (req, res) => {
+  const result = safe(() => deleteUser(req.params.id))
+  if (result.ok) io.emit('users:updated')
+  res.json(result)
+})
+
+// Habilitar / deshabilitar usuario (solo admin)
+app.patch('/api/users/:id/active', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
+  const targetId = req.params.id
+  // No puede deshabilitarse a sí mismo
+  if (targetId === req.user.id) {
+    return res.status(400).json({ ok: false, error: 'No podés deshabilitarte a vos mismo' })
+  }
+  const { active } = req.body || {}
+  // Si va a deshabilitar, verificar que no sea el único admin activo
+  if (!active) {
+    const usersResult = safe(() => loadUsers())
+    if (usersResult.ok) {
+      const activeAdmins = usersResult.data.filter(u => u.role === 'admin' && u.active && u.id !== targetId)
+      const targetUser = usersResult.data.find(u => u.id === targetId)
+      if (targetUser?.role === 'admin' && activeAdmins.length === 0) {
+        return res.status(400).json({ ok: false, error: 'No podés deshabilitar al único administrador activo' })
+      }
+    }
+  }
+  const result = safe(() => setUserActive(targetId, active))
+  if (result.ok) io.emit('users:updated')
+  res.json(result)
+})
+
+app.post('/api/users/:id/pin', requireAuth, (req, res) => {
+  const { pin } = req.body || {}
+  res.json(safe(() => setUserPin(req.params.id, pin)))
+})
+
+app.delete('/api/users/:id/pin', requireAuth, (req, res) => {
+  res.json(safe(() => removeUserPin(req.params.id)))
+})
+
+// ── Rutas de datos (inventario, eventos, etc.) ────────────────────────────────
+
+app.get('/api/data', requireAuth, (req, res) => {
+  res.json(safe(() => loadAll()))
+})
+
+app.put('/api/data/products', requireAuth, (req, res) => {
+  const result = safe(() => saveProducts(req.body))
+  if (result.ok) broadcast('products', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/events', requireAuth, (req, res) => {
+  const result = safe(() => saveEvents(req.body))
+  if (result.ok) broadcast('events', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/rentals', requireAuth, (req, res) => {
+  const result = safe(() => saveRentals(req.body))
+  if (result.ok) broadcast('rentals', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/op-states', requireAuth, (req, res) => {
+  const result = safe(() => saveOpStates(req.body))
+  if (result.ok) broadcast('opStates', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/epc-map', requireAuth, (req, res) => {
+  const result = safe(() => saveEpcMap(req.body))
+  if (result.ok) broadcast('epcMap', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/event-history', requireAuth, (req, res) => {
+  const result = safe(() => saveEventHistory(req.body))
+  if (result.ok) broadcast('eventHistory', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/rental-history', requireAuth, (req, res) => {
+  const result = safe(() => saveRentalHistory(req.body))
+  if (result.ok) broadcast('rentalHistory', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/purchase-history', requireAuth, (req, res) => {
+  const result = safe(() => savePurchaseHistory(req.body))
+  if (result.ok) broadcast('purchaseHistory', req.body)
+  res.json(result)
+})
+
+app.put('/api/data/audit-log', requireAuth, (req, res) => {
+  const result = safe(() => saveAuditLog(req.body))
+  if (result.ok) broadcast('auditLog', req.body)
+  res.json(result)
+})
+
+// ── Info de red (sin auth — para que el frontend la lea antes de login) ───────
+
+app.get('/api/info', (req, res) => {
+  res.json({ ok: true, ip: getLocalIP(), port: PORT, version: '2.0.0' })
+})
+
+// ── SPA fallback — todas las rutas no-API sirven el index.html de React ───────
+
+app.get('*', (req, res) => {
+  const indexPath = path.join(distPath, 'index.html')
+  res.sendFile(indexPath, (err) => {
+    if (err) res.status(200).json({ server: 'iNOISE', status: 'running' })
+  })
+})
+
+// ── Socket.io ─────────────────────────────────────────────────────────────────
+
+io.on('connection', (socket) => {
+  console.log('[iNOISE] Cliente conectado:', socket.id)
+
+  // El cliente envía su token después de conectar (o al reconectar).
+  // Se valida y se registra como "online". El sessionId se asocia al
+  // socket para poder cerrarlo si el cliente se desconecta abruptamente.
+  socket.on('user:authenticate', ({ token, sessionId } = {}) => {
+    try {
+      const user = jwt.verify(token, JWT_SECRET)
+      const displayName = `${user.nombre} ${user.apellido}`.trim()
+      onlineUsers.set(socket.id, {
+        userId: user.id, username: user.username,
+        displayName, sessionId: sessionId || null
+      })
+      socket.data = { userId: user.id, sessionId: sessionId || null }
+      io.emit('online:users', getOnlineList())
+      console.log(`[iNOISE] Online: ${displayName} (${socket.id})`)
+    } catch {
+      // Token inválido — ignorar silenciosamente
+    }
+  })
+
+  // El cliente cierra sesión limpiamente → quitar de online
+  socket.on('user:deauthenticate', () => {
+    onlineUsers.delete(socket.id)
+    io.emit('online:users', getOnlineList())
+  })
+
+  socket.on('disconnect', (reason) => {
+    if (onlineUsers.has(socket.id)) {
+      const data = onlineUsers.get(socket.id)
+      onlineUsers.delete(socket.id)
+      io.emit('online:users', getOnlineList())
+      console.log(`[iNOISE] Offline: ${data.displayName || data.username} (${reason})`)
+    } else {
+      console.log('[iNOISE] Cliente desconectado:', socket.id)
+    }
+  })
+})
+
+// ── Utilidades de red ─────────────────────────────────────────────────────────
+
+function getLocalIP() {
+  const ifaces = os.networkInterfaces()
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address
+    }
+  }
+  return 'localhost'
+}
+
+// ── Arranque ──────────────────────────────────────────────────────────────────
+
+// Limpiar sesiones sin cerrar de ejecuciones previas (el servidor reinició
+// y esas sesiones nunca recibirán un logout explícito).
+try { closeAllOpenSessions() } catch {}
+
+function startServer() {
+  return new Promise((resolve, reject) => {
+    // '::' acepta conexiones IPv4 e IPv6 en Windows (dual-stack).
+    // Necesario porque en Windows 'localhost' puede resolverse a ::1 (IPv6).
+    server.listen(PORT, '::', () => {
+      const ip = getLocalIP()
+      console.log(`[iNOISE] Servidor en http://localhost:${PORT}`)
+      console.log(`[iNOISE] Red local:  http://${ip}:${PORT}`)
+      resolve({ port: PORT, ip, localUrl: `http://localhost:${PORT}`, networkUrl: `http://${ip}:${PORT}` })
+    })
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        // Fallback a IPv4 puro si IPv6 dual-stack no está disponible
+        const s2 = http.createServer(app)
+        s2.listen(PORT, '0.0.0.0', () => {
+          const ip = getLocalIP()
+          resolve({ port: PORT, ip, localUrl: `http://localhost:${PORT}`, networkUrl: `http://${ip}:${PORT}` })
+        })
+        s2.on('error', reject)
+      } else {
+        reject(err)
+      }
+    })
+  })
+}
+
+module.exports = { startServer, getLocalIP, PORT }

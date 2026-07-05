@@ -981,7 +981,7 @@ function RentalCard({ rental }) {
 
   /* ── Cerrar arriendo: mover de Operaciones a Historial de Rentas ── */
   const finalizeRental = () => {
-    closeRentalToHistory(rental, totalItems, role === 'admin' ? 'Administrador' : 'Operador')
+    closeRentalToHistory(rental, totalItems, roleLabel)
     setOpenModal(false)
   }
 

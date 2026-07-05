@@ -42,5 +42,7 @@ contextBridge.exposeInMainWorld('api', {
   // ── PIN de acceso rápido ──────────────────────────────────────────────
   setUserPin: (userId, pin) => ipcRenderer.invoke('db:set-user-pin', userId, pin),
   removeUserPin: (userId) => ipcRenderer.invoke('db:remove-user-pin', userId),
-  authLoginPin: (userId, pin) => ipcRenderer.invoke('db:auth-login-pin', userId, pin)
+  authLoginPin: (userId, pin) => ipcRenderer.invoke('db:auth-login-pin', userId, pin),
+  // ── Info del servidor embebido (IP + puerto para conexión en red) ─────
+  getServerInfo: () => ipcRenderer.invoke('server:info')
 })

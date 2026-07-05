@@ -18,7 +18,7 @@ export const AVATARS = [
 ]
 
 export const CARGO_OPTIONS = [
-  'Jefe de Bodega', 'Supervisor', 'Coordinador', 'Operario', 'Técnico', 'Otro'
+  'Supervisor', 'Jefe de Bodega', 'Operador'
 ]
 
 /* ─── Ícono ojo ─────────────────────────────────────────────────────────── */
@@ -360,7 +360,7 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
 
 /* ─── Pantalla principal de Login ───────────────────────────────────────── */
 export default function Login() {
-  const { login, loginPin, loadUsers, users } = useAuth()
+  const { login, loginPin, loadUsers, hasAnyUsers, loginUsers } = useAuth()
   const navigate = useNavigate()
 
   // 'loading' | 'firstRun' | 'login'
@@ -389,15 +389,16 @@ export default function Login() {
   const [pinError, setPinError]     = useState('')
   const [pinLoading, setPinLoading] = useState(false)
 
+  // Esperar a que AuthContext resuelva /api/auth/status (sin token)
+  // para saber si es primer arranque o pantalla de login normal.
   useEffect(() => {
-    loadUsers()
-      .then(list => {
-        const hasAdmin = list.some(u => u.role === 'admin')
-        setAdminExists(hasAdmin)
-        setPhase(list.length === 0 ? 'firstRun' : 'login')
-      })
-      .catch(() => setPhase('firstRun'))
-  }, []) // eslint-disable-line
+    if (hasAnyUsers === null) return // todavía cargando
+    if (hasAnyUsers === false) {
+      setPhase('firstRun')
+    } else {
+      setPhase('login')
+    }
+  }, [hasAnyUsers]) // eslint-disable-line
 
   const handleLoginRoleSelect = (role) => {
     setSelectedRole(role)
@@ -525,8 +526,8 @@ export default function Login() {
   }
 
   // ─── Login normal ──────────────────────────────────────────────────────
-  // Usuarios con PIN configurado y del rol seleccionado
-  const pinUsers = users.filter(u => u.role === selectedRole && u.hasPin)
+  // Usuarios con PIN configurado y del rol seleccionado (pre-auth, lista pública)
+  const pinUsers = loginUsers.filter(u => u.role === selectedRole && u.hasPin)
 
   const modeToggleStyle = (active) => ({
     flex: 1, padding: '7px 0', borderRadius: 6, border: 'none', fontSize: 12,
