@@ -120,17 +120,7 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {}
-  // DEBUG TEMPORAL — borrar después de confirmar
-  console.log('[LOGIN-DEBUG] body recibido:', {
-    username,
-    passwordLen: password?.length,
-    passwordTail: password ? password.slice(-3) : null,
-    bodyKeys: Object.keys(req.body || {}),
-    contentType: req.headers['content-type'],
-    ip: req.ip
-  })
   const result = safe(() => authLogin(username, password))
-  console.log('[LOGIN-DEBUG] authLogin result:', { ok: result.ok, hasData: !!result.data, error: result.error })
   if (!result.ok || !result.data) {
     return res.json({ ok: false, error: 'Usuario o contraseña incorrectos' })
   }

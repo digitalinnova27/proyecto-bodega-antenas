@@ -295,21 +295,24 @@ app.whenReady().then(async () => {
       serverInfo = await startServer()
       console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
 
-      // UDP broadcaster — anuncia la URL del servidor en la red local cada 2s
-      // para que los PCs cliente puedan descubrirlo sin ingresar la IP a mano.
-      const broadcaster = dgram.createSocket({ type: 'udp4', reuseAddr: true })
-      broadcaster.on('error', (err) => {
-        console.error('[UDP] Error en broadcaster:', err.message)
-        try { broadcaster.close() } catch {}
-      })
-      broadcaster.bind(() => {
-        broadcaster.setBroadcast(true)
-        const msg = Buffer.from(JSON.stringify({ service: 'iNOISE', url: serverInfo.networkUrl }))
-        setInterval(() => {
-          broadcaster.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255')
-        }, 2000)
-        console.log(`[iNOISE] UDP auto-descubrimiento activo → puerto ${DISCOVERY_PORT}`)
-      })
+      // UDP broadcaster — solo si el modo es explícitamente 'server'.
+      // En primer arranque (mode=undefined) NO se hace broadcast para evitar
+      // que los PCs cliente en setup se auto-descubran a sí mismos.
+      if (appConfig.mode === 'server') {
+        const broadcaster = dgram.createSocket({ type: 'udp4', reuseAddr: true })
+        broadcaster.on('error', (err) => {
+          console.error('[UDP] Error en broadcaster:', err.message)
+          try { broadcaster.close() } catch {}
+        })
+        broadcaster.bind(() => {
+          broadcaster.setBroadcast(true)
+          const msg = Buffer.from(JSON.stringify({ service: 'iNOISE', url: serverInfo.networkUrl }))
+          setInterval(() => {
+            broadcaster.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255')
+          }, 2000)
+          console.log(`[iNOISE] UDP auto-descubrimiento activo → puerto ${DISCOVERY_PORT}`)
+        })
+      }
     } catch (e) {
       console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
     }

@@ -412,8 +412,8 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
 }
 
 /* ─── Pantalla de setup inicial (primera vez, sin config) ──────────────── */
-function SetupScreen({ onDone }) {
-  const [step, setStep] = useState('choice') // 'choice' | 'connect'
+function SetupScreen({ onDone, startAtConnect = false }) {
+  const [step, setStep] = useState(startAtConnect ? 'connect' : 'choice') // 'choice' | 'connect'
 
   // Auto-descubrimiento
   const [discovering, setDiscovering]   = useState(false)
@@ -724,6 +724,11 @@ export default function Login() {
 
     // Modo cliente: saltar directo al formulario de operador (sin elección de rol)
     if (cfg.mode === 'client') {
+      // Sin serverUrl → volver al paso de conexión (handleResetConfig lo produce)
+      if (!cfg.serverUrl) {
+        setPhase('setup')
+        return
+      }
       if (hasAnyUsers === null) return // cargando
       setPhase('login')
       setSelectedRole('operador')
@@ -818,16 +823,18 @@ export default function Login() {
     return (
       <div className="login-container">
         <div className="login-main" style={{ alignItems: 'center', justifyContent: 'center' }}>
-          <SetupScreen onDone={handleSetupDone} />
+          <SetupScreen onDone={handleSetupDone} startAtConnect={appCfg.mode === 'client'} />
         </div>
         <img src="/logo-header.png" alt="Orbitag" className="login-logo" />
       </div>
     )
   }
 
-  // Resetea la config y vuelve al setup (para corregir elección de modo)
+  // Resetea la config y vuelve al setup de conexión.
+  // Guardamos mode:'client' (sin serverUrl) para que en el próximo arranque
+  // el proceso main NO inicie su propio servidor (y no se auto-descubra).
   const handleResetConfig = async () => {
-    await window.api?.saveConfig?.({})
+    await window.api?.saveConfig?.({ mode: 'client' })
     window.location.reload()
   }
 
