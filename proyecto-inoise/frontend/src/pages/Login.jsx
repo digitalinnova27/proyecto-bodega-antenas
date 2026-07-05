@@ -478,6 +478,7 @@ function SetupScreen({ onDone }) {
     let url = (urlToUse || serverUrl).trim()
     if (!url) { setError('Ingresa la IP del servidor'); return }
     if (!url.startsWith('http')) url = `http://${url}`
+    url = url.replace(/\/+$/, '') // quitar slash(es) al final
     if (!/:\d+$/.test(url)) url = `${url}:3005`
     setVerifying(true)
     const res = await window.api?.verifyServer?.(url)
