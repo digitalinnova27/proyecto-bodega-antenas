@@ -418,6 +418,8 @@ function SetupScreen({ onDone }) {
   // Auto-descubrimiento
   const [discovering, setDiscovering]   = useState(false)
   const [discoveredUrl, setDiscoveredUrl] = useState(null)  // URL encontrada por UDP
+  // Contador para re-disparar la búsqueda sin cambiar 'step'
+  const [searchKey, setSearchKey] = useState(0)
 
   // Fallback manual
   const [serverUrl, setServerUrl]   = useState('')
@@ -425,7 +427,7 @@ function SetupScreen({ onDone }) {
   const [error, setError]           = useState('')
   const [showManual, setShowManual] = useState(false) // true si UDP no encontró nada
 
-  // Al entrar al paso 'connect', lanzar auto-descubrimiento UDP
+  // Al entrar al paso 'connect' (o al incrementar searchKey), lanzar auto-descubrimiento UDP
   useEffect(() => {
     if (step !== 'connect') return
     // Reset states
@@ -457,7 +459,7 @@ function SetupScreen({ onDone }) {
       setShowManual(true)
       setError('Error en auto-descubrimiento. Ingresa la IP del administrador.')
     })
-  }, [step])
+  }, [step, searchKey])
 
   const cardBase = {
     background: 'rgba(31,40,51,0.95)',
@@ -611,7 +613,8 @@ function SetupScreen({ onDone }) {
                 setShowManual(false)
                 setError('')
                 setServerUrl('')
-                setStep('connect') // re-trigger useEffect → nueva búsqueda
+                setDiscoveredUrl(null)
+                setSearchKey(k => k + 1) // incrementar dispara el useEffect aunque step sea 'connect'
               }}
               style={btnSecondary}
             >
