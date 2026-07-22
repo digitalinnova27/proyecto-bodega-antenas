@@ -347,6 +347,7 @@ export function InventoryProvider({ children }) {
       notes: formData.notes || '',
       status: 'Programado',
       assignments: enrichedAssignments,
+      staffIds: formData.staffIds || [],
       createdAt: new Date().toISOString()
     }
 

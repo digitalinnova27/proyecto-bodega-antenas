@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Drawer,
   List,
@@ -19,6 +19,7 @@ import RouterIcon from '@mui/icons-material/Router'
 import HistoryIcon from '@mui/icons-material/History'
 import BarChartIcon from '@mui/icons-material/BarChart'
 import PeopleIcon from '@mui/icons-material/People'
+import BadgeIcon from '@mui/icons-material/Badge'
 import SettingsIcon from '@mui/icons-material/Settings'
 import EventIcon from '@mui/icons-material/Event'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
@@ -46,7 +47,8 @@ const items = [
   { text: 'Operaciones', icon: <LocalShippingIcon />, path: '/operations' },
   { text: 'Historial', icon: <HistoryIcon />, path: '/history' },
   { text: 'Reporte de operaciones', icon: <BarChartIcon />, path: '/reports' },
-  { text: 'Usuarios', icon: <PeopleIcon />, path: '/users' },
+  { text: 'Usuarios', icon: <PeopleIcon />, path: '/users', adminOnly: true },
+  { text: 'Personal', icon: <BadgeIcon />, path: '/staff', adminOnly: true },
   { text: 'Configuración', icon: <SettingsIcon />, path: '/settings' }
 ]
 
@@ -54,7 +56,13 @@ export default function Sidebar({ open = true, onToggle }) {
   const navigate = useNavigate()
   const location = useLocation()
   const isSmall = useMediaQuery('(max-width:900px)')
+  const { role } = useAuth()
   const drawerWidth = open ? 240 : 72
+  const [version, setVersion] = useState('')
+
+  useEffect(() => {
+    window.api?.getVersion?.().then(v => setVersion(v)).catch(() => {})
+  }, [])
 
   return (
     <Drawer
@@ -131,7 +139,7 @@ export default function Sidebar({ open = true, onToggle }) {
 
       {/* MENU */}
       <List>
-        {items.map(item => {
+        {items.filter(item => !item.adminOnly || role === 'admin').map(item => {
           // Activa = la sección en la que el usuario está parado ahora mismo
           // (no solo "clic reciente"): se recalcula con la ruta actual, así
           // que se mantiene resaltada mientras navegue dentro de esa sección
@@ -184,6 +192,15 @@ export default function Sidebar({ open = true, onToggle }) {
           )
         })}
       </List>
+
+      {/* Versión al fondo del sidebar */}
+      {version && (
+        <Box sx={{ p: 1.5, textAlign: 'center', mt: 'auto' }}>
+          <Typography sx={{ color: '#3d4f63', fontSize: 11, letterSpacing: '0.05em' }}>
+            {open ? `iNOISE v${version}` : `v${version}`}
+          </Typography>
+        </Box>
+      )}
     </Drawer>
   )
 }

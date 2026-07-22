@@ -58,6 +58,13 @@
       opacity: 0.85;
       letter-spacing: 1px;
     }
+
+    .version {
+      font-size: 11px;
+      opacity: 0.4;
+      letter-spacing: 1px;
+      margin-top: -8px;
+    }
   </style>
 </head>
 
@@ -66,6 +73,12 @@
     <img src="./assets/logo-splash.png" alt="Logo" />
     <div class="spinner"></div>
     <div class="text">Cargando inventario...</div>
+    <div class="version" id="version"></div>
   </div>
+  <script>
+    const params = new URLSearchParams(window.location.search)
+    const v = params.get('version')
+    if (v) document.getElementById('version').textContent = 'v' + v
+  </script>
 </body>
 </html>

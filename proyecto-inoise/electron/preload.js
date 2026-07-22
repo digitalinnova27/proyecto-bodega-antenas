@@ -43,6 +43,11 @@ contextBridge.exposeInMainWorld('api', {
   setUserPin: (userId, pin) => ipcRenderer.invoke('db:set-user-pin', userId, pin),
   removeUserPin: (userId) => ipcRenderer.invoke('db:remove-user-pin', userId),
   authLoginPin: (userId, pin) => ipcRenderer.invoke('db:auth-login-pin', userId, pin),
+  // ── Personal (Staff) ─────────────────────────────────────────────────
+  loadStaff:   () => ipcRenderer.invoke('db:load-staff'),
+  createStaff: (data) => ipcRenderer.invoke('db:create-staff', data),
+  updateStaff: (id, data) => ipcRenderer.invoke('db:update-staff', id, data),
+  deleteStaff: (id) => ipcRenderer.invoke('db:delete-staff', id),
   // ── Info del servidor embebido (IP + puerto para conexión en red) ─────
   getServerInfo: () => ipcRenderer.invoke('server:info'),
   // ── Configuración de modo (servidor / cliente) ─────────────────────────
@@ -53,5 +58,9 @@ contextBridge.exposeInMainWorld('api', {
   verifyServer:   (url) => ipcRenderer.invoke('verify-server', url),
   // Auto-descubrimiento UDP: escucha broadcasts del servidor en la red local.
   // Resuelve { ok:true, url } si encuentra uno en 8s, { ok:false, error } si no.
-  discoverServer: () => ipcRenderer.invoke('discover-server')
+  discoverServer: () => ipcRenderer.invoke('discover-server'),
+  // Versión de la app
+  getVersion: () => ipcRenderer.invoke('app:version'),
+  // Progreso de descarga de actualización (pct: 0-100, o -1 cuando termina)
+  onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_e, pct) => cb(pct))
 })

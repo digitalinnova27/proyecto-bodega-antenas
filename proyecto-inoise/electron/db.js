@@ -300,10 +300,34 @@ function runMigrations(db) {
     ensureColumn(db, 'events', 'pending_delete', 'INTEGER DEFAULT 0')
     ensureColumn(db, 'events', 'pending_delete_by', 'TEXT')
     ensureColumn(db, 'events', 'pending_delete_at', 'TEXT')
+    // Personal asignado al evento (array de IDs guardado como JSON)
+    ensureColumn(db, 'events', 'staff_ids', 'TEXT')
     // PIN de acceso rápido — NULL = sin PIN configurado
     ensureColumn(db, 'users', 'pin_hash', 'TEXT')
     // Habilitado/deshabilitado por el admin (1 = activo, 0 = deshabilitado)
     ensureColumn(db, 'users', 'active', 'INTEGER NOT NULL DEFAULT 1')
+
+    // ── Personal de trabajo ───────────────────────────────────────────
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS staff (
+      id         TEXT PRIMARY KEY,
+      nombre     TEXT NOT NULL,
+      apellido   TEXT NOT NULL,
+      rut        TEXT,
+      telefono   TEXT,
+      cargo      TEXT,
+      activo     INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT
+    );
+    `)
+    // Personal asignado a eventos (N:M)
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS event_staff (
+      event_id TEXT NOT NULL,
+      staff_id TEXT NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+      PRIMARY KEY (event_id, staff_id)
+    );
+    `)
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -366,13 +390,14 @@ function saveEvents(events) {
         db.prepare('DELETE FROM event_assignment_units').run()
         db.prepare('DELETE FROM event_assignments').run()
         db.prepare('DELETE FROM events').run()
-        const insE = db.prepare(`INSERT INTO events (id, order_number, name, date, location, notes, status, created_at, pending_delete, pending_delete_by, pending_delete_at)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        const insE = db.prepare(`INSERT INTO events (id, order_number, name, date, location, notes, status, created_at, pending_delete, pending_delete_by, pending_delete_at, staff_ids)
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         const insA = db.prepare(`INSERT INTO event_assignments (event_id, product_id, qty) VALUES (?, ?, ?)`)
         const insU = db.prepare(`INSERT INTO event_assignment_units (assignment_id, unit_id) VALUES (?, ?)`)
         for (const e of list) {
             insE.run(e.id, e.orderNumber ?? null, e.name, e.date ?? null, e.location ?? null, e.notes ?? null, e.status || 'Programado', e.createdAt ?? null,
-                e.pendingDelete ? 1 : 0, e.pendingDeleteBy ?? null, e.pendingDeleteAt ?? null)
+                e.pendingDelete ? 1 : 0, e.pendingDeleteBy ?? null, e.pendingDeleteAt ?? null,
+                e.staffIds?.length ? JSON.stringify(e.staffIds) : null)
             for (const a of e.assignments || []) {
                 const { lastInsertRowid } = insA.run(e.id, a.productId, a.qty || 0)
                 for (const unitId of a.unitIds || []) {
@@ -401,6 +426,7 @@ function loadEvents() {
         pendingDelete: !!e.pending_delete,
         pendingDeleteBy: e.pending_delete_by,
         pendingDeleteAt: e.pending_delete_at,
+        staffIds: e.staff_ids ? JSON.parse(e.staff_ids) : [],
         assignments: assignments
             .filter(a => a.event_id === e.id)
             .map(a => ({
@@ -899,6 +925,37 @@ function markConversationRead(userId, withUser) {
     `).run(userId, withUser)
 }
 
+/* ── Personal (Staff) ──────────────────────────────────────────────────── */
+function loadStaff() {
+    const db = getDb()
+    return db.prepare('SELECT * FROM staff ORDER BY apellido ASC').all().map(s => ({
+        id: s.id, nombre: s.nombre, apellido: s.apellido,
+        rut: s.rut ?? '', telefono: s.telefono ?? '',
+        cargo: s.cargo ?? '', activo: s.activo !== 0, createdAt: s.created_at
+    }))
+}
+
+function createStaff(data) {
+    const db = getDb()
+    const id = `stf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO staff (id, nombre, apellido, rut, telefono, cargo, activo, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)`)
+      .run(id, data.nombre, data.apellido, data.rut || null, data.telefono || null, data.cargo || null, now)
+    return { id, ...data, activo: true, createdAt: now }
+}
+
+function updateStaff(id, data) {
+    const db = getDb()
+    db.prepare(`UPDATE staff SET nombre=?, apellido=?, rut=?, telefono=?, cargo=?, activo=? WHERE id=?`)
+      .run(data.nombre, data.apellido, data.rut || null, data.telefono || null, data.cargo || null, data.activo !== false ? 1 : 0, id)
+}
+
+function deleteStaff(id) {
+    const db = getDb()
+    db.prepare('DELETE FROM staff WHERE id=?').run(id)
+}
+
 function closeDb() {
     if (db) {
         db.close()
@@ -920,5 +977,6 @@ module.exports = {
     loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
     setUserPin, removeUserPin, authLoginPin, setUserActive,
     createSession, closeSession, closeAllOpenSessions, loadUserSessions,
-    getConversation, createMessage, markMessageRead, countUnread, markConversationRead
+    getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
+    loadStaff, createStaff, updateStaff, deleteStaff
 }

@@ -1,6 +1,6 @@
 {
   "name": "rfid-dashboard-final",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -11,8 +11,9 @@
     "electron:dev": "electron .",
     "electron:build": "npm run build && electron .",
     "start": "npm run electron:dev",
-    "dist": "electron-builder --win",
-    "dist:dir": "electron-builder --win --dir",
+    "dist": "npm run build && electron-builder --win",
+    "dist:publish": "npm run build && electron-builder --win --publish=always",
+    "dist:dir": "npm run build && electron-builder --win --dir",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@mui/material": "^5.14.7",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
+    "electron-updater": "^6.8.9",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "jspdf": "^2.5.1",
@@ -45,31 +47,34 @@
   "build": {
     "appId": "com.inoise.bodega",
     "productName": "iNOISE Control Bodega",
+    "publish": {
+      "provider": "github",
+      "owner": "digitalinnova27",
+      "repo": "proyecto-bodega-antenas"
+    },
     "directories": {
       "output": "dist-electron"
     },
     "files": [
       "electron/**/*",
       "frontend/dist/**/*",
-      "server/**/*",
-      "!**/node_modules/**",
-      "node_modules/better-sqlite3/**/*",
-      "server/node_modules/**/*"
+      "server/**/*"
     ],
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "frontend/dist/**/*"
     ],
     "win": {
       "target": "nsis",
-      "icon": "electron/assets/icono.png"
+      "icon": "electron/assets/icono.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "electron/assets/icono.png",
-      "installerHeaderIcon": "electron/assets/icono.png",
+      "installerIcon": "electron/assets/icono.ico",
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "iNOISE Control Bodega"
     }
   }
 }

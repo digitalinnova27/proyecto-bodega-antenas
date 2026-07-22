@@ -1,4 +1,5 @@
-const { app, BrowserWindow, shell, ipcMain } = require('electron')
+const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
@@ -32,7 +33,8 @@ const {
   saveEpcMap, saveEventHistory, saveRentalHistory, savePurchaseHistory,
   saveAuditLog,
   loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
-  setUserPin, removeUserPin, authLoginPin
+  setUserPin, removeUserPin, authLoginPin,
+  loadStaff, createStaff, updateStaff, deleteStaff
 } = require('./db')
 const { startServer, getLocalIP, PORT: SERVER_PORT } = require('./server/index')
 
@@ -82,10 +84,17 @@ function registerIpcHandlers() {
   ipcMain.handle('db:set-user-pin', wrap((userId, pin) => setUserPin(userId, pin)))
   ipcMain.handle('db:remove-user-pin', wrap((userId) => removeUserPin(userId)))
   ipcMain.handle('db:auth-login-pin', wrap((userId, pin) => authLoginPin(userId, pin)))
+
+  // ── Personal (Staff) ──────────────────────────────────────────────
+  ipcMain.handle('db:load-staff', wrap(() => loadStaff()))
+  ipcMain.handle('db:create-staff', wrap((data) => createStaff(data)))
+  ipcMain.handle('db:update-staff', wrap((id, data) => updateStaff(id, data)))
+  ipcMain.handle('db:delete-staff', wrap((id) => deleteStaff(id)))
 }
 
 // ── IPC de configuración de modo (sync para que el renderer pueda leerlo en
 //    tiempo de módulo, antes del primer render) ─────────────────────────────
+ipcMain.handle('app:version', () => app.getVersion())
 ipcMain.on('get-config', (e) => { e.returnValue = readConfig() })
 
 ipcMain.handle('save-config', (_e, cfg) => {
@@ -170,7 +179,9 @@ function createSplash() {
     backgroundColor: '#000000',
     icon: path.join(__dirname, 'assets/icono.png')
   })
-  splashWindow.loadFile(path.join(__dirname, 'splash.html'))
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'), {
+    query: { version: app.getVersion() }
+  })
 }
 
 function createMainWindow() {
@@ -197,8 +208,9 @@ function createMainWindow() {
     // Si algo sigue sin cargar, las DevTools ayudan a ver el error real.
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
-    // Modo producción: carga el build estático
-    mainWindow.loadFile(path.join(__dirname, '../frontend/dist/index.html'))
+    // Modo producción: carga desde el servidor Express embebido (mismo origen
+    // que las llamadas API y socket.io — evita problemas de CORS con file://).
+    loadProdUrlWithRetry()
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -217,6 +229,7 @@ function createMainWindow() {
 }
 
 const DEV_URL = 'http://localhost:5173'
+const PROD_URL = `http://localhost:${SERVER_PORT}`
 
 // Carga la URL de Vite y, si falla (porque el servidor aún no respondía),
 // reintenta cada 1.5s en vez de dejar la ventana en blanco para siempre.
@@ -228,6 +241,27 @@ function loadDevUrlWithRetry(attemptsLeft = 20) {
       return
     }
     setTimeout(() => loadDevUrlWithRetry(attemptsLeft - 1), 1500)
+  })
+}
+
+// Carga el servidor Express en producción con reintentos.
+function loadProdUrlWithRetry(attemptsLeft = 20) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.loadURL(PROD_URL).catch(() => {
+    if (attemptsLeft <= 0) {
+      console.error('[Electron] No se pudo cargar el servidor Express tras varios intentos.')
+      dialog.showErrorBox(
+        'Error al iniciar iNOISE',
+        'No se pudo conectar al servidor local (puerto 3005).\n\n' +
+        'Posibles causas:\n' +
+        '• Otro programa está usando el puerto 3005\n' +
+        '• Error interno al iniciar la app\n\n' +
+        'Solución: cierra la app, reinicia el computador y vuelve a abrirla.\n' +
+        'Si el problema persiste, contacta a soporte técnico.'
+      )
+      return
+    }
+    setTimeout(() => loadProdUrlWithRetry(attemptsLeft - 1), 500)
   })
 }
 
@@ -259,7 +293,8 @@ app.whenReady().then(async () => {
   if (isClientMode) {
     // ── Modo cliente ──────────────────────────────────────────────────────
     // Este equipo se conecta al servidor de otro PC. No inicializa SQLite
-    // ni levanta Express — todo va por HTTP al servidor remoto.
+    // pero SÍ levanta Express en local para servir los archivos estáticos
+    // de React (sin Express en localhost:3005 la ventana queda en blanco).
     console.log(`[iNOISE] Modo cliente → ${appConfig.serverUrl}`)
   } else {
     // ── Modo servidor (por defecto) ───────────────────────────────────────
@@ -270,70 +305,78 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.error('[DB] Error al iniciar SQLite:', e.message)
     }
+  }
 
-    // 2. Iniciar servidor Express + Socket.io (puerto 3005)
-    //    Liberar el puerto si un proceso anterior quedó colgado.
-    try {
-      if (process.platform === 'win32') {
-        const { execSync } = require('child_process')
-        try {
-          const out = execSync('netstat -ano 2>nul | findstr "3005"', { encoding: 'utf8', timeout: 3000 })
-          const lines = out.split('\n').filter(l => l.includes('LISTENING'))
-          for (const line of lines) {
-            const pid = line.trim().split(/\s+/).pop()
-            if (pid && !isNaN(pid) && Number(pid) !== process.pid) {
-              try { execSync(`taskkill /F /PID ${pid}`, { timeout: 2000 }) } catch {}
-              console.log(`[iNOISE] Proceso antiguo en 3005 (PID ${pid}) liberado`)
-            }
-          }
-          await new Promise(r => setTimeout(r, 500))
-        } catch {}
-      }
-    } catch {}
-
-    try {
-      serverInfo = await startServer()
-      console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
-
-      // UDP broadcaster — solo si el modo es explícitamente 'server'.
-      // En primer arranque (mode=undefined) NO se hace broadcast para evitar
-      // que los PCs cliente en setup se auto-descubran a sí mismos.
-      if (appConfig.mode === 'server') {
-        const broadcaster = dgram.createSocket({ type: 'udp4', reuseAddr: true })
-        broadcaster.on('error', (err) => {
-          console.error('[UDP] Error en broadcaster:', err.message)
-          try { broadcaster.close() } catch {}
-        })
-        broadcaster.bind(() => {
-          broadcaster.setBroadcast(true)
-          const msg = Buffer.from(JSON.stringify({ service: 'iNOISE', url: serverInfo.networkUrl }))
-          setInterval(() => {
-            broadcaster.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255')
-          }, 2000)
-          console.log(`[iNOISE] UDP auto-descubrimiento activo → puerto ${DISCOVERY_PORT}`)
-        })
-      }
-    } catch (e) {
-      console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
-    }
-
-    // Abrir puerto 3005 (y 5173 en dev) en Windows Firewall para que otros
-    // equipos en la red puedan conectarse. Si la regla ya existe o no hay
-    // permisos, el error se ignora silenciosamente.
+  // Express siempre arranca (modo servidor Y cliente) para servir los
+  // archivos estáticos de React en localhost:3005. En modo cliente las
+  // rutas /api/* no tienen datos locales — el frontend apunta al servidor
+  // remoto directamente usando la URL guardada en la configuración.
+  try {
     if (process.platform === 'win32') {
       const { execSync } = require('child_process')
-      const fwPorts = isDev ? ['3005', '5173'] : ['3005']
-      for (const port of fwPorts) {
-        try {
-          execSync(
-            `netsh advfirewall firewall add rule name="iNOISE-${port}" ` +
-            `dir=in action=allow protocol=TCP localport=${port}`,
-            { timeout: 4000, stdio: 'pipe' }
-          )
-          console.log(`[Firewall] Puerto ${port} abierto en Windows Firewall`)
-        } catch {
-          // Ya existe o sin permisos de administrador — no es crítico
+      try {
+        const out = execSync('netstat -ano 2>nul | findstr "3005"', { encoding: 'utf8', timeout: 3000 })
+        const lines = out.split('\n').filter(l => l.includes('LISTENING'))
+        for (const line of lines) {
+          const pid = line.trim().split(/\s+/).pop()
+          if (pid && !isNaN(pid) && Number(pid) !== process.pid) {
+            try { execSync(`taskkill /F /PID ${pid}`, { timeout: 2000 }) } catch {}
+            console.log(`[iNOISE] Proceso antiguo en 3005 (PID ${pid}) liberado`)
+          }
         }
+        await new Promise(r => setTimeout(r, 500))
+      } catch {}
+    }
+  } catch {}
+
+  try {
+    serverInfo = await startServer()
+    console.log(`[iNOISE] Servidor HTTP iniciado: ${serverInfo.networkUrl}`)
+
+    // UDP broadcaster — solo si el modo es explícitamente 'server'.
+    // En primer arranque (mode=undefined) NO se hace broadcast para evitar
+    // que los PCs cliente en setup se auto-descubran a sí mismos.
+    if (appConfig.mode === 'server') {
+      const broadcaster = dgram.createSocket({ type: 'udp4', reuseAddr: true })
+      broadcaster.on('error', (err) => {
+        console.error('[UDP] Error en broadcaster:', err.message)
+        try { broadcaster.close() } catch {}
+      })
+      broadcaster.bind(() => {
+        broadcaster.setBroadcast(true)
+        const msg = Buffer.from(JSON.stringify({ service: 'iNOISE', url: serverInfo.networkUrl }))
+        setInterval(() => {
+          broadcaster.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255')
+        }, 2000)
+        console.log(`[iNOISE] UDP auto-descubrimiento activo → puerto ${DISCOVERY_PORT}`)
+      })
+    }
+  } catch (e) {
+    console.error('[iNOISE] Error al iniciar servidor HTTP:', e.message)
+    dialog.showErrorBox(
+      'Error crítico al iniciar iNOISE',
+      `No se pudo iniciar el servidor interno.\n\nDetalle: ${e.message}\n\n` +
+      'Solución: reinicia el computador y vuelve a abrir la app.\n' +
+      'Si el problema persiste, contacta a soporte técnico.'
+    )
+  }
+
+  // Abrir puerto 3005 (y 5173 en dev) en Windows Firewall para que otros
+  // equipos en la red puedan conectarse. Si la regla ya existe o no hay
+  // permisos, el error se ignora silenciosamente.
+  if (process.platform === 'win32') {
+    const { execSync } = require('child_process')
+    const fwPorts = isDev ? ['3005', '5173'] : ['3005']
+    for (const port of fwPorts) {
+      try {
+        execSync(
+          `netsh advfirewall firewall add rule name="iNOISE-${port}" ` +
+          `dir=in action=allow protocol=TCP localport=${port}`,
+          { timeout: 4000, stdio: 'pipe' }
+        )
+        console.log(`[Firewall] Puerto ${port} abierto en Windows Firewall`)
+      } catch {
+        // Ya existe o sin permisos de administrador — no es crítico
       }
     }
   }
@@ -408,7 +451,79 @@ app.whenReady().then(async () => {
   const elapsed = Date.now()
   const minSplash = 2000
   const remaining = minSplash - (Date.now() - elapsed)
-  setTimeout(createMainWindow, Math.max(remaining, 0))
+  setTimeout(() => {
+    createMainWindow()
+
+    // Auto-update: revisar en GitHub Releases al abrir (solo producción)
+    if (!isDev) {
+      // Desactivar descarga automática — el usuario elige cuándo actualizar
+      autoUpdater.autoDownload = false
+      autoUpdater.autoInstallOnAppQuit = false
+
+      // ── Listeners ANTES de checkForUpdates (evita race condition) ──────
+      autoUpdater.on('update-available', (info) => {
+        dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: 'Nueva versión disponible',
+          message: `iNOISE Control Bodega v${info.version}`,
+          detail: `Hay una nueva versión disponible.\n\n¿Deseas descargar e instalar la actualización ahora?\n\nPuedes seguir usando la aplicación mientras se descarga en segundo plano.`,
+          buttons: ['Actualizar ahora', 'Más tarde'],
+          defaultId: 0,
+          cancelId: 1
+        }).then(({ response }) => {
+          if (response === 0) autoUpdater.downloadUpdate()
+        })
+      })
+
+      autoUpdater.on('download-progress', (progress) => {
+        const pct = Math.round(progress.percent)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.setProgressBar(pct / 100)
+          mainWindow.webContents.send('update-progress', pct)
+        }
+      })
+
+      autoUpdater.on('update-downloaded', (info) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.setProgressBar(-1)
+          mainWindow.webContents.send('update-progress', -1)
+        }
+        // Leer novedades desde changelog.json
+        let novedades = ''
+        try {
+          const clPath = path.join(__dirname, 'changelog.json')
+          if (fs.existsSync(clPath)) {
+            const cl = JSON.parse(fs.readFileSync(clPath, 'utf8'))
+            const items = cl[info.version]
+            if (items?.length) {
+              novedades = '\n\nNovedades en esta versión:\n' + items.map(i => `• ${i}`).join('\n')
+            }
+          }
+        } catch {}
+
+        dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: '¡Actualización lista!',
+          message: `Versión ${info.version} descargada`,
+          detail: `La actualización está lista para instalar.\n\nLa aplicación se reiniciará para aplicar los cambios.${novedades}`,
+          buttons: ['Reiniciar y actualizar', 'Más tarde'],
+          defaultId: 0,
+          cancelId: 1
+        }).then(({ response }) => {
+          if (response === 0) autoUpdater.quitAndInstall(false, true)
+        })
+      })
+
+      autoUpdater.on('error', (err) => {
+        console.error('[AutoUpdater] Error:', err.message)
+      })
+
+      // Verificar DESPUÉS de registrar todos los listeners
+      autoUpdater.checkForUpdates().catch(err => {
+        console.error('[AutoUpdater] Error al verificar actualizaciones:', err.message)
+      })
+    }
+  }, Math.max(remaining, 0))
 })
 
 app.on('window-all-closed', () => {

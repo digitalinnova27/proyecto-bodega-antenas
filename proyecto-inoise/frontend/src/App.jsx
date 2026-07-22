@@ -39,6 +39,7 @@ import History from './pages/History'
 import Reports from './pages/Reports'
 import Users from './pages/Users'
 import Settings from './pages/Settings'
+import Staff from './pages/Staff'
 import Operations from './pages/Operations'
 import Rental from './pages/Rental'
 import RfidRegistrar from './pages/RfidRegistrar'
@@ -381,6 +382,7 @@ export default function App() {
                   <Route path="/history" element={<History />} />
                   <Route path="/reports" element={<Reports />} />
                   <Route path="/users" element={<Users />} />
+                  <Route path="/staff" element={<Staff />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/rental" element={<Rental />} />
                   <Route path="/rfid-registrar" element={<RfidRegistrar />} />

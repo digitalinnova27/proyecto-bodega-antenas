@@ -1,0 +1,9 @@
+{
+  "1.0.4": [
+    "Diálogo de actualización en español con opción Sí/No",
+    "El usuario decide cuándo descargar e instalar la actualización",
+    "Resumen de novedades al finalizar la descarga",
+    "Versión visible en el sidebar de la aplicación",
+    "Mensaje de error descriptivo si la app no puede iniciar"
+  ]
+}

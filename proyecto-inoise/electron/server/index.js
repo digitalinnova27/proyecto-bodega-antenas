@@ -27,7 +27,8 @@ const {
   loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
   setUserPin, removeUserPin, authLoginPin, setUserActive,
   createSession, closeSession, closeAllOpenSessions, loadUserSessions,
-  getConversation, createMessage, markMessageRead, countUnread, markConversationRead
+  getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
+  loadStaff, createStaff, updateStaff, deleteStaff
 } = require('../db')
 
 // ── Constantes ───────────────────────────────────────────────────────────────
@@ -74,8 +75,12 @@ app.use((req, res, next) => {
 })
 app.use(express.json({ limit: '20mb' }))
 
-// Servir el build de React para clientes en navegador
-const distPath = path.join(__dirname, '../../frontend/dist')
+// Servir el build de React para clientes en navegador.
+// En producción los archivos están en app.asar.unpacked (express.static usa
+// fs.createReadStream que no funciona dentro del asar). En dev, path normal.
+const distPath = __dirname.includes('app.asar')
+  ? path.join(process.resourcesPath, 'app.asar.unpacked', 'frontend', 'dist')
+  : path.join(__dirname, '../../frontend/dist')
 app.use(express.static(distPath))
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -479,5 +484,25 @@ function startServer() {
     })
   })
 }
+
+// ── Rutas de personal (staff) ─────────────────────────────────────────────────
+app.get('/api/staff', requireAuth, (_req, res) => {
+  res.json(safe(() => loadStaff()))
+})
+
+app.post('/api/staff', requireAuth, (req, res) => {
+  const { nombre, apellido, rut, telefono, cargo } = req.body
+  if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido requeridos' })
+  res.json(safe(() => createStaff({ nombre, apellido, rut, telefono, cargo })))
+})
+
+app.put('/api/staff/:id', requireAuth, (req, res) => {
+  const { nombre, apellido, rut, telefono, cargo, activo } = req.body
+  res.json(safe(() => { updateStaff(req.params.id, { nombre, apellido, rut, telefono, cargo, activo }); return true }))
+})
+
+app.delete('/api/staff/:id', requireAuth, (req, res) => {
+  res.json(safe(() => { deleteStaff(req.params.id); return true }))
+})
 
 module.exports = { startServer, getLocalIP, PORT }

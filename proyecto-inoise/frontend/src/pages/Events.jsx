@@ -16,6 +16,7 @@ import EmailIcon from '@mui/icons-material/Email'
 import { useAuth } from '../context/AuthContext'
 import { useInventory } from '../context/InventoryContext'
 import { generateEventPDF } from '../utils/generatePDF'
+import { api } from '../lib/api'
 
 const CATEGORIES = ['Audio', 'Iluminacion', 'Pantalla', 'Efectos', 'Estructuras', 'Energía', 'Tecnologia', 'Otros']
 
@@ -134,8 +135,13 @@ export default function Events() {
   const [orderResultEvent, setOrderResultEvent] = React.useState(null)
   const [currentEvent, setCurrentEvent] = React.useState(null)
 
-  const emptyForm = { name: '', date: '', location: '', notes: '' }
+  const emptyForm = { name: '', date: '', location: '', notes: '', staffIds: [] }
   const [form, setForm] = React.useState(emptyForm)
+  const [staffList, setStaffList] = React.useState([])
+
+  React.useEffect(() => {
+    api.get('/api/staff').then(r => setStaffList(r.data.data || r.data || [])).catch(() => {})
+  }, [])
   const [assignCategory, setAssignCategory] = React.useState('')
   const [assignSkuSearch, setAssignSkuSearch] = React.useState('')
   const [assignPage, setAssignPage] = React.useState(0)
@@ -228,7 +234,7 @@ export default function Events() {
 
   /* EDITAR */
   const openEditModal = () => {
-    setForm({ name: currentEvent.name, date: currentEvent.date, location: currentEvent.location || '', notes: currentEvent.notes || '' })
+    setForm({ name: currentEvent.name, date: currentEvent.date, location: currentEvent.location || '', notes: currentEvent.notes || '', staffIds: currentEvent.staffIds || [] })
     setAssignmentsDraft(currentEvent.assignments || [])
     setAssignCategory('')
     setOpenDetail(false); setOpenEdit(true)
@@ -340,6 +346,17 @@ export default function Events() {
           <Box><Typography variant="caption" color="text.secondary">ARTÍCULOS</Typography><Typography>{(ev.assignments || []).reduce((s, a) => s + a.qty, 0)}</Typography></Box>
         </Box>
         {ev.notes && <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>{ev.notes}</Typography>}
+        {ev.staffIds?.length > 0 && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>PERSONAL ASIGNADO</Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+              {ev.staffIds.map(id => {
+                const p = staffList.find(s => s.id === id)
+                return p ? <Chip key={id} label={`${p.nombre} ${p.apellido}`} size="small" variant="outlined" /> : null
+              })}
+            </Box>
+          </Box>
+        )}
         <Divider sx={{ mb: 1.5 }} />
         <Typography variant="subtitle2" gutterBottom>Equipos asignados</Typography>
         {Object.keys(grouped).length === 0
@@ -569,6 +586,18 @@ export default function Events() {
               onChange={e => setForm({ ...form, location: e.target.value })} sx={{ flex: 1 }} />
           </Box>
           <TextField label="Notas" multiline minRows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
+          {staffList.length > 0 && (
+            <TextField
+              select label="Personal asignado" SelectProps={{ multiple: true }}
+              value={form.staffIds || []}
+              onChange={e => setForm({ ...form, staffIds: typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value })}
+              helperText="Puedes seleccionar varios"
+            >
+              {staffList.map(s => (
+                <MenuItem key={s.id} value={s.id}>{s.nombre} {s.apellido}</MenuItem>
+              ))}
+            </TextField>
+          )}
           <Divider sx={{ my: 0.5 }} />
           <Typography variant="subtitle2" color="primary">Asignar equipos</Typography>
           <AssignPanel {...assignPanelProps} />
@@ -645,6 +674,18 @@ export default function Events() {
               onChange={e => setForm({ ...form, location: e.target.value })} sx={{ flex: 1 }} />
           </Box>
           <TextField label="Notas" multiline minRows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
+          {staffList.length > 0 && (
+            <TextField
+              select label="Personal asignado" SelectProps={{ multiple: true }}
+              value={form.staffIds || []}
+              onChange={e => setForm({ ...form, staffIds: typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value })}
+              helperText="Puedes seleccionar varios"
+            >
+              {staffList.map(s => (
+                <MenuItem key={s.id} value={s.id}>{s.nombre} {s.apellido}</MenuItem>
+              ))}
+            </TextField>
+          )}
           <Divider />
           <Typography variant="subtitle2" color="primary">Equipos asignados</Typography>
           <AssignPanel {...assignPanelProps} />
