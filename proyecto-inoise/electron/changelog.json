@@ -1,4 +1,10 @@
 {
+  "1.0.7": [
+    "Agente de IA integrado en el chat del equipo",
+    "Mejoras en el panel de chat",
+    "Actualizaciones en Dashboard, Login y Usuarios",
+    "Mejoras en el bridge RFID"
+  ],
   "1.0.6": [
     "Al abrir la app por primera vez tras actualizar, la campanita muestra las novedades de la nueva versión",
     "El modal de novedades distingue entre 'actualización disponible' y 'novedades de la versión instalada'",
