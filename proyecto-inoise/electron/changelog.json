@@ -1,4 +1,8 @@
 {
+  "1.0.9": [
+    "Fix: Asistente iNOISE ahora aparece correctamente en el chat",
+    "Fix: todos los cambios de la v1.0.8 incluidos correctamente"
+  ],
   "1.0.8": [
     "Asistente iNOISE en el chat: responde preguntas frecuentes sobre el sistema",
     "Chat rediseñado estilo WhatsApp Web con emojis y referencias a eventos",
