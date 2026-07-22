@@ -9,17 +9,24 @@
 import React, { useState, useRef, useEffect } from 'react'
 import {
   Box, Typography, IconButton, TextField, Badge, Divider,
-  Tooltip, Avatar, CircularProgress
+  Tooltip, Avatar, CircularProgress, Chip
 } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import CloseIcon from '@mui/icons-material/Close'
 import EmojiEmotionsIcon from '@mui/icons-material/EmojiEmotions'
 import EventIcon from '@mui/icons-material/Event'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
+import SupportAgentIcon from '@mui/icons-material/SupportAgent'
 
 import { useChat } from '../context/ChatContext'
 import { useAuth } from '../context/AuthContext'
 import { useInventory } from '../context/InventoryContext'
+import { HELP_FAQ, searchFaq } from '../data/helpFaq'
+
+/* ── Contacto virtual: Asistente de ayuda (búsqueda local en FAQ, sin
+ * backend ni IA externa) ─────────────────────────────────────────────── */
+const ASSISTANT_ID = '__assistant__'
+const ASSISTANT_SUGGESTED_IDS = ['crear-evento', 'disponibilidad-fecha', 'fases-operaciones', 'incidencias', 'chat-interno']
 
 /* ── Paleta de emojis de uso frecuente ───────────────────────────────────── */
 const EMOJI_ROWS = [
@@ -343,13 +350,193 @@ function ConversationPanel({ user, onClose }) {
   )
 }
 
+/* ── Burbuja de mensaje del asistente (usuario ↔ respuestas locales) ────── */
+function AssistantBubble({ msg }) {
+  const isOwn = msg.from === 'user'
+  return (
+    <Box sx={{ display: 'flex', justifyContent: isOwn ? 'flex-end' : 'flex-start', mb: 0.75, px: 1 }}>
+      <Box sx={{
+        maxWidth: '80%',
+        bgcolor: isOwn ? 'rgba(102,252,241,0.18)' : 'rgba(255,255,255,0.07)',
+        borderRadius: isOwn ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
+        px: 1.5, py: 0.9,
+        border: isOwn ? '1px solid rgba(102,252,241,0.25)' : '1px solid rgba(255,255,255,0.08)'
+      }}>
+        {msg.category && (
+          <Chip
+            label={msg.category}
+            size="small"
+            sx={{ mb: 0.75, height: 18, fontSize: 10, fontWeight: 600, bgcolor: 'rgba(102,252,241,0.15)', color: '#66FCF1' }}
+          />
+        )}
+        <Typography variant="body2" sx={{ color: '#E8E8E8', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5 }}>
+          {msg.content}
+        </Typography>
+      </Box>
+    </Box>
+  )
+}
+
+/* ── Panel de conversación con el Asistente de ayuda (derecha) ──────────── *
+ * Búsqueda 100% local sobre src/data/helpFaq.js — sin IA externa, sin
+ * internet, sin costo. Solo responde dudas de funcionamiento de la app,
+ * no de código. El historial vive en memoria de este componente mientras
+ * la app está abierta (no se guarda en la base de datos). */
+function AssistantConversationPanel({ onClose }) {
+  const [messages, setMessages] = useState(() => ([
+    {
+      id: 'greet',
+      from: 'assistant',
+      content: '¡Hola! Soy el asistente de ayuda de iNOISE. Pregúntame sobre el funcionamiento del sistema (eventos, inventario, operaciones, chat, etc.). No resuelvo temas de código ni configuración técnica.'
+    }
+  ]))
+  const [text, setText] = useState('')
+  const bottomRef = useRef(null)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages.length])
+
+  const ask = (question) => {
+    const trimmed = question.trim()
+    if (!trimmed) return
+    const [best] = searchFaq(trimmed, 1)
+    const reply = best
+      ? { id: `a-${Date.now()}`, from: 'assistant', content: best.answer, category: best.category }
+      : { id: `a-${Date.now()}`, from: 'assistant', content: 'No encontré nada sobre eso. Prueba con otras palabras, o menciona la sección (Eventos, Operaciones, Inventario, Chat...).' }
+    setMessages(m => [...m, { id: `u-${Date.now()}`, from: 'user', content: trimmed }, reply])
+    setText('')
+    inputRef.current?.focus()
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      ask(text)
+    }
+  }
+
+  const suggested = ASSISTANT_SUGGESTED_IDS.map(id => HELP_FAQ.find(e => e.id === id)).filter(Boolean)
+  const showSuggestions = messages.length <= 1
+
+  return (
+    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0 }}>
+
+      {/* Header */}
+      <Box sx={{
+        display: 'flex', alignItems: 'center', gap: 1.5,
+        px: 2, py: 1.5,
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
+        bgcolor: 'rgba(255,255,255,0.02)'
+      }}>
+        <Avatar sx={{ width: 34, height: 34, bgcolor: '#66FCF1', color: '#0B0C10' }}>
+          <SupportAgentIcon fontSize="small" />
+        </Avatar>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="body2" fontWeight={600} sx={{ color: '#E8E8E8', lineHeight: 1.2 }}>
+            Asistente iNOISE
+          </Typography>
+          <Typography variant="caption" sx={{ color: '#888', fontSize: 11 }}>
+            Ayuda y preguntas frecuentes
+          </Typography>
+        </Box>
+        <IconButton size="small" onClick={onClose} sx={{ color: 'rgba(255,255,255,0.4)' }}>
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+
+      {/* Mensajes */}
+      <Box sx={{ flex: 1, overflowY: 'auto', py: 1.5 }}>
+        {messages.map(m => <AssistantBubble key={m.id} msg={m} />)}
+
+        {showSuggestions && (
+          <Box sx={{ px: 2, pt: 1 }}>
+            <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 0.75 }}>
+              Preguntas frecuentes:
+            </Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+              {suggested.map(entry => (
+                <Box
+                  key={entry.id}
+                  onClick={() => ask(entry.question)}
+                  sx={{
+                    px: 1.25, py: 0.9, borderRadius: 1.5, cursor: 'pointer',
+                    bgcolor: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    '&:hover': { bgcolor: 'rgba(102,252,241,0.07)', borderColor: 'rgba(102,252,241,0.2)' }
+                  }}
+                >
+                  <Typography variant="caption" sx={{ color: '#C5C6C7', fontSize: 12 }}>
+                    {entry.question}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
+        <div ref={bottomRef} />
+      </Box>
+
+      {/* Área de entrada */}
+      <Box sx={{
+        display: 'flex', alignItems: 'flex-end', gap: 0.5,
+        px: 1.5, py: 1,
+        borderTop: '1px solid rgba(255,255,255,0.08)',
+        bgcolor: 'rgba(255,255,255,0.01)'
+      }}>
+        <TextField
+          inputRef={inputRef}
+          multiline maxRows={4}
+          size="small"
+          fullWidth
+          placeholder="Escribe tu duda..."
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              bgcolor: 'rgba(255,255,255,0.05)',
+              borderRadius: 3,
+              fontSize: 13,
+              '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
+              '&:hover fieldset': { borderColor: 'rgba(102,252,241,0.3)' },
+              '&.Mui-focused fieldset': { borderColor: '#66FCF1' }
+            },
+            '& .MuiOutlinedInput-input': { color: '#E8E8E8', py: '8px' }
+          }}
+        />
+        <IconButton
+          size="small"
+          onClick={() => ask(text)}
+          disabled={!text.trim()}
+          sx={{
+            mb: 0.5, bgcolor: text.trim() ? '#66FCF1' : 'rgba(255,255,255,0.08)',
+            color: text.trim() ? '#0B0C10' : 'rgba(255,255,255,0.3)',
+            '&:hover': { bgcolor: text.trim() ? '#4dd9d0' : 'rgba(255,255,255,0.12)' },
+            '&.Mui-disabled': { bgcolor: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.2)' },
+            transition: 'all 0.15s'
+          }}
+        >
+          <SendIcon fontSize="small" />
+        </IconButton>
+      </Box>
+    </Box>
+  )
+}
+
 /* ── Panel principal del chat ─────────────────────────────────────────────── */
 export default function ChatPanel({ open, onClose }) {
   const { openWith, openChat, closeChat, unreadByUser } = useChat()
   const { currentUser, users: allUsers = [] } = useAuth()
   const users = allUsers.filter(u => u.id !== currentUser?.id && u.active !== 0)
 
+  const [assistantSelected, setAssistantSelected] = useState(false)
+
   const selectedUser = users.find(u => u.id === openWith)
+
+  const selectAssistant = () => { setAssistantSelected(true); closeChat() }
+  const selectUser = (userId) => { setAssistantSelected(false); openChat(userId) }
 
   const AVATAR_COLORS = ['#1D9E75','#378ADD','#EF9F27','#E24B4A','#7C3AED','#F59E0B','#EC4899','#6366F1']
 
@@ -370,7 +557,7 @@ export default function ChatPanel({ open, onClose }) {
       <Box sx={{
         position: 'fixed',
         bottom: 24, right: 24,
-        width: openWith ? 640 : 280,
+        width: (openWith || assistantSelected) ? 640 : 280,
         height: 520,
         bgcolor: '#1A2030',
         borderRadius: 3,
@@ -386,7 +573,7 @@ export default function ChatPanel({ open, onClose }) {
         <Box sx={{
           width: 240, flexShrink: 0,
           display: 'flex', flexDirection: 'column',
-          borderRight: openWith ? '1px solid rgba(255,255,255,0.08)' : 'none'
+          borderRight: (openWith || assistantSelected) ? '1px solid rgba(255,255,255,0.08)' : 'none'
         }}>
           {/* Header del panel */}
           <Box sx={{
@@ -405,6 +592,33 @@ export default function ChatPanel({ open, onClose }) {
 
           {/* Lista de usuarios */}
           <Box sx={{ flex: 1, overflowY: 'auto' }}>
+
+            {/* Contacto fijo: Asistente de ayuda (búsqueda local, sin backend) */}
+            <Box
+              onClick={selectAssistant}
+              sx={{
+                display: 'flex', alignItems: 'center', gap: 1.5,
+                px: 1.5, py: 1.25, cursor: 'pointer',
+                bgcolor: assistantSelected ? 'rgba(102,252,241,0.08)' : 'transparent',
+                borderLeft: assistantSelected ? '3px solid #66FCF1' : '3px solid transparent',
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' },
+                transition: 'background 0.15s'
+              }}
+            >
+              <Avatar sx={{ width: 36, height: 36, bgcolor: '#66FCF1', color: '#0B0C10' }}>
+                <SupportAgentIcon fontSize="small" />
+              </Avatar>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="body2" fontWeight={500} sx={{ color: '#C5C6C7', lineHeight: 1.2, fontSize: 13 }}>
+                  Asistente iNOISE
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#666', fontSize: 11 }}>
+                  Ayuda y preguntas frecuentes
+                </Typography>
+              </Box>
+            </Box>
+            <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
+
             {users.length === 0 && (
               <Box sx={{ px: 2, py: 3, textAlign: 'center' }}>
                 <Typography variant="caption" sx={{ color: '#555' }}>
@@ -416,12 +630,12 @@ export default function ChatPanel({ open, onClose }) {
               const name = `${u.nombre} ${u.apellido}`
               const unread = unreadByUser[u.id] || 0
               const color = AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length]
-              const isSelected = openWith === u.id
+              const isSelected = !assistantSelected && openWith === u.id
 
               return (
                 <Box
                   key={u.id}
-                  onClick={() => openChat(u.id)}
+                  onClick={() => selectUser(u.id)}
                   sx={{
                     display: 'flex', alignItems: 'center', gap: 1.5,
                     px: 1.5, py: 1.25, cursor: 'pointer',
@@ -450,7 +664,11 @@ export default function ChatPanel({ open, onClose }) {
         </Box>
 
         {/* ── Panel de conversación (derecha) ── */}
-        {selectedUser && (
+        {assistantSelected && (
+          <AssistantConversationPanel onClose={() => setAssistantSelected(false)} />
+        )}
+
+        {!assistantSelected && selectedUser && (
           <ConversationPanel
             user={selectedUser}
             onClose={closeChat}
@@ -458,7 +676,7 @@ export default function ChatPanel({ open, onClose }) {
         )}
 
         {/* Placeholder cuando no hay usuario seleccionado */}
-        {!selectedUser && openWith && (
+        {!assistantSelected && !selectedUser && openWith && (
           <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="caption" sx={{ color: '#555' }}>
               Selecciona un colaborador

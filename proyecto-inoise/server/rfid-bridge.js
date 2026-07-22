@@ -83,6 +83,59 @@ let tagStats = {
     scanHistory: []
 }
 
+/* ── Antenas: detección dinámica, sin límite ────────────────────────────
+ * El protocolo UDP de las antenas no manda un "ID de antena" en el propio
+ * paquete, pero sí llega acompañado de la dirección IP de origen (rinfo,
+ * que el handler de dgram ignoraba hasta ahora). Usamos esa IP como
+ * identificador natural de cada lector físico: no hace falta configurar
+ * cuántas antenas hay ni sus nombres — cualquier IP que mande un paquete
+ * válido queda registrada sola, así que conectar una 4ª, 5ª u 8ª antena al
+ * switch simplemente hace que aparezca en la lista sin tocar código.
+ *
+ * Una antena se considera "activa" si mandó algo en los últimos
+ * ANTENNA_TIMEOUT_MS; si se queda callada más que eso, pasa a "offline"
+ * automáticamente (se recalcula en cada serialización, no hace falta que
+ * la antena avise que se desconectó — la mayoría de este hardware no lo
+ * hace). */
+const ANTENNA_TIMEOUT_MS = 15000
+
+let antennas = {} // ip → { id, ip, firstSeenAt, lastSeenAt, totalScans, uniqueTags:Set, lastSignal, scanHistory:[] }
+
+function getOrCreateAntenna(ip) {
+    if (!antennas[ip]) {
+        antennas[ip] = {
+            id: ip,
+            ip,
+            firstSeenAt: new Date().toISOString(),
+            lastSeenAt: null,
+            totalScans: 0,
+            uniqueTags: new Set(),
+            lastSignal: null,
+            scanHistory: []
+        }
+    }
+    return antennas[ip]
+}
+
+function serializeAntennas() {
+    const now = Date.now()
+    return Object.values(antennas)
+        .map(a => ({
+            id: a.id,
+            ip: a.ip,
+            active: a.lastSeenAt ? (now - new Date(a.lastSeenAt).getTime()) < ANTENNA_TIMEOUT_MS : false,
+            firstSeenAt: a.firstSeenAt,
+            lastSeenAt: a.lastSeenAt,
+            totalScans: a.totalScans,
+            uniqueTags: a.uniqueTags.size,
+            lastSignal: a.lastSignal,
+            recentScans: a.scanHistory.slice(0, 10)
+        }))
+        // Más antigua conectada primero, para que el orden en pantalla no
+        // salte cada vez que una antena manda un paquete.
+        .sort((a, b) => new Date(a.firstSeenAt) - new Date(b.firstSeenAt))
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 const wss = new WebSocketServer({ port: WS_PORT })
 const clients = new Set()
@@ -149,6 +202,15 @@ const httpServer = http.createServer((req, res) => {
         return
     }
 
+    // Lista dinámica de antenas detectadas (ver comentario junto a
+    // getOrCreateAntenna más arriba) — sin límite fijo, tantas como IPs
+    // distintas hayan mandado un paquete UDP válido.
+    if (req.method === 'GET' && req.url === '/api/antennas') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ antennas: serializeAntennas() }))
+        return
+    }
+
     res.writeHead(404); res.end('Not found')
 })
 httpServer.listen(HTTP_PORT, () => console.log(`[HTTP] API en http://localhost:${HTTP_PORT}`))
@@ -156,7 +218,7 @@ httpServer.listen(HTTP_PORT, () => console.log(`[HTTP] API en http://localhost:$
 // ── UDP ───────────────────────────────────────────────────────────────────────
 const udpServer = dgram.createSocket('udp4')
 
-udpServer.on('message', (buf) => {
+udpServer.on('message', (buf, rinfo) => {
     try {
         const raw = buf.toString('utf8').trim().replace(/\0/g, '').replace(/\r?\n/g, '')
         const parts = raw.split(',')
@@ -164,6 +226,8 @@ udpServer.on('message', (buf) => {
         if (!epc || epc.length < 6) return
 
         // ── Deduplicación: ignorar mismo tag dentro de DEDUP_MS ──
+        // (por EPC en general, no por antena — si dos antenas leen el mismo
+        // tag casi al mismo tiempo, sigue contando como una sola lectura)
         const now = Date.now()
         if (lastSeen[epc] && (now - lastSeen[epc]) < DEDUP_MS) return
         lastSeen[epc] = now
@@ -178,33 +242,58 @@ udpServer.on('message', (buf) => {
             if (!isNaN(maybeRssi) && maybeRssi < 0) rssi = maybeRssi
         }
 
-        // Actualizar estadísticas
+        const scanTime = new Date().toISOString()
+
+        // Actualizar estadísticas globales (compat con /api/stats existente)
         tagStats.totalScans++
         tagStats.uniqueTags.add(epc)
         tagStats.lastSignal = rssi
-        tagStats.lastScanTime = new Date().toISOString()
-        tagStats.scanHistory.unshift({ epc, rssi, at: tagStats.lastScanTime })
+        tagStats.lastScanTime = scanTime
+        tagStats.scanHistory.unshift({ epc, rssi, at: scanTime })
         if (tagStats.scanHistory.length > 100) tagStats.scanHistory.pop()
+
+        // Actualizar estadísticas de ESTA antena en particular, identificada
+        // por su IP de origen (rinfo.address) — se crea sola la primera vez.
+        const antennaIp = rinfo.address
+        const ant = getOrCreateAntenna(antennaIp)
+        ant.totalScans++
+        ant.uniqueTags.add(epc)
+        ant.lastSignal = rssi
+        ant.lastSeenAt = scanTime
+        ant.scanHistory.unshift({ epc, rssi, at: scanTime })
+        if (ant.scanHistory.length > 100) ant.scanHistory.pop()
 
         const unitId = epcMap[epc]
         if (!unitId) {
-            console.log(`[UDP] Desconocido: ${epc}`)
-            broadcast({ type: 'rfid_unknown', epc, rssi })
+            console.log(`[UDP] Desconocido: ${epc} (antena ${antennaIp})`)
+            broadcast({ type: 'rfid_unknown', epc, rssi, antenna: antennaIp })
+            broadcast({ type: 'antennas_status', antennas: serializeAntennas() })
             return
         }
 
-        console.log(`[UDP] ${epc} → ${unitId}${rssi ? ' | RSSI: ' + rssi + ' dBm' : ''}`)
+        console.log(`[UDP] ${epc} → ${unitId}${rssi ? ' | RSSI: ' + rssi + ' dBm' : ''} | antena ${antennaIp}`)
         broadcast({
-            type: 'rfid_scan', epc, sku: unitId, rssi,
-            timestamp: tagStats.lastScanTime,
+            type: 'rfid_scan', epc, sku: unitId, rssi, antenna: antennaIp,
+            timestamp: scanTime,
             totalScans: tagStats.totalScans,
             uniqueCount: tagStats.uniqueTags.size
         })
+        broadcast({ type: 'antennas_status', antennas: serializeAntennas() })
 
     } catch (err) {
         console.error('[UDP] Error:', err)
     }
 })
+
+// Empuje periódico del estado de las antenas — necesario para que una
+// antena que se quedó callada pase a "offline" en pantalla sin esperar a
+// que otra antena mande una lectura nueva (broadcast() de arriba solo se
+// dispara cuando llega un paquete).
+setInterval(() => {
+    if (Object.keys(antennas).length > 0) {
+        broadcast({ type: 'antennas_status', antennas: serializeAntennas() })
+    }
+}, 3000)
 
 udpServer.on('listening', () => {
     console.log(`[UDP] Escuchando en puerto ${udpServer.address().port}`)

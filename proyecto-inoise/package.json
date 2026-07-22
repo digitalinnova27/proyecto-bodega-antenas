@@ -9,6 +9,7 @@
     "preview": "vite preview --config frontend/vite.config.js",
     "electron": "electron .",
     "electron:dev": "electron .",
+    "dev:web": "electron . --headless",
     "electron:build": "npm run build && electron .",
     "start": "npm run electron:dev",
     "dist": "npm run build && electron-builder --win",

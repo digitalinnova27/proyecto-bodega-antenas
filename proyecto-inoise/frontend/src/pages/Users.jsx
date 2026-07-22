@@ -4,7 +4,9 @@ import {
   List, ListItem, ListItemButton, ListItemAvatar, ListItemText,
   TextField, InputAdornment, Tooltip,
   Popover, IconButton,
-  CircularProgress
+  CircularProgress,
+  Dialog, DialogTitle, DialogContent, DialogActions, Button,
+  Snackbar, Alert
 } from '@mui/material'
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
@@ -17,10 +19,84 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord'
+import LockResetIcon from '@mui/icons-material/LockReset'
 import { useAuth } from '../context/AuthContext'
 import { useInventory } from '../context/InventoryContext'
 import { api } from '../lib/api'
 import { AVATARS } from './Login'
+
+/* ─── Diálogo: restablecer contraseña de un usuario (solo admin) ─────────
+ * Usa updateUser(id, {}, newPassword) — ya soportado por el backend
+ * (electron/db.js) pero sin ningún botón en la UI hasta ahora. Al no
+ * existir forma de recuperar la contraseña original (se guarda hasheada
+ * con pbkdf2), esta es la única vía para que un usuario recupere el
+ * acceso si la olvidó. */
+function ResetPasswordDialog({ open, user, onClose, onSuccess }) {
+  const { updateUser } = useAuth()
+  const [pass1, setPass1] = React.useState('')
+  const [pass2, setPass2] = React.useState('')
+  const [error, setError] = React.useState('')
+  const [loading, setLoading] = React.useState(false)
+
+  React.useEffect(() => {
+    if (open) { setPass1(''); setPass2(''); setError('') }
+  }, [open])
+
+  const handleSubmit = async () => {
+    if (pass1.length < 4) { setError('Mínimo 4 caracteres'); return }
+    if (pass1 !== pass2) { setError('Las contraseñas no coinciden'); return }
+    setLoading(true)
+    setError('')
+    try {
+      // IMPORTANTE: updateUser reemplaza nombre/apellido/username/etc. con lo
+      // que reciba en "fields" — hay que reenviar los datos actuales del
+      // usuario tal cual, para no borrarlos al solo querer cambiar la clave.
+      const currentFields = {
+        nombre: user.nombre, apellido: user.apellido, email: user.email,
+        cargo: user.cargo, avatar: user.avatar, username: user.username
+      }
+      const res = await updateUser(user.id, currentFields, pass1)
+      if (!res?.ok) { setError(res?.error || 'No se pudo actualizar'); setLoading(false); return }
+      setLoading(false)
+      onSuccess()
+    } catch (e) {
+      setError('Error al actualizar')
+      setLoading(false)
+    }
+  }
+
+  if (!user) return null
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>Restablecer contraseña</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Nueva contraseña para <strong>{fullName(user)}</strong> (@{user.username}). El usuario deberá usar esta nueva contraseña para iniciar sesión.
+        </Typography>
+        <TextField
+          autoFocus fullWidth type="password" size="small"
+          label="Nueva contraseña" value={pass1}
+          onChange={e => { setPass1(e.target.value); setError('') }}
+          sx={{ mb: 2 }}
+        />
+        <TextField
+          fullWidth type="password" size="small"
+          label="Confirmar contraseña" value={pass2}
+          onChange={e => { setPass2(e.target.value); setError('') }}
+          onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+        />
+        {error && <Typography variant="caption" color="error" sx={{ display: 'block', mt: 1 }}>{error}</Typography>}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={loading}>Cancelar</Button>
+        <Button onClick={handleSubmit} variant="contained" disabled={loading}>
+          {loading ? 'Guardando…' : 'Guardar'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
 
 /* ─── Color de sección — reutilizable ───────────────────────────────────── */
 const SECTION_BORDER = '1px solid rgba(255,255,255,0.07)'
@@ -430,9 +506,12 @@ function SessionAccordion({ sessions, loadingSessions }) {
 /* ─── Panel de perfil — UN SOLO Paper con secciones internas ──────────────
  * Todas las secciones viven dentro del mismo Paper (background.paper #1F2833)
  * separadas por bordes sutiles. Así no queda ningún hueco negro entre ellas. */
-function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHistory, auditLog }) {
+function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHistory, auditLog, viewerIsAdmin }) {
   const name     = fullName(user)
   const isActive = user.active !== false
+
+  const [resetOpen, setResetOpen] = React.useState(false)
+  const [resetOk, setResetOk]     = React.useState(false)
 
   /* Actividad atribuida a este usuario */
   const myEvents   = eventHistory.filter(e => e.closedBy === name || e.closedBy === user.username)
@@ -499,6 +578,18 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
                 <Chip icon={<BlockIcon sx={{ fontSize: 12 }} />} label="Deshabilitado"
                   size="small" color="error" variant="outlined" />
               )}
+              {viewerIsAdmin && (
+                <Tooltip title="Restablecer contraseña">
+                  <Button
+                    size="small"
+                    startIcon={<LockResetIcon sx={{ fontSize: 16 }} />}
+                    onClick={() => setResetOpen(true)}
+                    sx={{ ml: 'auto', fontSize: 12, textTransform: 'none' }}
+                  >
+                    Restablecer contraseña
+                  </Button>
+                </Tooltip>
+              )}
             </Box>
 
             <Typography variant="body2" color="text.secondary">
@@ -557,6 +648,19 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
         <SectionLabel>Historial de sesiones</SectionLabel>
         <SessionAccordion sessions={sessions} loadingSessions={loadingSessions} />
       </Box>
+
+      <ResetPasswordDialog
+        open={resetOpen}
+        user={user}
+        onClose={() => setResetOpen(false)}
+        onSuccess={() => { setResetOpen(false); setResetOk(true) }}
+      />
+      <Snackbar open={resetOk} autoHideDuration={4000} onClose={() => setResetOk(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+        <Alert severity="success" onClose={() => setResetOk(false)} sx={{ width: '100%' }}>
+          Contraseña actualizada. Avísale al usuario que ya puede iniciar sesión con la nueva.
+        </Alert>
+      </Snackbar>
 
     </Paper>
   )
@@ -702,6 +806,7 @@ export default function Users() {
             rentalHistory={rentalHistory}
             purchaseHistory={purchaseHistory}
             auditLog={auditLog}
+            viewerIsAdmin={role === 'admin'}
           />
         ) : (
           <Paper sx={{ p: 4, textAlign: 'center' }}>

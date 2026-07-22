@@ -1,6 +1,5 @@
 import React from 'react'
 import { useInventory } from '../context/InventoryContext'
-import { useRfidSocket } from '../hooks/useRfidSocket'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, Cell } from 'recharts'
 
 const CAT_COLORS = {
@@ -215,8 +214,22 @@ export default function Dashboard() {
   // que se abrió la app. Sin esto, el WS del bridge (que corre siempre
   // dentro de Electron) hacía ver "Activa" aunque no hubiera ninguna
   // antena física conectada al PC.
-  const { isConnected: bridgeConnected, lastReadAt } = useRfidSocket()
-  const antenna1Active = bridgeConnected && lastReadAt !== null
+  // Lista dinámica de antenas detectadas por el bridge (misma fuente que
+  // usa la página Antenas) — sin cantidad fija, tantas como IPs distintas
+  // hayan mandado un paquete UDP.
+  const [antennaList, setAntennaList] = React.useState([])
+  React.useEffect(() => {
+    const fetchAntennas = async () => {
+      try {
+        const res = await fetch('http://localhost:3002/api/antennas')
+        const data = await res.json()
+        setAntennaList(Array.isArray(data.antennas) ? data.antennas : [])
+      } catch (e) { }
+    }
+    fetchAntennas()
+    const interval = setInterval(fetchAntennas, 2000)
+    return () => clearInterval(interval)
+  }, [])
 
   const todayStr = new Date().toISOString().slice(0, 10)
 
@@ -254,16 +267,12 @@ export default function Dashboard() {
     equipos: (ev.assignments || []).reduce((s, a) => s + (a.qty || 0), 0)
   }))
 
-  // Solo "Antena 1" corresponde a un lector físico real configurado en el
-  // bridge (server/rfid-bridge.js). Antena 2 y 3 no tienen hardware
-  // asignado todavía, así que siempre se muestran offline — antes esto
-  // estaba hardcodeado como "Activa" para las tres sin relación alguna
-  // con una conexión real.
-  const antennas = [
-    { name: 'Antena 1', status: antenna1Active ? 'Activa' : 'Offline' },
-    { name: 'Antena 2', status: 'Offline' },
-    { name: 'Antena 3', status: 'Offline' },
-  ]
+  // Antenas reales reportadas por el bridge (ver antennaList arriba) —
+  // se numeran en el orden en que se detectaron, sin límite fijo.
+  const antennas = antennaList.map((a, i) => ({
+    name: `Antena ${i + 1}`,
+    status: a.active ? 'Activa' : 'Offline'
+  }))
 
   const alerts = Object.entries(catStats)
     .map(([cat, { total, disp }]) => ({ cat, pct: total ? Math.round((disp / total) * 100) : 100 }))
@@ -335,6 +344,9 @@ export default function Dashboard() {
           })}
           <hr style={s.sep} />
           <div style={{ ...s.cardTitle, marginBottom: 6 }}>Antenas RFID</div>
+          {antennas.length === 0 && (
+            <div style={{ fontSize: 12, color: '#888', padding: '4px 0' }}>Sin antenas detectadas aún</div>
+          )}
           {antennas.map(a => (
             <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
               <div style={{ ...s.antDot, background: a.status === 'Activa' ? '#1D9E75' : '#E24B4A' }} />

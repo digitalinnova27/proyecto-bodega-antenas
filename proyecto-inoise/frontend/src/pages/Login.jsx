@@ -672,9 +672,34 @@ function SetupScreen({ onDone, startAtConnect = false }) {
 }
 
 /* ─── Pantalla principal de Login ───────────────────────────────────────── */
+/* ── Auto-login de desarrollo ────────────────────────────────────────────
+ * Solo para agilizar la revisión mientras se desarrolla: guarda usuario y
+ * contraseña en localStorage y entra directo al Dashboard al abrir la app,
+ * sin pasar por la pantalla de login. `import.meta.env.DEV` es `false` en
+ * el build de producción (npm run build / electron:build), así que este
+ * bloque queda fuera del bundle final — nunca llega al .exe del cliente. */
+const DEV_AUTOLOGIN_KEY = 'inoise_dev_autologin'
+
 export default function Login() {
   const { login, loginPin, loadUsers, hasAnyUsers, loginUsers } = useAuth()
   const navigate = useNavigate()
+
+  // ── Dev auto-login: si hay credenciales guardadas, entra sin mostrar el login ──
+  const [rememberDev, setRememberDev] = useState(false)
+  const devAutoLoginTried = useRef(false)
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    if (devAutoLoginTried.current) return
+    const saved = localStorage.getItem(DEV_AUTOLOGIN_KEY)
+    if (!saved) return
+    devAutoLoginTried.current = true
+    try {
+      const { username: u, password: p } = JSON.parse(saved)
+      login(u, p).then(res => { if (res.ok) navigate('/dashboard') })
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Config leída síncronamente al montar (antes del primer render)
   const [appCfg] = useState(() => {
@@ -714,6 +739,18 @@ export default function Login() {
   //  3. Modo cliente → ir directo a login (el server ya tiene usuarios)
   //  4. Modo servidor → firstRun si no hay usuarios, login si hay
   useEffect(() => {
+    // Sin puente de Electron (window.api) → esto es un navegador normal
+    // accediendo directo a la URL (acceso "web"), no la app de escritorio.
+    // No hay "modo servidor/cliente" que elegir acá: el navegador solo
+    // habla con el backend que sirve esta página. La pantalla de
+    // "Configuración inicial" depende 100% de IPC (window.api.saveConfig),
+    // así que sin ella queda en loop infinito — la saltamos por completo.
+    if (!window.api) {
+      if (hasAnyUsers === null) return // cargando
+      setPhase(hasAnyUsers ? 'login' : 'firstRun')
+      return
+    }
+
     const cfg = window.api?.getConfig?.() || {}
 
     // Primera ejecución: aún no eligió modo
@@ -770,6 +807,11 @@ export default function Login() {
     if (!isClientMode && res.user.role !== selectedRole) {
       setLoginError('El usuario no corresponde al perfil seleccionado')
       return
+    }
+    // Dev: guardar credenciales para saltarse el login la próxima vez
+    // (ver DEV_AUTOLOGIN_KEY arriba — nunca corre en producción)
+    if (import.meta.env.DEV && rememberDev) {
+      localStorage.setItem(DEV_AUTOLOGIN_KEY, JSON.stringify({ username, password }))
     }
     navigate('/dashboard')
   }
@@ -1011,9 +1053,36 @@ export default function Login() {
                   {loginError}
                 </p>
               )}
+              {/* Solo en desarrollo (npm run electron:dev) — no aparece en el .exe */}
+              {import.meta.env.DEV && (
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                  color: 'rgba(255,255,255,0.5)', cursor: 'pointer', userSelect: 'none'
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={rememberDev}
+                    onChange={e => setRememberDev(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  Recordar sesión (dev) — entrar directo la próxima vez
+                </label>
+              )}
               <button onClick={handleLogin} disabled={loginLoading}>
                 {loginLoading ? 'Verificando…' : 'Ingresar'}
               </button>
+              {import.meta.env.DEV && localStorage.getItem(DEV_AUTOLOGIN_KEY) && (
+                <button
+                  type="button"
+                  onClick={() => { localStorage.removeItem(DEV_AUTOLOGIN_KEY); window.location.reload() }}
+                  style={{
+                    background: 'none', border: 'none', padding: 0, marginTop: -6,
+                    color: 'rgba(255,255,255,0.35)', fontSize: 11, cursor: 'pointer', textDecoration: 'underline'
+                  }}
+                >
+                  Olvidar acceso rápido (dev)
+                </button>
+              )}
             </>
           )}
 

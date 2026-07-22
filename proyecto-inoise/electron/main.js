@@ -166,6 +166,17 @@ let viteProcess = null
 // Detecta si estamos en producción (con build) o desarrollo
 const isDev = !app.isPackaged
 
+// ── Modo headless ────────────────────────────────────────────────────────
+// Electron sigue siendo necesario como proceso host (better-sqlite3 está
+// compilado contra el Node de Electron via electron-rebuild, y app.getPath()
+// es una API exclusiva de Electron — el backend no puede arrancar con "node"
+// a secas). Pero no hace falta que abra ninguna ventana: con --headless se
+// inicializa la base de datos + el servidor Express/Socket.io + Vite igual
+// que siempre, y se omite por completo crear el splash y la ventana
+// principal. El resultado: se trabaja 100% desde el navegador
+// (http://localhost:5173 en dev), sin ninguna ventana de Electron visible.
+const isHeadless = process.argv.includes('--headless')
+
 function createSplash() {
   splashWindow = new BrowserWindow({
     width: 440,
@@ -284,7 +295,7 @@ function waitForVite(url, retries = 40, delay = 1000) {
 let serverInfo = null
 
 app.whenReady().then(async () => {
-  createSplash()
+  if (!isHeadless) createSplash()
 
   // Leer configuración persistida para saber si este equipo es servidor o cliente
   const appConfig = readConfig()
@@ -445,6 +456,19 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.error('No se pudo conectar a Vite:', e.message)
     }
+  }
+
+  if (isHeadless) {
+    // Sin ventana: el backend (SQLite + Express + Socket.io, puerto 3005) y
+    // Vite (puerto 5173) ya están arriba. Se trabaja 100% desde el navegador.
+    const ip = getLocalIP()
+    console.log('')
+    console.log('[iNOISE] Modo headless — sin ventana de Electron.')
+    console.log(`[iNOISE] Abre en tu navegador:  http://localhost:5173`)
+    console.log(`[iNOISE] Desde otro equipo:      http://${ip}:5173`)
+    console.log('[iNOISE] (Ctrl+C en esta terminal para cerrar todo)')
+    console.log('')
+    return
   }
 
   // Mínimo 2s de splash para mostrar la pantalla de carga

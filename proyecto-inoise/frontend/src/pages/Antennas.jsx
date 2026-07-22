@@ -39,42 +39,30 @@ const flagDuplicateScans = (scans) => {
 }
 
 export default function Antennas() {
-  const { isConnected: bridgeUp, lastScan, lastReadAt } = useRfidSocket()
+  const { isConnected: bridgeUp } = useRfidSocket()
   const { products, epcMap, events, rentals, opStates } = useInventory()
 
-  const [stats, setStats] = React.useState({
-    totalScans: 0,
-    uniqueTags: 0,
-    lastSignal: null,
-    lastScanTime: null,
-    recentScans: []
-  })
+  // Lista dinámica de antenas — no hay un número fijo. El bridge detecta
+  // sola cualquier antena que mande un paquete UDP (identificada por su IP)
+  // y expone el estado de todas en /api/antennas. Acá simplemente se
+  // refleja lo que el bridge reporta: si el cliente conecta 8 en vez de 4,
+  // aparecen 8 filas sin tocar nada de este código.
+  const [antennaList, setAntennaList] = React.useState([])
 
-  // Cargar stats del bridge cada 2 segundos
   React.useEffect(() => {
-    const fetchStats = async () => {
+    const fetchAntennas = async () => {
       try {
-        const res = await fetch('http://localhost:3002/api/stats')
+        const res = await fetch('http://localhost:3002/api/antennas')
         const data = await res.json()
-        setStats(data)
+        setAntennaList(Array.isArray(data.antennas) ? data.antennas : [])
       } catch (e) { }
     }
-    fetchStats()
-    const interval = setInterval(fetchStats, 2000)
+    fetchAntennas()
+    const interval = setInterval(fetchAntennas, 2000)
     return () => clearInterval(interval)
   }, [])
 
-  // "isConnected" del hook solo dice que el WebSocket llegó al bridge —
-  // y el bridge corre siempre dentro de Electron, conectado o no haya
-  // ninguna antena física enchufada al PC. La única señal de que existe
-  // hardware real es haber recibido al menos un paquete UDP desde que se
-  // abrió la app (lastReadAt). Sin esto, "Activa" se mostraba en verde
-  // aunque no hubiera ningún lector conectado.
-  const RECENT_MS = 15000
-  const recentlyActive = stats.lastScanTime
-    ? (Date.now() - new Date(stats.lastScanTime).getTime()) < RECENT_MS
-    : false
-  const isConnected = bridgeUp && (lastReadAt !== null || recentlyActive)
+  const activeCount = antennaList.filter(a => a.active).length
 
   // Modal "Revisar lecturas"
   const [reviewAntenna, setReviewAntenna] = React.useState(null)
@@ -158,28 +146,25 @@ export default function Antennas() {
     return Math.round(((clamped + 90) / 60) * 100)
   }
 
-  const signalPct = rssiToPct(stats.lastSignal)
-  const hasRssi = signalPct !== null
-  const signalLabel = hasRssi
-    ? `${signalPct}% (${stats.lastSignal} dBm)`
-    : isConnected ? 'Conectada' : 'Sin conexión'
-
-  const antennas = [
-    {
-      id: 1,
-      name: 'Antena 1 — VF-747 / VA-991R 9dBi',
-      active: isConnected,
-      signalPct: isConnected ? (hasRssi ? signalPct : 100) : 0,
+  // Construir la fila de cada antena real a partir de lo que reporta el
+  // bridge — sin placeholders ni cantidad fija.
+  const antennas = antennaList.map((a, idx) => {
+    const signalPct = rssiToPct(a.lastSignal)
+    const hasRssi = signalPct !== null
+    return {
+      id: a.id,
+      ip: a.ip,
+      name: `Antena ${idx + 1} — ${a.ip}`,
+      active: a.active,
+      signalPct: a.active ? (hasRssi ? signalPct : 100) : 0,
       hasRssi,
-      signalLabel,
-      lastRead: fmtDate(stats.lastScanTime),
-      totalScans: stats.totalScans,
-      uniqueTags: stats.uniqueTags,
-      recentScans: stats.recentScans
-    },
-    { id: 2, name: 'Antena 2', active: false, signalPct: 0, signalLabel: '0%', lastRead: '—', totalScans: 0, uniqueTags: 0, recentScans: [] },
-    { id: 3, name: 'Antena 3', active: false, signalPct: 0, signalLabel: '0%', lastRead: '—', totalScans: 0, uniqueTags: 0, recentScans: [] },
-  ]
+      signalLabel: hasRssi ? `${signalPct}% (${a.lastSignal} dBm)` : (a.active ? 'Conectada' : 'Sin conexión'),
+      lastRead: fmtDate(a.lastSeenAt),
+      totalScans: a.totalScans,
+      uniqueTags: a.uniqueTags,
+      recentScans: a.recentScans || []
+    }
+  })
 
   // ── Render de una fila de scan ────────────────────────────────────────
   const renderScanRow = (scan, i) => {
@@ -234,13 +219,21 @@ export default function Antennas() {
         <WifiIcon /> Lectores RFID
       </Typography>
 
-      <Alert severity={isConnected ? 'success' : bridgeUp ? 'warning' : 'error'} sx={{ mb: 2 }} icon={<WifiIcon />}>
-        {isConnected
-          ? '🟢 Lector VF-747 conectado — recibiendo lecturas reales'
+      <Alert severity={activeCount > 0 ? 'success' : bridgeUp ? 'warning' : 'error'} sx={{ mb: 2 }} icon={<WifiIcon />}>
+        {activeCount > 0
+          ? `🟢 ${activeCount} de ${antennaList.length} antena${antennaList.length !== 1 ? 's' : ''} conectada${activeCount !== 1 ? 's' : ''} — recibiendo lecturas reales`
           : bridgeUp
-            ? '⚪ Bridge activo, pero no se detecta ninguna antena física enviando datos'
+            ? (antennaList.length > 0
+                ? '⚪ Bridge activo, pero ninguna antena está enviando datos en este momento'
+                : '⚪ Bridge activo, esperando la primera lectura de alguna antena')
             : '⚫ Bridge RFID desconectado'}
       </Alert>
+
+      {antennaList.length === 0 && (
+        <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+          Aún no se detecta ninguna antena. En cuanto una antena conectada al switch mande su primera lectura, aparecerá acá automáticamente — no hace falta configurar cuántas hay.
+        </Alert>
+      )}
 
       {antennas.map((ant) => (
         <Paper key={ant.id} sx={{
@@ -257,7 +250,9 @@ export default function Antennas() {
               <Box>
                 <Typography variant="body1" fontWeight={600}>{ant.name}</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {ant.active ? 'UDP puerto 6001 · WS puerto 3001 · HTTP puerto 3002' : 'Sin conexión'}
+                  {ant.active
+                    ? `IP ${ant.ip} · recibiendo lecturas`
+                    : ant.lastRead !== '—' ? `IP ${ant.ip} · última vez ${ant.lastRead}` : `IP ${ant.ip} · sin conexión`}
                 </Typography>
               </Box>
             </Box>
