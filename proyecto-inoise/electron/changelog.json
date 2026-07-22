@@ -1,4 +1,10 @@
 {
+  "1.1.0": [
+    "Fix crítico: la app instalada ya no muestra un error de texto al abrirse",
+    "Fix: Asistente iNOISE ahora sí aparece en el chat de la app instalada",
+    "Fix: las actualizaciones se publican directamente sin paso manual en GitHub",
+    "Mejoras de estabilidad y correcciones de build"
+  ],
   "1.0.9": [
     "Fix: Asistente iNOISE ahora aparece correctamente en el chat",
     "Fix: todos los cambios de la v1.0.8 incluidos correctamente"

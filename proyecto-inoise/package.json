@@ -1,6 +1,6 @@
 {
   "name": "rfid-dashboard-final",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -51,7 +51,8 @@
     "publish": {
       "provider": "github",
       "owner": "digitalinnova27",
-      "repo": "proyecto-bodega-antenas"
+      "repo": "proyecto-bodega-antenas",
+      "releaseType": "release"
     },
     "directories": {
       "output": "dist-electron"
