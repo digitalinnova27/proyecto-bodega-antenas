@@ -856,7 +856,7 @@ const ForceDialogExternal = React.memo(function ForceDialogExternal({ open, targ
       </DialogActions>
     </Dialog>
   )
-}
+})
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ForceLogDialog — muestra el historial de cierres forzados de un evento

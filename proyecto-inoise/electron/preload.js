@@ -62,5 +62,9 @@ contextBridge.exposeInMainWorld('api', {
   // Versión de la app
   getVersion: () => ipcRenderer.invoke('app:version'),
   // Progreso de descarga de actualización (pct: 0-100, o -1 cuando termina)
-  onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_e, pct) => cb(pct))
+  onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_e, pct) => cb(pct)),
+  // Update disponible: consulta al montar + escucha eventos futuros
+  getPendingUpdate:     () => ipcRenderer.invoke('app:get-pending-update'),
+  getFirstRunChangelog: () => ipcRenderer.invoke('app:get-pending-changelog'),
+  onUpdateAvailable: (cb) => ipcRenderer.on('app:update-available', (_e, info) => cb(info))
 })

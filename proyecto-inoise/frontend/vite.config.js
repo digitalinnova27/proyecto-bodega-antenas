@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  publicDir: 'frontend/public',
+  build: {
+    outDir: 'frontend/dist',
+    emptyOutDir: true
+  },
   server: {
     host: '0.0.0.0',   // exponer en red local (no solo localhost)
     port: 5173,

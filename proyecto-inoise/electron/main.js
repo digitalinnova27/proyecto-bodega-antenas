@@ -95,6 +95,8 @@ function registerIpcHandlers() {
 // ── IPC de configuración de modo (sync para que el renderer pueda leerlo en
 //    tiempo de módulo, antes del primer render) ─────────────────────────────
 ipcMain.handle('app:version', () => app.getVersion())
+ipcMain.handle('app:get-pending-update', () => pendingUpdate)
+ipcMain.handle('app:get-pending-changelog', () => pendingChangelog)
 ipcMain.on('get-config', (e) => { e.returnValue = readConfig() })
 
 ipcMain.handle('save-config', (_e, cfg) => {
@@ -162,6 +164,8 @@ ipcMain.handle('discover-server', () => {
 let mainWindow
 let splashWindow
 let viteProcess = null
+let pendingUpdate = null     // Guarda info del update disponible para que el renderer la consulte al montar
+let pendingChangelog = null  // Novedades de la versión actual (primer arranque tras actualizar)
 
 // Detecta si estamos en producción (con build) o desarrollo
 const isDev = !app.isPackaged
@@ -295,6 +299,30 @@ function waitForVite(url, retries = 40, delay = 1000) {
 let serverInfo = null
 
 app.whenReady().then(async () => {
+  // ── Detectar primer arranque con nueva versión ────────────────────────────
+  // Compara la versión actual con la última vista (version-seen.json en userData).
+  // Si difieren, carga el changelog de esta versión y lo deja disponible para
+  // que el renderer lo muestre en la campanita al montar. Luego actualiza el archivo.
+  try {
+    const versionSeenPath = path.join(app.getPath('userData'), 'version-seen.json')
+    const currentVersion = app.getVersion()
+    let lastSeen = null
+    if (fs.existsSync(versionSeenPath)) {
+      lastSeen = JSON.parse(fs.readFileSync(versionSeenPath, 'utf8')).version
+    }
+    if (lastSeen !== currentVersion) {
+      const clPath = path.join(__dirname, 'changelog.json')
+      if (fs.existsSync(clPath)) {
+        const cl = JSON.parse(fs.readFileSync(clPath, 'utf8'))
+        const changes = cl[currentVersion] || []
+        if (changes.length) pendingChangelog = { version: currentVersion, changes, type: 'changelog' }
+      }
+      fs.writeFileSync(versionSeenPath, JSON.stringify({ version: currentVersion }))
+    }
+  } catch (e) {
+    console.error('[FirstRun] Error al detectar versión:', e.message)
+  }
+
   if (!isHeadless) createSplash()
 
   // Leer configuración persistida para saber si este equipo es servidor o cliente
@@ -486,12 +514,29 @@ app.whenReady().then(async () => {
 
       // ── Listeners ANTES de checkForUpdates (evita race condition) ──────
       autoUpdater.on('update-available', (info) => {
+        // Leer changelog y guardar para que el renderer lo consulte
+        let changes = []
+        try {
+          const clPath = path.join(__dirname, 'changelog.json')
+          if (fs.existsSync(clPath)) {
+            const cl = JSON.parse(fs.readFileSync(clPath, 'utf8'))
+            changes = cl[info.version] || []
+          }
+        } catch {}
+
+        pendingUpdate = { version: info.version, changes, type: 'update' }
+
+        // Enviar al renderer (para la campanita de notificaciones)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('app:update-available', pendingUpdate)
+        }
+
         dialog.showMessageBox(mainWindow, {
           type: 'info',
           title: 'Nueva versión disponible',
-          message: `iNOISE Control Bodega v${info.version}`,
-          detail: `Hay una nueva versión disponible.\n\n¿Deseas descargar e instalar la actualización ahora?\n\nPuedes seguir usando la aplicación mientras se descarga en segundo plano.`,
-          buttons: ['Actualizar ahora', 'Más tarde'],
+          message: `Nueva versión ${info.version} disponible`,
+          detail: `iNOISE Control Bodega tiene una actualización lista para descargar.\n\n¿Deseas descargar e instalar ahora?\n\nPuedes seguir usando la aplicación mientras se descarga en segundo plano.`,
+          buttons: ['Descargar ahora', 'Más tarde'],
           defaultId: 0,
           cancelId: 1
         }).then(({ response }) => {

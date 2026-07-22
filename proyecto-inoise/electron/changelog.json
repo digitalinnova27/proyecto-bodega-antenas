@@ -1,6 +1,18 @@
 {
+  "1.0.6": [
+    "Al abrir la app por primera vez tras actualizar, la campanita muestra las novedades de la nueva versión",
+    "El modal de novedades distingue entre 'actualización disponible' y 'novedades de la versión instalada'",
+    "Fix: la campanita ya no queda vacía después de instalar una actualización"
+  ],
+  "1.0.5": [
+    "Notificación en la campanita al detectar una nueva versión disponible",
+    "Modal con detalle completo de cambios al hacer clic en la notificación",
+    "Opción de guardar los cambios de la actualización en formato PDF",
+    "PDF con el estilo y colores de iNOISE generado automáticamente",
+    "Texto del diálogo de actualización mejorado y más claro"
+  ],
   "1.0.4": [
-    "Diálogo de actualización en español con opción Sí/No",
+    "Diálogo de actualización en español con botones Sí/No",
     "El usuario decide cuándo descargar e instalar la actualización",
     "Resumen de novedades al finalizar la descarga",
     "Versión visible en el sidebar de la aplicación",

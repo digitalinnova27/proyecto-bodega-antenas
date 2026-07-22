@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import {
   Box,
@@ -49,6 +49,7 @@ import { useAuth } from './context/AuthContext'
 import { RfidSocketProvider } from './context/RfidSocketContext'
 import { HelpTour, HelpButton } from './components/HelpTour'
 import { AVATARS } from './pages/Login'
+import UpdateModal from './pages/UpdateModal'
 
 // Severidad → colores del tema (theme.js / paleta usada en Dashboard.jsx)
 const NOTIF_COLORS = {
@@ -88,6 +89,26 @@ export default function App() {
   const { notifications, unread, markSeen, markAllSeen, antennaStatus } = useNotifications()
   const { refreshData, isRefreshing } = useInventory()
   const { totalUnread } = useChat()
+
+  const [updateInfo, setUpdateInfo] = useState(null)
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const [updateDismissed, setUpdateDismissed] = useState(false)
+
+  useEffect(() => {
+    // Consultar si ya había un update de versión superior detectado antes de que React montara
+    window.api?.getPendingUpdate?.().then(info => {
+      if (info) setUpdateInfo(info)
+    }).catch(() => {})
+    // Novedades del primer arranque con esta versión (type: 'changelog')
+    // Solo se aplica si no hay ya un update superior pendiente
+    window.api?.getFirstRunChangelog?.().then(info => {
+      if (info) setUpdateInfo(prev => prev || info)
+    }).catch(() => {})
+    // Escuchar updates futuros (versión superior disponible)
+    window.api?.onUpdateAvailable?.((info) => setUpdateInfo(info))
+  }, [])
+
+  const totalUnreadBadge = unread + (updateInfo && !updateDismissed ? 1 : 0)
 
   const openNotif = (e) => setAnchorEl(e.currentTarget)
 
@@ -145,7 +166,7 @@ export default function App() {
                     </Box>
 
                     <IconButton color="inherit" onClick={openNotif}>
-                      <Badge badgeContent={unread} color="error">
+                      <Badge badgeContent={totalUnreadBadge} color="error">
                         <NotificationsIcon />
                       </Badge>
                     </IconButton>
@@ -204,7 +225,42 @@ export default function App() {
                           )
                         })()}
 
-                        {notifications.length === 0 && (
+                        {/* Notificación de actualización disponible */}
+                        {updateInfo && !updateDismissed && (
+                          <Box
+                            onClick={() => { setUpdateModalOpen(true); closeNotif() }}
+                            sx={{
+                              display: 'flex', alignItems: 'center', gap: 1.5,
+                              px: 2, py: 1.5, cursor: 'pointer',
+                              borderBottom: '0.5px solid rgba(102,252,241,0.12)',
+                              bgcolor: 'rgba(102,252,241,0.05)',
+                              '&:hover': { bgcolor: 'rgba(102,252,241,0.1)' }
+                            }}
+                          >
+                            <Box sx={{
+                              width: 30, height: 30, flexShrink: 0, borderRadius: '50%',
+                              bgcolor: 'rgba(102,252,241,0.15)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: 15
+                            }}>🆕</Box>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography variant="body2" fontWeight={700} sx={{ color: '#66FCF1' }}>
+                                {updateInfo.type === 'changelog'
+                                  ? `Novedades v${updateInfo.version}`
+                                  : `Nueva versión ${updateInfo.version}`}
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: '#94a3b8' }}>
+                                Haz clic para ver los cambios
+                              </Typography>
+                            </Box>
+                            <Box
+                              onClick={(e) => { e.stopPropagation(); setUpdateDismissed(true) }}
+                              sx={{ color: '#64748b', fontSize: 16, cursor: 'pointer', px: 0.5, '&:hover': { color: '#94a3b8' } }}
+                            >✕</Box>
+                          </Box>
+                        )}
+
+                        {notifications.length === 0 && (updateDismissed || !updateInfo) && (
                           <Box sx={{ px: 2, py: 4, textAlign: 'center' }}>
                             <Typography variant="body2" sx={{ color: '#C5C6C7', fontWeight: 500 }}>
                               Bandeja de entrada vacía
@@ -402,6 +458,13 @@ export default function App() {
         <ChatNotification />
       </>
     )}
+
+    {/* Modal de actualización */}
+    <UpdateModal
+      open={updateModalOpen}
+      info={updateInfo}
+      onClose={() => setUpdateModalOpen(false)}
+    />
 
     </RfidSocketProvider>
   )
