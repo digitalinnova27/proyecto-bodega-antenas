@@ -1,4 +1,10 @@
 {
+  "1.0.8": [
+    "Asistente iNOISE en el chat: responde preguntas frecuentes sobre el sistema",
+    "Chat rediseñado estilo WhatsApp Web con emojis y referencias a eventos",
+    "Opción para guardar credenciales en el inicio de sesión",
+    "Mejoras en Dashboard, Usuarios y sección de Antenas"
+  ],
   "1.0.7": [
     "Agente de IA integrado en el chat del equipo",
     "Mejoras en el panel de chat",
