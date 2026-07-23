@@ -720,6 +720,13 @@ export default function Login() {
   const [selectedRole, setSelectedRole] = useState(null)
   const [loginMode, setLoginMode]   = useState('password') // 'password' | 'pin'
 
+  // Selector de operador: al elegir el rol "Operador" se muestra primero una
+  // grilla con cada operador creado (avatar + nombre), y recién al elegir
+  // una persona se decide si entra con contraseña o PIN (según lo que tenga
+  // configurado). Administrador no usa este selector — sigue siendo un
+  // formulario directo de usuario/contraseña como antes.
+  const [selectedOperator, setSelectedOperator] = useState(null)
+
   // Password mode
   const [username, setUsername]     = useState('')
   const [password, setPassword]     = useState('')
@@ -794,20 +801,51 @@ export default function Login() {
     setPinDigits('')
     setPinError('')
     setLoginMode('password')
+    setSelectedOperator(null)
+    setUsername('')
+    setPassword('')
     setTimeout(() => setLoginStep('credentials'), 300)
+  }
+
+  // Elegir una persona en la grilla de operadores. Si tiene PIN configurado
+  // arrancamos directo en modo PIN (más rápido); si no, en contraseña.
+  const handlePickOperator = (u) => {
+    setSelectedOperator(u)
+    setUsername(u.username)
+    setPassword('')
+    setLoginError('')
+    setPinDigits('')
+    setPinError('')
+    if (u.hasPin) {
+      setLoginMode('pin')
+      setPinUser(u)
+    } else {
+      setLoginMode('password')
+      setPinUser(null)
+    }
+  }
+
+  const handleBackToOperatorGrid = () => {
+    setSelectedOperator(null)
+    setPinUser(null)
+    setUsername('')
+    setPassword('')
+    setLoginError('')
+    setPinDigits('')
+    setPinError('')
+    setLoginMode('password')
   }
 
   const handleLogin = async () => {
     setLoginError('')
     setLoginLoading(true)
-    const res = await login(username, password)
+    // En modo cliente no validamos rol (solo existe el operador en este equipo).
+    // El rol esperado se valida DENTRO de login(), antes de guardar sesión,
+    // para que nunca llegue a autenticar globalmente si no coincide.
+    const expectedRole = isClientMode ? undefined : selectedRole
+    const res = await login(username, password, expectedRole)
     setLoginLoading(false)
     if (!res.ok) { setLoginError(res.error || 'Credenciales incorrectas'); return }
-    // En modo cliente no validamos rol (solo existe el operador en este equipo)
-    if (!isClientMode && res.user.role !== selectedRole) {
-      setLoginError('El usuario no corresponde al perfil seleccionado')
-      return
-    }
     // Dev: guardar credenciales para saltarse el login la próxima vez
     // (ver DEV_AUTOLOGIN_KEY arriba — nunca corre en producción)
     if (import.meta.env.DEV && rememberDev) {
@@ -841,14 +879,22 @@ export default function Login() {
     setPinDigits('')
     setPinError('')
     setLoginMode('password')
+    setSelectedOperator(null)
   }
 
   const switchMode = (mode) => {
     setLoginMode(mode)
-    setPinUser(null)
     setPinDigits('')
     setPinError('')
     setLoginError('')
+    // Operador con persona ya elegida: mantener a esa persona al cambiar de
+    // modo (no volver a mostrar ningún selector). Admin sigue mostrando su
+    // propia grilla de PIN al cambiar a modo PIN, como antes.
+    if (selectedRole === 'operador' && selectedOperator) {
+      setPinUser(mode === 'pin' ? selectedOperator : null)
+    } else {
+      setPinUser(null)
+    }
   }
 
   // ─── Loading ───────────────────────────────────────────────────────────
@@ -945,6 +991,8 @@ export default function Login() {
   // ─── Login normal ──────────────────────────────────────────────────────
   // Usuarios con PIN configurado y del rol seleccionado (pre-auth, lista pública)
   const pinUsers = loginUsers.filter(u => u.role === selectedRole && u.hasPin)
+  // Todos los operadores (con o sin PIN) — para la grilla de selección de persona
+  const operatorUsers = loginUsers.filter(u => u.role === 'operador')
 
   const modeToggleStyle = (active) => ({
     flex: 1, padding: '7px 0', borderRadius: 6, border: 'none', fontSize: 12,
@@ -991,38 +1039,135 @@ export default function Login() {
           )}
         </div>
 
-        {/* Credentials panel — width expands in PIN mode */}
+        {/* Credentials panel — width expands in PIN mode y en la grilla de operadores */}
         <div
           className={`credentials ${loginStep === 'credentials' ? 'show' : ''}`}
-          style={loginMode === 'pin' ? { width: 'min(320px, 88vw)' } : {}}
+          style={(loginMode === 'pin' || (selectedRole === 'operador' && !selectedOperator)) ? { width: 'min(320px, 88vw)' } : {}}
         >
-          {/* Selector de modo */}
-          <div style={{
-            display: 'flex', borderRadius: 8, background: 'rgba(255,255,255,0.07)',
-            padding: 3, gap: 3,
-            animation: 'none', opacity: 1, marginTop: 0, transform: 'none'
-          }}>
-            <button type="button" style={modeToggleStyle(loginMode === 'password')}
-              onClick={() => switchMode('password')}>
-              🔑 Contraseña
-            </button>
-            <button type="button" style={modeToggleStyle(loginMode === 'pin')}
-              onClick={() => switchMode('pin')}>
-              🔢 PIN rápido
-            </button>
-          </div>
+          {selectedRole === 'operador' && !selectedOperator ? (
+            /* ── Grilla: elegir la persona antes de decidir contraseña o PIN ── */
+            <div style={{ animation: 'none', opacity: 1, transform: 'none' }}>
+              <p style={{ textAlign: 'center', color: '#C5C6C7', fontSize: 12, margin: '4px 0 14px' }}>
+                Selecciona tu perfil
+              </p>
+              {operatorUsers.length === 0 ? (
+                <p style={{ textAlign: 'center', color: 'rgba(255,255,255,0.3)', fontSize: 12, margin: 0 }}>
+                  No hay operadores creados todavía
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
+                  {operatorUsers.map(u => {
+                    const av = AVATARS.find(a => a.id === u.avatar) || AVATARS[0]
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => handlePickOperator(u)}
+                        style={{
+                          position: 'relative',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center',
+                          gap: 5, padding: '10px 14px', borderRadius: 10,
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          background: 'rgba(255,255,255,0.05)',
+                          cursor: 'pointer', color: '#fff', minWidth: 78,
+                          animation: 'none', opacity: 1, marginTop: 0, transform: 'none',
+                          transition: 'background 0.15s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(102,252,241,0.1)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                      >
+                        {u.hasPin && (
+                          <span style={{
+                            position: 'absolute', top: 4, right: 6, fontSize: 9,
+                            color: '#66FCF1', background: 'rgba(102,252,241,0.12)',
+                            borderRadius: 4, padding: '1px 4px', fontWeight: 700
+                          }}>
+                            PIN
+                          </span>
+                        )}
+                        <div style={{
+                          width: 44, height: 44, borderRadius: '50%', background: av.color,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 20
+                        }}>
+                          {av.emoji}
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 600 }}>{u.nombre}</span>
+                        <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)' }}>
+                          {u.cargo || u.username}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+          <>
+          {/* Encabezado con la persona ya elegida (solo flujo Operador) */}
+          {selectedRole === 'operador' && selectedOperator && (() => {
+            const av = AVATARS.find(a => a.id === selectedOperator.avatar) || AVATARS[0]
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, marginBottom: 14 }}>
+                <div style={{
+                  width: 76, height: 76, borderRadius: '50%', background: av.color,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36
+                }}>
+                  {av.emoji}
+                </div>
+                <p style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
+                  {selectedOperator.nombre} {selectedOperator.apellido}
+                </p>
+                <p style={{ margin: 0, fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>
+                  {selectedOperator.cargo || ''}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleBackToOperatorGrid}
+                  style={{
+                    marginTop: 6, background: 'none', border: 'none',
+                    color: 'rgba(255,255,255,0.38)', fontSize: 11,
+                    cursor: 'pointer', textDecoration: 'underline',
+                    animation: 'none', opacity: 1, transform: 'none', padding: 0
+                  }}
+                >
+                  ← Otro operador
+                </button>
+              </div>
+            )
+          })()}
+
+          {/* Selector de modo — oculto si es un operador sin PIN configurado (no hay nada que elegir) */}
+          {(selectedRole !== 'operador' || (selectedOperator && selectedOperator.hasPin)) && (
+            <div style={{
+              display: 'flex', borderRadius: 8, background: 'rgba(255,255,255,0.07)',
+              padding: 3, gap: 3,
+              animation: 'none', opacity: 1, marginTop: 0, transform: 'none'
+            }}>
+              <button type="button" style={modeToggleStyle(loginMode === 'password')}
+                onClick={() => switchMode('password')}>
+                🔑 Contraseña
+              </button>
+              <button type="button" style={modeToggleStyle(loginMode === 'pin')}
+                onClick={() => switchMode('pin')}>
+                🔢 PIN rápido
+              </button>
+            </div>
+          )}
 
           {/* ── Modo contraseña ── */}
           {loginMode === 'password' && (
             <>
-              <input
-                type="text"
-                placeholder="Usuario"
-                value={username}
-                onChange={e => { setUsername(e.target.value); setLoginError('') }}
-                onKeyDown={handleKeyDown}
-                autoComplete="off"
-              />
+              {!(selectedRole === 'operador' && selectedOperator) && (
+                <input
+                  type="text"
+                  placeholder="Usuario"
+                  value={username}
+                  onChange={e => { setUsername(e.target.value); setLoginError('') }}
+                  onKeyDown={handleKeyDown}
+                  autoComplete="off"
+                />
+              )}
               {/* Wrapper relativo para el botón ojo */}
               <div style={{ position: 'relative' }}>
                 <input
@@ -1148,8 +1293,11 @@ export default function Login() {
               ) : (
                 /* Numpad */
                 <>
-                  {/* Avatar del usuario seleccionado */}
-                  {(() => {
+                  {/* Avatar del usuario seleccionado — en el flujo Operador ya se
+                      muestra arriba (encabezado con "← Otro operador"), así que
+                      acá solo hace falta repetirlo para Administrador (que no
+                      tiene ese encabezado). */}
+                  {!(selectedRole === 'operador' && selectedOperator) && (() => {
                     const av = AVATARS.find(a => a.id === pinUser.avatar) || AVATARS[0]
                     return (
                       <div style={{
@@ -1197,6 +1345,8 @@ export default function Login() {
                 </>
               )}
             </div>
+          )}
+          </>
           )}
 
           {/* ── Escape al fondo del panel de credenciales ─────────────────

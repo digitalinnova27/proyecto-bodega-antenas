@@ -47,7 +47,6 @@ import Login from './pages/Login'
 
 import { useAuth } from './context/AuthContext'
 import { RfidSocketProvider } from './context/RfidSocketContext'
-import { HelpTour, HelpButton } from './components/HelpTour'
 import { AVATARS } from './pages/Login'
 
 // Severidad → colores del tema (theme.js / paleta usada en Dashboard.jsx)
@@ -81,7 +80,6 @@ export default function App() {
   const navigate = useNavigate()
 
   const [open, setOpen] = React.useState(true)
-  const [openTour, setOpenTour] = React.useState(false)
   const [anchorEl, setAnchorEl] = React.useState(null)
   const [chatOpen, setChatOpen] = React.useState(false)
 
@@ -138,11 +136,6 @@ export default function App() {
                     >
                       <MenuIcon />
                     </IconButton>
-
-                    {/* Margen para separar del MenuIcon — más visible cuando el sidebar está colapsado */}
-                    <Box sx={{ ml: 2.5 }}>
-                      <HelpButton onClick={() => setOpenTour(true)} />
-                    </Box>
 
                     <IconButton color="inherit" onClick={openNotif}>
                       <Badge badgeContent={unread} color="error">

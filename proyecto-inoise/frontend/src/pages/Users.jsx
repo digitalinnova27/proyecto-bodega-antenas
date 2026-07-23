@@ -20,10 +20,11 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord'
 import LockResetIcon from '@mui/icons-material/LockReset'
+import DialpadIcon from '@mui/icons-material/Dialpad'
 import { useAuth } from '../context/AuthContext'
 import { useInventory } from '../context/InventoryContext'
 import { api } from '../lib/api'
-import { AVATARS } from './Login'
+import { AVATARS, PinPad } from './Login'
 
 /* ─── Diálogo: restablecer contraseña de un usuario (solo admin) ─────────
  * Usa updateUser(id, {}, newPassword) — ya soportado por el backend
@@ -93,6 +94,87 @@ function ResetPasswordDialog({ open, user, onClose, onSuccess }) {
         <Button onClick={handleSubmit} variant="contained" disabled={loading}>
           {loading ? 'Guardando…' : 'Guardar'}
         </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+/* ─── Diálogo: configurar/cambiar el PIN de un usuario (solo admin) ──────
+ * A diferencia del auto-servicio de Ajustes (donde cada usuario configura
+ * su propio PIN), esto le permite a un administrador asignarle un PIN a
+ * cualquier operador directamente — útil porque hoy no hay otra forma de
+ * que alguien use el login rápido por PIN sin antes haber iniciado sesión
+ * con contraseña para configurarlo él mismo. */
+function SetPinDialog({ open, user, onClose, onSuccess }) {
+  const { setUserPin } = useAuth()
+  // phase: 'enter' | 'confirm'
+  const [phase, setPhase] = React.useState('enter')
+  const [firstPin, setFirstPin] = React.useState('')
+  const [digits, setDigits] = React.useState('')
+  const [error, setError] = React.useState('')
+  const [loading, setLoading] = React.useState(false)
+
+  React.useEffect(() => {
+    if (open) {
+      setPhase('enter')
+      setFirstPin('')
+      setDigits('')
+      setError('')
+      setLoading(false)
+    }
+  }, [open])
+
+  const handleFirst = (val) => {
+    setFirstPin(val)
+    setDigits('')
+    setPhase('confirm')
+  }
+
+  const handleConfirm = async (val) => {
+    if (val !== firstPin) {
+      setError('Los PIN no coinciden. Inténtalo de nuevo.')
+      setLoading(true)
+      setTimeout(() => {
+        setFirstPin('')
+        setDigits('')
+        setError('')
+        setLoading(false)
+        setPhase('enter')
+      }, 1400)
+      return
+    }
+    setLoading(true)
+    setError('')
+    const res = await setUserPin(user.id, val)
+    setLoading(false)
+    if (!res?.ok) { setError(res?.error || 'No se pudo guardar el PIN'); setDigits(''); return }
+    onSuccess()
+  }
+
+  if (!user) return null
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>{user.hasPin ? 'Cambiar PIN' : 'Configurar PIN'}</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {phase === 'enter'
+            ? <>Nuevo PIN de 4 dígitos para <strong>{fullName(user)}</strong> (@{user.username}). Lo usará para el ingreso rápido.</>
+            : 'Repite el mismo PIN para confirmar.'}
+        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+          <PinPad
+            key={phase}
+            value={digits}
+            onChange={setDigits}
+            onSubmit={phase === 'enter' ? handleFirst : handleConfirm}
+            disabled={loading}
+            error={error}
+          />
+        </Box>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={loading}>Cancelar</Button>
       </DialogActions>
     </Dialog>
   )
@@ -512,6 +594,8 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
 
   const [resetOpen, setResetOpen] = React.useState(false)
   const [resetOk, setResetOk]     = React.useState(false)
+  const [pinOpen, setPinOpen]     = React.useState(false)
+  const [pinOk, setPinOk]         = React.useState(false)
 
   /* Actividad atribuida a este usuario */
   const myEvents   = eventHistory.filter(e => e.closedBy === name || e.closedBy === user.username)
@@ -579,16 +663,28 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
                   size="small" color="error" variant="outlined" />
               )}
               {viewerIsAdmin && (
-                <Tooltip title="Restablecer contraseña">
-                  <Button
-                    size="small"
-                    startIcon={<LockResetIcon sx={{ fontSize: 16 }} />}
-                    onClick={() => setResetOpen(true)}
-                    sx={{ ml: 'auto', fontSize: 12, textTransform: 'none' }}
-                  >
-                    Restablecer contraseña
-                  </Button>
-                </Tooltip>
+                <Box sx={{ display: 'flex', gap: 0.5, ml: 'auto' }}>
+                  <Tooltip title="Restablecer contraseña">
+                    <Button
+                      size="small"
+                      startIcon={<LockResetIcon sx={{ fontSize: 16 }} />}
+                      onClick={() => setResetOpen(true)}
+                      sx={{ fontSize: 12, textTransform: 'none' }}
+                    >
+                      Restablecer contraseña
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title={user.hasPin ? 'Cambiar PIN' : 'Configurar PIN'}>
+                    <Button
+                      size="small"
+                      startIcon={<DialpadIcon sx={{ fontSize: 16 }} />}
+                      onClick={() => setPinOpen(true)}
+                      sx={{ fontSize: 12, textTransform: 'none' }}
+                    >
+                      {user.hasPin ? 'Cambiar PIN' : 'Configurar PIN'}
+                    </Button>
+                  </Tooltip>
+                </Box>
               )}
             </Box>
 
@@ -659,6 +755,19 @@ function UserProfile({ user, isOnline, eventHistory, rentalHistory, purchaseHist
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
         <Alert severity="success" onClose={() => setResetOk(false)} sx={{ width: '100%' }}>
           Contraseña actualizada. Avísale al usuario que ya puede iniciar sesión con la nueva.
+        </Alert>
+      </Snackbar>
+
+      <SetPinDialog
+        open={pinOpen}
+        user={user}
+        onClose={() => setPinOpen(false)}
+        onSuccess={() => { setPinOpen(false); setPinOk(true) }}
+      />
+      <Snackbar open={pinOk} autoHideDuration={4000} onClose={() => setPinOk(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+        <Alert severity="success" onClose={() => setPinOk(false)} sx={{ width: '100%' }}>
+          PIN configurado. Ya puede usar el ingreso rápido por PIN.
         </Alert>
       </Snackbar>
 

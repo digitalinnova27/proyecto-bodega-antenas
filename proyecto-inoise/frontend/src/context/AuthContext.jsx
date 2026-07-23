@@ -70,10 +70,21 @@ export function AuthProvider({ children }) {
   }, [loadUsers])
 
   // ── Login con contraseña ───────────────────────────────────────────────────
-  const login = useCallback(async (username, password) => {
+  // expectedRole (opcional): si se pasa, valida que el usuario tenga ese rol
+  // ANTES de guardar token/sesión. Esto es clave — App.jsx decide qué mostrar
+  // (login vs. app completa) según currentUser/role en este contexto, así
+  // que si primero autenticábamos y recién después revisábamos el rol, la
+  // app ya había cambiado a la vista completa por una fracción de segundo
+  // (ej. un Administrador entrando desde la tarjeta "Operador" alcanzaba a
+  // ver el dashboard antes de que el chequeo posterior cerrara la sesión).
+  // Validar antes de comprometer el estado evita ese parpadeo por completo.
+  const login = useCallback(async (username, password, expectedRole) => {
     try {
       const res = await api.post('/api/auth/login', { username, password })
       if (res.ok && res.data && res.token) {
+        if (expectedRole && res.data.role !== expectedRole) {
+          return { ok: false, error: 'El usuario no corresponde al perfil seleccionado' }
+        }
         setToken(res.token)
         setCurrentUser(res.data)
         setSessionId(res.sessionId || null)
