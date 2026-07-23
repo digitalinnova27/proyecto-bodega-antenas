@@ -11,7 +11,6 @@ import {
   Tooltip
 } from '@mui/material'
 
-import MenuIcon from '@mui/icons-material/Menu'
 import NotificationsIcon from '@mui/icons-material/Notifications'
 import WifiIcon from '@mui/icons-material/Wifi'
 import WifiOffIcon from '@mui/icons-material/WifiOff'
@@ -125,18 +124,27 @@ export default function App() {
           element={
             <Box sx={{ display: 'flex' }}>
 
-              {/* ================= APP BAR ================= */}
-              <AppBar position="fixed" sx={{ backgroundColor: '#0B0C10' }}>
+              {/* ================= APP BAR =================
+                  IMPORTANTE: el AppBar tiene que dejar libre el ancho del
+                  sidebar (ml + width calc), si no se extiende por debajo de
+                  él. Como el Drawer permanente tiene z-index más alto que el
+                  AppBar por defecto en MUI, su propia cabecera (flecha de
+                  colapsar) queda dibujada ENCIMA de los íconos del AppBar en
+                  esa esquina — cortándolos a la mitad (bug reportado). */}
+              <AppBar
+                position="fixed"
+                sx={{
+                  backgroundColor: '#0B0C10',
+                  width: `calc(100% - ${open ? 240 : 72}px)`,
+                  ml: `${open ? 240 : 72}px`,
+                  transition: 'width 0.6s ease, margin-left 0.6s ease'
+                }}
+              >
                 <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
 
                   <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                    <IconButton
-                      color="inherit"
-                      onClick={() => setOpen(o => !o)}
-                    >
-                      <MenuIcon />
-                    </IconButton>
-
+                    {/* El ícono de menú (≡) se quitó: era redundante con la
+                        flecha propia del sidebar, que ya colapsa/expande. */}
                     <IconButton color="inherit" onClick={openNotif}>
                       <Badge badgeContent={unread} color="error">
                         <NotificationsIcon />
