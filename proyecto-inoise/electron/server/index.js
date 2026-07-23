@@ -390,6 +390,32 @@ app.get('/api/info', (req, res) => {
   res.json({ ok: true, ip: getLocalIP(), port: PORT, version: '2.0.0' })
 })
 
+// ── Rutas de personal (staff) ─────────────────────────────────────────────────
+// IMPORTANTE: deben registrarse ANTES del fallback SPA de abajo (app.get('*', ...)).
+// Express hace match de rutas en el orden en que se registran, así que cualquier
+// ruta GET definida después del comodín '*' nunca se alcanza (el comodín la
+// intercepta primero). Esto causaba que GET /api/staff devolviera el JSON
+// genérico { server: 'iNOISE', status: 'running' } del fallback en vez de la
+// lista real de personal.
+app.get('/api/staff', requireAuth, (_req, res) => {
+  res.json(safe(() => loadStaff()))
+})
+
+app.post('/api/staff', requireAuth, (req, res) => {
+  const { nombre, apellido, rut, telefono, cargo } = req.body
+  if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido requeridos' })
+  res.json(safe(() => createStaff({ nombre, apellido, rut, telefono, cargo })))
+})
+
+app.put('/api/staff/:id', requireAuth, (req, res) => {
+  const { nombre, apellido, rut, telefono, cargo, activo } = req.body
+  res.json(safe(() => { updateStaff(req.params.id, { nombre, apellido, rut, telefono, cargo, activo }); return true }))
+})
+
+app.delete('/api/staff/:id', requireAuth, (req, res) => {
+  res.json(safe(() => { deleteStaff(req.params.id); return true }))
+})
+
 // ── SPA fallback — todas las rutas no-API sirven el index.html de React ───────
 
 app.get('*', (req, res) => {
@@ -484,25 +510,5 @@ function startServer() {
     })
   })
 }
-
-// ── Rutas de personal (staff) ─────────────────────────────────────────────────
-app.get('/api/staff', requireAuth, (_req, res) => {
-  res.json(safe(() => loadStaff()))
-})
-
-app.post('/api/staff', requireAuth, (req, res) => {
-  const { nombre, apellido, rut, telefono, cargo } = req.body
-  if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido requeridos' })
-  res.json(safe(() => createStaff({ nombre, apellido, rut, telefono, cargo })))
-})
-
-app.put('/api/staff/:id', requireAuth, (req, res) => {
-  const { nombre, apellido, rut, telefono, cargo, activo } = req.body
-  res.json(safe(() => { updateStaff(req.params.id, { nombre, apellido, rut, telefono, cargo, activo }); return true }))
-})
-
-app.delete('/api/staff/:id', requireAuth, (req, res) => {
-  res.json(safe(() => { deleteStaff(req.params.id); return true }))
-})
 
 module.exports = { startServer, getLocalIP, PORT }

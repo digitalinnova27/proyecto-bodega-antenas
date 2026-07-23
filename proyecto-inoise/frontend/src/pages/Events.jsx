@@ -140,7 +140,7 @@ export default function Events() {
   const [staffList, setStaffList] = React.useState([])
 
   React.useEffect(() => {
-    api.get('/api/staff').then(r => setStaffList(r.data.data || r.data || [])).catch(() => {})
+    api.get('/api/staff').then(r => setStaffList((r && r.ok && Array.isArray(r.data)) ? r.data : [])).catch(() => {})
   }, [])
   const [assignCategory, setAssignCategory] = React.useState('')
   const [assignSkuSearch, setAssignSkuSearch] = React.useState('')

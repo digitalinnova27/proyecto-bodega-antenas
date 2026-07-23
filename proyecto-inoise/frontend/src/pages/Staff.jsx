@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../lib/api'
+import { useAuth } from '../context/AuthContext'
+import { useInventory } from '../context/InventoryContext'
 
 const EMPTY_FORM = { nombre: '', apellido: '', rut: '', telefono: '', cargo: '' }
 
@@ -14,12 +16,15 @@ function formatRut(value) {
 }
 
 export default function Staff() {
+  const { currentUser } = useAuth()
+  const { addAuditEntry } = useInventory()
   const [staff, setStaff]       = useState([])
   const [loading, setLoading]   = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing]   = useState(null)   // null = nuevo
   const [form, setForm]         = useState(EMPTY_FORM)
   const [saving, setSaving]     = useState(false)
+  const [error, setError]       = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [search, setSearch]     = useState('')
 
@@ -27,8 +32,18 @@ export default function Staff() {
     setLoading(true)
     try {
       const res = await api.get('/api/staff')
-      setStaff(res.data.data || res.data || [])
-    } catch { setStaff([]) }
+      // api.js devuelve el body tal cual (safe() en el backend responde
+      // { ok, data } o { ok:false, error }) — NO es estilo axios (res.data.data).
+      if (res && res.ok) {
+        setStaff(Array.isArray(res.data) ? res.data : [])
+      } else {
+        console.error('[Staff] /api/staff GET falló:', res?.error)
+        setStaff([])
+      }
+    } catch (e) {
+      console.error('[Staff] /api/staff GET excepción:', e)
+      setStaff([])
+    }
     setLoading(false)
   }, [])
 
@@ -37,6 +52,7 @@ export default function Staff() {
   function openNew() {
     setEditing(null)
     setForm(EMPTY_FORM)
+    setError('')
     setShowModal(true)
   }
 
@@ -49,6 +65,7 @@ export default function Staff() {
       telefono: person.telefono || '',
       cargo: person.cargo || ''
     })
+    setError('')
     setShowModal(true)
   }
 
@@ -56,30 +73,54 @@ export default function Staff() {
     setShowModal(false)
     setEditing(null)
     setForm(EMPTY_FORM)
+    setError('')
   }
 
   async function handleSave() {
     if (!form.nombre.trim() || !form.apellido.trim()) return
     setSaving(true)
+    setError('')
     try {
-      if (editing) {
-        await api.put(`/api/staff/${editing.id}`, form)
-      } else {
-        await api.post('/api/staff', form)
+      const res = editing
+        ? await api.put(`/api/staff/${editing.id}`, form)
+        : await api.post('/api/staff', form)
+
+      if (!res || !res.ok) {
+        setError(res?.error || 'No se pudo guardar. Intenta de nuevo.')
+        setSaving(false)
+        return
       }
+
+      addAuditEntry?.(
+        editing ? 'Personal modificado' : 'Personal agregado',
+        `${form.nombre} ${form.apellido}`,
+        'personal',
+        currentUser
+      )
+
       await load()
       closeModal()
     } catch (e) {
-      console.error(e)
+      console.error('[Staff] guardar excepción:', e)
+      setError('Error de conexión al guardar.')
     }
     setSaving(false)
   }
 
   async function handleDelete(id) {
+    const person = staff.find(p => p.id === id)
     try {
-      await api.delete(`/api/staff/${id}`)
+      const res = await api.delete(`/api/staff/${id}`)
+      if (!res || !res.ok) {
+        console.error('[Staff] eliminar falló:', res?.error)
+        setDeleteConfirm(null)
+        return
+      }
+      if (person) {
+        addAuditEntry?.('Personal eliminado', `${person.nombre} ${person.apellido}`, 'personal', currentUser)
+      }
       await load()
-    } catch (e) { console.error(e) }
+    } catch (e) { console.error('[Staff] eliminar excepción:', e) }
     setDeleteConfirm(null)
   }
 
@@ -212,6 +253,15 @@ export default function Staff() {
             <h2 style={{ margin: '0 0 20px', color: '#f1f5f9', fontSize: 18 }}>
               {editing ? 'Editar persona' : 'Agregar persona'}
             </h2>
+
+            {error && (
+              <div style={{
+                background: '#450a0a', color: '#fca5a5', borderRadius: 8,
+                padding: '10px 12px', fontSize: 13, marginBottom: 14
+              }}>
+                {error}
+              </div>
+            )}
 
             {[
               { label: 'Nombre *', key: 'nombre', placeholder: 'Carlos' },
