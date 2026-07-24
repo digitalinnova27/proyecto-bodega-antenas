@@ -1,4 +1,7 @@
 {
+  "1.1.2": [
+    "Corrección crítica: la app quedaba en blanco (mostraba solo un JSON de estado) porque la carpeta de compilación del frontend no se generaba en la ruta correcta"
+  ],
   "1.1.1": [
     "Nueva campana de notificaciones en el panel principal",
     "Nueva vista de perfiles para los usuarios Operador",
