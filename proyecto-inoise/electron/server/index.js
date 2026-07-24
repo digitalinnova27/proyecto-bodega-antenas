@@ -58,6 +58,22 @@ function getOnlineList() {
   return list
 }
 
+// ── Locks de edición (en memoria) ────────────────────────────────────────────
+// Con varios PCs conectados al mismo servidor (Tailscale), dos personas
+// pueden abrir el mismo producto para editar casi al mismo tiempo. En vez de
+// dejar que "gane el último que guarda" sin avisar a nadie, cualquier
+// cliente puede "reservar" una entidad mientras la edita; el resto ve un
+// aviso tipo "Juan está editando esto" y no puede guardar encima.
+// Clave: `${entityType}:${entityId}` (ej. "product:42").  Valor: quién lo
+// tiene, desde qué socket (para liberarlo solo si se desconecta ese mismo
+// socket) y desde cuándo.
+const editLocks = new Map()
+
+function serializeLocks() {
+  return [...editLocks.values()].map(({ entityType, entityId, userId, displayName, since }) =>
+    ({ entityType, entityId, userId, displayName, since }))
+}
+
 // ── App Express ───────────────────────────────────────────────────────────────
 const app    = express()
 const server = http.createServer(app)
@@ -208,25 +224,43 @@ app.get('/api/users/count-admins', requireAuth, (req, res) => {
 })
 
 app.post('/api/users', (req, res) => {
-  // En first-run (sin ningún usuario) se permite sin token.
-  // En cualquier otro caso se requiere autenticación.
+  // En first-run (sin ningún administrador todavía) se permite sin token,
+  // y el primer usuario SIEMPRE se crea como admin sin importar lo que
+  // mande el body — así nadie puede arrancar la app y autoasignarse un
+  // rol distinto en ese único momento sin auth.
+  // Fuera de first-run: crear usuarios (de cualquier rol) es una acción
+  // exclusiva del administrador. Antes esta ruta solo pedía "estar
+  // logueado" — cualquier operador podía crear otra cuenta, incluida una
+  // admin, llamando a la API directamente aunque el botón no apareciera
+  // en la interfaz. Ahora se valida también en el servidor.
   const count = safe(() => countAdmins())
   const isFirstRun = count.ok && count.data === 0
-  if (!isFirstRun) {
-    const auth = req.headers.authorization
-    if (!auth || !auth.startsWith('Bearer ')) {
-      return res.status(401).json({ ok: false, error: 'No autorizado' })
-    }
-    try { req.user = require('jsonwebtoken').verify(auth.slice(7), JWT_SECRET) }
-    catch { return res.status(401).json({ ok: false, error: 'Token inválido o expirado' }) }
-  }
   const { data, password } = req.body || {}
+  if (isFirstRun) {
+    const result = safe(() => createUser({ ...data, role: 'admin' }, password))
+    if (result.ok) io.emit('users:updated')
+    return res.json(result)
+  }
+  const auth = req.headers.authorization
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ ok: false, error: 'No autorizado' })
+  }
+  try { req.user = jwt.verify(auth.slice(7), JWT_SECRET) }
+  catch { return res.status(401).json({ ok: false, error: 'Token inválido o expirado' }) }
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede crear usuarios' })
+  }
   const result = safe(() => createUser(data, password))
   if (result.ok) io.emit('users:updated')
   res.json(result)
 })
 
 app.put('/api/users/:id', requireAuth, (req, res) => {
+  // Editar cuentas (incluido cambiar contraseñas o el rol de alguien) es
+  // exclusivo del administrador — antes solo exigía estar logueado.
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
   const id = req.params.id
   const { fields, newPassword } = req.body || {}
   const result = safe(() => updateUser(id, fields, newPassword || null))
@@ -235,7 +269,26 @@ app.put('/api/users/:id', requireAuth, (req, res) => {
 })
 
 app.delete('/api/users/:id', requireAuth, (req, res) => {
-  const result = safe(() => deleteUser(req.params.id))
+  // Igual que arriba: antes cualquier cuenta logueada podía borrar a
+  // cualquier otra, incluido el único admin. Ahora exclusivo del admin,
+  // y además no se puede borrar al único administrador activo (mismo
+  // resguardo que ya existía para deshabilitar cuentas).
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
+  const targetId = req.params.id
+  if (targetId === req.user.id) {
+    return res.status(400).json({ ok: false, error: 'No podés eliminar tu propia cuenta' })
+  }
+  const usersResult = safe(() => loadUsers())
+  if (usersResult.ok) {
+    const targetUser = usersResult.data.find(u => u.id === targetId)
+    const otherActiveAdmins = usersResult.data.filter(u => u.role === 'admin' && u.active && u.id !== targetId)
+    if (targetUser?.role === 'admin' && otherActiveAdmins.length === 0) {
+      return res.status(400).json({ ok: false, error: 'No podés eliminar al único administrador activo' })
+    }
+  }
+  const result = safe(() => deleteUser(targetId))
   if (result.ok) io.emit('users:updated')
   res.json(result)
 })
@@ -438,6 +491,12 @@ app.get('*', (req, res) => {
 io.on('connection', (socket) => {
   console.log('[iNOISE] Cliente conectado:', socket.id)
 
+  // Snapshot inicial de qué está siendo editado ahora mismo por cualquiera,
+  // para que un cliente que recién abre la app (o entra a Productos más
+  // tarde) vea de entrada los avisos "Fulano está editando esto" sin tener
+  // que esperar a que alguien más toque algo.
+  socket.emit('locks:sync', serializeLocks())
+
   // El cliente envía su token después de conectar (o al reconectar).
   // Se valida y se registra como "online". El sessionId se asocia al
   // socket para poder cerrarlo si el cliente se desconecta abruptamente.
@@ -463,6 +522,45 @@ io.on('connection', (socket) => {
     io.emit('online:users', getOnlineList())
   })
 
+  // ── Locks de edición ──
+  // Un cliente pide "reservar" una entidad (ej. { entityType:'product',
+  // entityId: 42 }) justo al abrir el modal de edición. Si ya está tomada
+  // por OTRO usuario, se le avisa solo a quien pidió (lock:denied) y no se
+  // otorga. Si está libre, o ya era suya (otra pestaña del mismo usuario),
+  // se otorga y se avisa a TODOS (lock:acquired) para que el resto vea el
+  // aviso en pantalla.
+  socket.on('lock:acquire', ({ entityType, entityId } = {}) => {
+    if (!entityType || entityId === undefined || entityId === null) return
+    const requester = onlineUsers.get(socket.id)
+    if (!requester) return // no autenticado todavía — no se otorgan locks
+    const key = `${entityType}:${entityId}`
+    const existing = editLocks.get(key)
+    if (existing && existing.userId !== requester.userId) {
+      socket.emit('lock:denied', { entityType, entityId, byDisplayName: existing.displayName })
+      return
+    }
+    const lock = {
+      entityType, entityId,
+      userId: requester.userId, displayName: requester.displayName,
+      socketId: socket.id, since: new Date().toISOString()
+    }
+    editLocks.set(key, lock)
+    io.emit('lock:acquired', { entityType, entityId, userId: lock.userId, displayName: lock.displayName, since: lock.since })
+  })
+
+  // El cliente libera al guardar, cancelar o cerrar el modal de edición.
+  socket.on('lock:release', ({ entityType, entityId } = {}) => {
+    if (!entityType || entityId === undefined || entityId === null) return
+    const key = `${entityType}:${entityId}`
+    const existing = editLocks.get(key)
+    // Solo el socket que la tomó puede liberarla (evita que un cliente
+    // libere por error una reserva de otro).
+    if (existing && existing.socketId === socket.id) {
+      editLocks.delete(key)
+      io.emit('lock:released', { entityType, entityId })
+    }
+  })
+
   socket.on('disconnect', (reason) => {
     if (onlineUsers.has(socket.id)) {
       const data = onlineUsers.get(socket.id)
@@ -471,6 +569,15 @@ io.on('connection', (socket) => {
       console.log(`[iNOISE] Offline: ${data.displayName || data.username} (${reason})`)
     } else {
       console.log('[iNOISE] Cliente desconectado:', socket.id)
+    }
+    // Si el cliente se desconecta (cerró la app, se cayó la red) sin
+    // liberar prolijamente sus locks, se liberan igual acá — si no,
+    // un producto quedaría "bloqueado" para siempre.
+    for (const [key, lock] of editLocks.entries()) {
+      if (lock.socketId === socket.id) {
+        editLocks.delete(key)
+        io.emit('lock:released', { entityType: lock.entityType, entityId: lock.entityId })
+      }
     }
   })
 })

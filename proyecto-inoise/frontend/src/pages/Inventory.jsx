@@ -2,12 +2,14 @@ import React from 'react'
 import {
   Box, Typography, Paper, Table, TableHead, TableRow, TableCell, TableBody,
   TextField, MenuItem, Button, Chip, Dialog, DialogTitle, DialogContent,
-  DialogActions, Select, Alert, Tooltip, Pagination, Autocomplete
+  DialogActions, Select, Alert, Tooltip, Pagination, Autocomplete, Snackbar
 } from '@mui/material'
 import CalendarTodayIcon from '@mui/icons-material/CalendarToday'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
+import LockIcon from '@mui/icons-material/Lock'
 import { useInventory } from '../context/InventoryContext'
 import { useAuth } from '../context/AuthContext'
+import { useEditLock } from '../context/EditLockContext'
 
 const STATES = ['Disponible', 'Reservado', 'Ocupado', 'Rental', 'En Mantenimiento', 'Perdido']
 const ROWS_PER_PAGE = 15
@@ -30,12 +32,14 @@ export default function Inventory() {
   } = useInventory()
   const { role, currentUser: authUser } = useAuth()
   const currentUser = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
+  const { acquireLock, releaseLock, getLockedBy, onDenied } = useEditLock()
 
   const [categories, setCategories] = React.useState([])
   const [filter, setFilter] = React.useState({ sku: '', category: '', state: '' })
   const [consulDate, setConsulDate] = React.useState(todayStr())
   const [detail, setDetail] = React.useState(null)
   const [draftDetail, setDraftDetail] = React.useState(null)
+  const [lockDeniedMsg, setLockDeniedMsg] = React.useState('')
   const [openAdd, setOpenAdd] = React.useState(false)
   const [confirmDeleteProduct, setConfirmDeleteProduct] = React.useState(false)
   // 'direct' (admin elimina ya) | 'request' (operador solo solicita) | 'approve' (admin aprueba una solicitud pendiente)
@@ -55,6 +59,45 @@ export default function Inventory() {
 
   // Reset page when filter changes
   React.useEffect(() => { setPage(1) }, [filter, consulDate])
+
+  // Si justo al intentar abrir el detalle de un producto otro PC ya lo
+  // tenía tomado (dos personas hicieron clic casi al mismo tiempo), el
+  // servidor avisa con 'lock:denied' — se muestra al toque en vez de
+  // esperar a que la lista de locks se actualice sola.
+  React.useEffect(() => {
+    return onDenied(({ entityType, byDisplayName }) => {
+      if (entityType === 'product') {
+        setLockDeniedMsg(`${byDisplayName} ya está editando este producto — probá de nuevo en un momento.`)
+      }
+    })
+  }, [onDenied])
+
+  // Si el operador navega a otra sección con el modal de detalle todavía
+  // abierto (sin apretar Cancelar), este componente se desmonta y ese
+  // "onClick de Cancelar" nunca se ejecuta — sin esto, el producto
+  // quedaría marcado como "en edición" para los demás hasta que esa
+  // sesión se desconecte del todo. Con este ref siempre tenemos a mano el
+  // último `detail` para liberarlo al desmontar.
+  const detailRef = React.useRef(null)
+  React.useEffect(() => { detailRef.current = detail }, [detail])
+  React.useEffect(() => () => {
+    if (detailRef.current) releaseLock('product', detailRef.current.id)
+  }, [releaseLock])
+
+  // Abrir/cerrar el modal de detalle de un producto reservando (o
+  // liberando) la edición para que otro PC conectado vea el aviso
+  // "Fulano está editando esto" y no pueda guardar por encima.
+  const openDetail = (p) => {
+    acquireLock('product', p.id)
+    setDetail(p)
+    setDraftDetail(JSON.parse(JSON.stringify(p)))
+  }
+
+  const closeDetailModal = () => {
+    if (detail) releaseLock('product', detail.id)
+    setDetail(null)
+    setDraftDetail(null)
+  }
 
   const countForDate = (product, state) => {
     // Vista de "hoy": refleja el estado físico real de cada unidad —
@@ -94,6 +137,7 @@ export default function Inventory() {
 
   const saveDetailChanges = () => {
     setProducts(products.map(p => p.id === draftDetail.id ? draftDetail : p))
+    releaseLock('product', draftDetail.id)
     setDetail(null)
     setDraftDetail(null)
   }
@@ -109,6 +153,7 @@ export default function Inventory() {
     } else {
       deleteProduct(detail.id)
     }
+    releaseLock('product', detail.id)
     setConfirmDeleteProduct(false)
     setDetail(null)
     setDraftDetail(null)
@@ -216,7 +261,9 @@ export default function Inventory() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {paginated.map(p => (
+            {paginated.map(p => {
+              const lock = getLockedBy('product', p.id)
+              return (
               <TableRow key={p.id} sx={
                 p.pendingDelete
                   ? { bgcolor: 'rgba(244,67,54,0.1)', borderLeft: '3px solid #f44336' }
@@ -230,6 +277,13 @@ export default function Inventory() {
                   {p.pendingDelete && (
                     <Tooltip title={`Solicitado por ${p.pendingDeleteBy || 'Operador'}`}>
                       <Chip size="small" label="Pendiente de eliminación" color="error" sx={{ ml: 1, fontWeight: 600 }} />
+                    </Tooltip>
+                  )}
+                  {lock && (
+                    <Tooltip title={`Editando desde ${new Date(lock.since).toLocaleTimeString('es-CL')}`}>
+                      <Chip size="small" icon={<LockIcon sx={{ fontSize: 14 }} />}
+                        label={`${lock.displayName} está editando esto`}
+                        color="warning" variant="outlined" sx={{ ml: 1 }} />
                     </Tooltip>
                   )}
                 </TableCell>
@@ -246,14 +300,13 @@ export default function Inventory() {
                 ))}
                 <TableCell>
                   <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    <Button size="small" variant="outlined"
-                      onClick={() => { setDetail(p); setDraftDetail(JSON.parse(JSON.stringify(p))) }}>
+                    <Button size="small" variant="outlined" onClick={() => openDetail(p)}>
                       Detalle
                     </Button>
                     {role === 'admin' && p.pendingDelete && (
                       <>
                         <Button size="small" variant="contained" color="error"
-                          onClick={() => { setDetail(p); openDeleteProductModal('approve') }}>
+                          onClick={() => { openDetail(p); openDeleteProductModal('approve') }}>
                           Aprobar
                         </Button>
                         <Button size="small" variant="outlined"
@@ -265,7 +318,7 @@ export default function Inventory() {
                   </Box>
                 </TableCell>
               </TableRow>
-            ))}
+            )})}
           </TableBody>
         </Table>
 
@@ -283,40 +336,53 @@ export default function Inventory() {
       </Paper>
 
       {/* ═══ MODAL DETALLE DE UNIDADES ═══ */}
-      <Dialog open={Boolean(detail)} onClose={() => { setDetail(null); setDraftDetail(null) }} fullWidth maxWidth="md">
+      <Dialog open={Boolean(detail)} onClose={closeDetailModal} fullWidth maxWidth="md">
         <DialogTitle>Unidades — {detail?.name}</DialogTitle>
         <DialogContent>
-          {draftDetail && (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>ID Unidad</TableCell>
-                  <TableCell>Código RFID</TableCell>
-                  <TableCell>Estado actual</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {draftDetail.units.map(u => (
-                  <TableRow key={u.id}>
-                    <TableCell>{u.id}</TableCell>
-                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>{u.rfid}</TableCell>
-                    <TableCell>
-                      <Select size="small" value={u.state}
-                        onChange={e => updateUnitState(u.id, e.target.value)}>
-                        {STATES.map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
-                      </Select>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+          {(() => {
+            const lockedByOther = detail ? getLockedBy('product', detail.id) : null
+            return (
+              <>
+                {lockedByOther && (
+                  <Alert severity="warning" icon={<LockIcon />} sx={{ mb: 2 }}>
+                    <strong>{lockedByOther.displayName}</strong> ya está editando este producto ahora mismo — podés ver los datos, pero no se puede guardar hasta que termine.
+                  </Alert>
+                )}
+                {draftDetail && (
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>ID Unidad</TableCell>
+                        <TableCell>Código RFID</TableCell>
+                        <TableCell>Estado actual</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {draftDetail.units.map(u => (
+                        <TableRow key={u.id}>
+                          <TableCell>{u.id}</TableCell>
+                          <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>{u.rfid}</TableCell>
+                          <TableCell>
+                            <Select size="small" value={u.state} disabled={Boolean(lockedByOther)}
+                              onChange={e => updateUnitState(u.id, e.target.value)}>
+                              {STATES.map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+                            </Select>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </>
+            )
+          })()}
         </DialogContent>
         <DialogActions>
           {detail?.pendingDelete ? (
             role === 'admin' ? (
               <Box sx={{ mr: 'auto', display: 'flex', gap: 1 }}>
-                <Button variant="contained" color="error" onClick={() => openDeleteProductModal('approve')}>
+                <Button variant="contained" color="error" disabled={Boolean(getLockedBy('product', detail?.id))}
+                  onClick={() => openDeleteProductModal('approve')}>
                   Aprobar y eliminar
                 </Button>
                 <Button variant="outlined" onClick={(e) => handleRejectDeleteProduct(detail, e)}>
@@ -327,12 +393,15 @@ export default function Inventory() {
               <Chip label="Pendiente de aprobación del administrador" color="error" sx={{ mr: 'auto' }} />
             )
           ) : (
-            <Button color="error" onClick={() => openDeleteProductModal(role === 'admin' ? 'direct' : 'request')} sx={{ mr: 'auto' }}>
+            <Button color="error" disabled={Boolean(getLockedBy('product', detail?.id))}
+              onClick={() => openDeleteProductModal(role === 'admin' ? 'direct' : 'request')} sx={{ mr: 'auto' }}>
               {role === 'admin' ? 'Eliminar producto' : 'Solicitar eliminación'}
             </Button>
           )}
-          <Button onClick={() => { setDetail(null); setDraftDetail(null) }}>Cancelar</Button>
-          <Button variant="contained" onClick={saveDetailChanges}>Guardar cambios</Button>
+          <Button onClick={closeDetailModal}>Cancelar</Button>
+          <Button variant="contained" onClick={saveDetailChanges} disabled={Boolean(getLockedBy('product', detail?.id))}>
+            Guardar cambios
+          </Button>
         </DialogActions>
       </Dialog>
 
@@ -405,6 +474,13 @@ export default function Inventory() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={Boolean(lockDeniedMsg)}
+        autoHideDuration={4000}
+        onClose={() => setLockDeniedMsg('')}
+        message={lockDeniedMsg}
+      />
     </Box>
   )
 }

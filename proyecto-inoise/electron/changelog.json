@@ -1,4 +1,8 @@
 {
+  "1.1.5": [
+    "Seguridad: crear, editar o eliminar usuarios ahora está restringido al administrador también del lado del servidor (antes solo se ocultaba el botón en la pantalla)",
+    "Nuevo: aviso en tiempo real 'Fulano está editando esto' en Inventario — si dos PCs abren el mismo producto casi al mismo tiempo, el segundo ve quién lo tiene abierto y no puede guardar por encima hasta que el primero termine"
+  ],
   "1.1.4": [
     "Registrar RFID: un sticker ya vinculado que pasa cerca de la antena ya no genera ninguna reacción (ni modal ni aviso) en Vincular individual ni en Vinculación de tags — se ignora por completo",
     "Corrección: una antena detectada ya no vuelve a mostrarse como 'Offline' — queda fija en la lista alternando solo entre 'Activa' y 'En espera' según si hay un sticker en el campo",
