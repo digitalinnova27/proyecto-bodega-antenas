@@ -5,7 +5,6 @@ import {
   List, ListItem, ListItemText, ListItemIcon, Tabs, Tab
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
-import WifiOffIcon from '@mui/icons-material/WifiOff'
 import CloseIcon from '@mui/icons-material/Close'
 import HistoryIcon from '@mui/icons-material/History'
 import NfcIcon from '@mui/icons-material/Nfc'
@@ -62,7 +61,8 @@ export default function Antennas() {
     return () => clearInterval(interval)
   }, [])
 
-  const activeCount = antennaList.filter(a => a.active).length
+  const activeCount = antennaList.filter(a => a.status === 'active').length
+  const idleCount = antennaList.filter(a => a.status === 'idle').length
 
   // Modal "Revisar lecturas"
   const [reviewAntenna, setReviewAntenna] = React.useState(null)
@@ -151,14 +151,21 @@ export default function Antennas() {
   const antennas = antennaList.map((a, idx) => {
     const signalPct = rssiToPct(a.lastSignal)
     const hasRssi = signalPct !== null
+    // Una antena que ya se detectó queda fija en la lista para siempre —
+    // solo alterna entre 'active' (leyendo ahora) e 'idle' (en espera del
+    // próximo sticker). Nunca se muestra como Offline.
+    const status = a.status === 'active' ? 'active' : 'idle'
     return {
       id: a.id,
       ip: a.ip,
       name: `Antena ${idx + 1} — ${a.ip}`,
-      active: a.active,
-      signalPct: a.active ? (hasRssi ? signalPct : 100) : 0,
+      active: status === 'active',
+      status,
+      signalPct: status === 'active' ? (hasRssi ? signalPct : 100) : (hasRssi ? signalPct : 50),
       hasRssi,
-      signalLabel: hasRssi ? `${signalPct}% (${a.lastSignal} dBm)` : (a.active ? 'Conectada' : 'Sin conexión'),
+      signalLabel: status === 'active'
+        ? (hasRssi ? `${signalPct}% (${a.lastSignal} dBm)` : 'Conectada')
+        : 'En espera de sticker',
       lastRead: fmtDate(a.lastSeenAt),
       totalScans: a.totalScans,
       uniqueTags: a.uniqueTags,
@@ -219,14 +226,14 @@ export default function Antennas() {
         <WifiIcon /> Lectores RFID
       </Typography>
 
-      <Alert severity={activeCount > 0 ? 'success' : bridgeUp ? 'warning' : 'error'} sx={{ mb: 2 }} icon={<WifiIcon />}>
+      <Alert severity={activeCount > 0 ? 'success' : idleCount > 0 ? 'info' : bridgeUp ? 'warning' : 'error'} sx={{ mb: 2 }} icon={<WifiIcon />}>
         {activeCount > 0
           ? `🟢 ${activeCount} de ${antennaList.length} antena${antennaList.length !== 1 ? 's' : ''} conectada${activeCount !== 1 ? 's' : ''} — recibiendo lecturas reales`
-          : bridgeUp
-            ? (antennaList.length > 0
-                ? '⚪ Bridge activo, pero ninguna antena está enviando datos en este momento'
-                : '⚪ Bridge activo, esperando la primera lectura de alguna antena')
-            : '⚫ Bridge RFID desconectado'}
+          : idleCount > 0
+            ? `🟡 ${idleCount} antena${idleCount !== 1 ? 's' : ''} conectada${idleCount !== 1 ? 's' : ''}, sin ningún sticker en el campo ahora mismo — normal si no se está escaneando en este momento`
+            : bridgeUp
+              ? '⚪ Bridge activo, esperando la primera lectura de alguna antena'
+              : '⚫ Bridge RFID desconectado'}
       </Alert>
 
       {antennaList.length === 0 && (
@@ -235,28 +242,32 @@ export default function Antennas() {
         </Alert>
       )}
 
-      {antennas.map((ant) => (
+      {antennas.map((ant) => {
+        const isActive = ant.status === 'active'
+        const statusColor = isActive ? 'success.light' : 'warning.light'
+        const statusChipColor = isActive ? 'success' : 'warning'
+        const statusChipLabel = isActive ? 'Activa' : 'En espera'
+        const signalBarColor = isActive
+          ? (ant.signalPct > 60 ? 'success' : ant.signalPct > 30 ? 'warning' : 'error')
+          : 'warning'
+        return (
         <Paper key={ant.id} sx={{
           p: 2, mb: 2, border: '1px solid',
-          borderColor: ant.active ? 'success.light' : 'divider',
-          opacity: ant.active ? 1 : 0.6
+          borderColor: statusColor
         }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              {ant.active
-                ? <WifiIcon sx={{ color: 'success.main', fontSize: 22 }} />
-                : <WifiOffIcon sx={{ color: 'text.disabled', fontSize: 22 }} />
-              }
+              <WifiIcon sx={{ color: isActive ? 'success.main' : 'warning.main', fontSize: 22 }} />
               <Box>
                 <Typography variant="body1" fontWeight={600}>{ant.name}</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {ant.active
+                  {isActive
                     ? `IP ${ant.ip} · recibiendo lecturas`
-                    : ant.lastRead !== '—' ? `IP ${ant.ip} · última vez ${ant.lastRead}` : `IP ${ant.ip} · sin conexión`}
+                    : `IP ${ant.ip} · sin stickers en el campo · última lectura ${ant.lastRead}`}
                 </Typography>
               </Box>
             </Box>
-            <Chip label={ant.active ? 'Activa' : 'Offline'} color={ant.active ? 'success' : 'default'} size="small" />
+            <Chip label={statusChipLabel} color={statusChipColor} size="small" />
           </Box>
 
           <Divider sx={{ mb: 1.5 }} />
@@ -266,13 +277,13 @@ export default function Antennas() {
               <Typography variant="caption" color="text.secondary">SEÑAL</Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
                 <LinearProgress variant="determinate" value={ant.signalPct}
-                  color={ant.signalPct > 60 ? 'success' : ant.signalPct > 30 ? 'warning' : 'error'}
+                  color={signalBarColor}
                   sx={{ flex: 1, height: 8, borderRadius: 4 }} />
                 <Typography variant="body2" fontWeight={600} sx={{ minWidth: 80, fontSize: 11 }}>
                   {ant.signalLabel}
                 </Typography>
               </Box>
-              {ant.active && !ant.hasRssi && (
+              {ant.status === 'active' && !ant.hasRssi && (
                 <Typography variant="caption" color="text.disabled" sx={{ fontSize: 10 }}>
                   RSSI no disponible — activa RSSI=1 en Reader.ini
                 </Typography>
@@ -286,13 +297,13 @@ export default function Antennas() {
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">SCANS EN SESIÓN</Typography>
-              <Typography variant="h6" fontWeight={700} color={ant.active ? 'primary' : 'text.disabled'} sx={{ mt: 0.5 }}>
+              <Typography variant="h6" fontWeight={700} color="primary" sx={{ mt: 0.5 }}>
                 {ant.totalScans}
               </Typography>
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">TAGS ÚNICOS</Typography>
-              <Typography variant="h6" fontWeight={700} color={ant.active ? 'success.main' : 'text.disabled'} sx={{ mt: 0.5 }}>
+              <Typography variant="h6" fontWeight={700} color="success.main" sx={{ mt: 0.5 }}>
                 {ant.uniqueTags}
               </Typography>
             </Box>
@@ -311,7 +322,8 @@ export default function Antennas() {
             </Box>
           )}
         </Paper>
-      ))}
+        )
+      })}
 
       {/* ── Modal "Revisar lecturas" con secciones ───────────────────── */}
       <Dialog

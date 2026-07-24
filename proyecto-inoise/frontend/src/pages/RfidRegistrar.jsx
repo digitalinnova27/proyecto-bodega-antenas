@@ -179,10 +179,45 @@ export default function RfidRegistrar() {
     }
 
     // Punto único de entrada para cualquier EPC detectado (por antena o
-    // manual): primero revisa si ya está vinculado (aplica en ambos modos),
-    // y si no, decide el flujo según el modo activo.
+    // manual). El comportamiento frente a un EPC YA vinculado depende del
+    // modo:
+    //  - Individual: es el flujo "escanea primero" — mostrar el aviso
+    //    completo de "ya vinculado" es la forma principal en que el
+    //    operador se entera del estado del sticker, así que se mantiene
+    //    la pantalla bloqueante de siempre.
+    //  - Vinculación de tags (bulk), sesión activa: un sticker ajeno ya
+    //    vinculado (rollo de repuesto, otro producto sobre la mesa, una
+    //    unidad de ESTE producto ya hecha en una sesión anterior) puede
+    //    pasar cerca de la antena sin que eso sea relevante para lo que se
+    //    está haciendo — interrumpir con un modal cada vez que eso ocurre
+    //    frena la sesión sin necesidad. Se avisa de forma suave (snackbar)
+    //    y se ignora, sin tocar el progreso ni la lista de la sesión.
     const processEpc = (epc) => {
         const existingUnitId = epcMap[epc]
+
+        if (mode === 'bulk') {
+            // Fuera del paso de escaneo (eligiendo categoría o producto)
+            // no hay nada que vincular todavía — se ignora cualquier
+            // lectura ambiental de la antena.
+            if (bulkStep !== 'session') return
+
+            if (existingUnitId) {
+                const belongsToCurrent = bulkProduct?.units.some(u => u.id === existingUnitId)
+                setBulkNotice({
+                    open: true,
+                    severity: belongsToCurrent ? 'info' : 'warning',
+                    msg: belongsToCurrent
+                        ? 'Esta unidad ya estaba vinculada — ignorado.'
+                        : 'Sticker ya vinculado a otro producto — ignorado.'
+                })
+                return
+            }
+
+            handleBulkAutoLink(epc)
+            return
+        }
+
+        // ── Modo individual: comportamiento sin cambios ──
         if (existingUnitId) {
             let productName = 'Producto desconocido'
             let uLabel = existingUnitId
@@ -197,11 +232,6 @@ export default function RfidRegistrar() {
             }
             setAlreadyLinked({ epc, productName, unitLabel: uLabel })
             setStep('waiting')
-            return
-        }
-
-        if (mode === 'bulk') {
-            handleBulkAutoLink(epc)
             return
         }
 

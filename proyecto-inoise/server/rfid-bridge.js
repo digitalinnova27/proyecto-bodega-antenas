@@ -92,12 +92,19 @@ let tagStats = {
  * válido queda registrada sola, así que conectar una 4ª, 5ª u 8ª antena al
  * switch simplemente hace que aparezca en la lista sin tocar código.
  *
- * Una antena se considera "activa" si mandó algo en los últimos
- * ANTENNA_TIMEOUT_MS; si se queda callada más que eso, pasa a "offline"
- * automáticamente (se recalcula en cada serialización, no hace falta que
- * la antena avise que se desconectó — la mayoría de este hardware no lo
- * hace). */
-const ANTENNA_TIMEOUT_MS = 15000
+ * Estas antenas SOLO mandan un paquete UDP cuando hay un tag físico en su
+ * campo de lectura — no existe un "heartbeat" separado sin tag presente.
+ * Eso significa que, si nadie está pasando stickers en este momento, es
+ * NORMAL que no llegue ningún paquete durante varios segundos aunque la
+ * antena esté perfectamente conectada. No hay forma de distinguir eso de
+ * una desconexión real solo con este protocolo, así que UNA VEZ que una
+ * antena mandó su primer paquete queda registrada de forma FIJA en la
+ * lista — nunca vuelve a "Offline". Solo alterna entre:
+ *   - ACTIVE_TIMEOUT_MS: dentro de este tiempo desde la última lectura →
+ *     "Activa" (leyendo ahora mismo).
+ *   - Fuera de ese tiempo → "En espera" (sin ningún tag en el campo ahora,
+ *     pero la antena sigue ahí, solo esperando el próximo sticker). */
+const ACTIVE_TIMEOUT_MS = 15000
 
 let antennas = {} // ip → { id, ip, firstSeenAt, lastSeenAt, totalScans, uniqueTags:Set, lastSignal, scanHistory:[] }
 
@@ -120,17 +127,28 @@ function getOrCreateAntenna(ip) {
 function serializeAntennas() {
     const now = Date.now()
     return Object.values(antennas)
-        .map(a => ({
-            id: a.id,
-            ip: a.ip,
-            active: a.lastSeenAt ? (now - new Date(a.lastSeenAt).getTime()) < ANTENNA_TIMEOUT_MS : false,
-            firstSeenAt: a.firstSeenAt,
-            lastSeenAt: a.lastSeenAt,
-            totalScans: a.totalScans,
-            uniqueTags: a.uniqueTags.size,
-            lastSignal: a.lastSignal,
-            recentScans: a.scanHistory.slice(0, 10)
-        }))
+        .map(a => {
+            const msSinceLastRead = a.lastSeenAt ? now - new Date(a.lastSeenAt).getTime() : null
+            // Una antena que ya mandó al menos un paquete queda fija en la
+            // lista para siempre — solo alterna entre 'active' (leyendo
+            // ahora) e 'idle' (en espera del próximo sticker). Nunca vuelve
+            // a 'offline' una vez detectada.
+            const status = msSinceLastRead !== null && msSinceLastRead < ACTIVE_TIMEOUT_MS
+                ? 'active'
+                : 'idle'
+            return {
+                id: a.id,
+                ip: a.ip,
+                active: status === 'active', // se mantiene por compatibilidad con el front-end existente
+                status,
+                firstSeenAt: a.firstSeenAt,
+                lastSeenAt: a.lastSeenAt,
+                totalScans: a.totalScans,
+                uniqueTags: a.uniqueTags.size,
+                lastSignal: a.lastSignal,
+                recentScans: a.scanHistory.slice(0, 10)
+            }
+        })
         // Más antigua conectada primero, para que el orden en pantalla no
         // salte cada vez que una antena manda un paquete.
         .sort((a, b) => new Date(a.firstSeenAt) - new Date(b.firstSeenAt))

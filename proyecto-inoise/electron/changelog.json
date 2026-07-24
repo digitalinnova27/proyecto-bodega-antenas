@@ -1,4 +1,9 @@
 {
+  "1.1.4": [
+    "En 'Vinculación de tags', un sticker ya vinculado que pasa cerca de la antena ya no interrumpe la sesión con un modal — ahora es solo un aviso breve y se ignora",
+    "Corrección: una antena detectada ya no vuelve a mostrarse como 'Offline' — queda fija en la lista alternando solo entre 'Activa' y 'En espera' según si hay un sticker en el campo",
+    "Verificado: la lectura de tags ya vinculados sigue funcionando normalmente durante las fases de arriendos y eventos (fase 1 a 4)"
+  ],
   "1.1.3": [
     "Nueva 'Vinculación de tags': flujo por categoría → producto → sesión de escaneo",
     "Categorías con color distintivo y productos ordenables (nombre o cantidad)",
