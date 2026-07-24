@@ -3,7 +3,7 @@ import {
     Box, Typography, Paper, TextField, MenuItem, Button,
     Chip, Alert, Divider, CircularProgress, InputAdornment,
     Table, TableHead, TableRow, TableCell, TableBody, Fade, List,
-    ListItem, ListItemText, Dialog, DialogTitle, DialogContent, IconButton,
+    ListItem, ListItemText, Dialog, DialogTitle, DialogContent, DialogActions, IconButton,
     Autocomplete, Snackbar, LinearProgress
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
@@ -17,11 +17,23 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 import CloseIcon from '@mui/icons-material/Close'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import LibraryAddIcon from '@mui/icons-material/LibraryAdd'
+import ArrowBackIcon from '@mui/icons-material/ArrowBack'
+import UndoIcon from '@mui/icons-material/Undo'
+import RestartAltIcon from '@mui/icons-material/RestartAlt'
+import SortIcon from '@mui/icons-material/Sort'
 import { useInventory } from '../context/InventoryContext'
 import { useRfidSocket } from '../hooks/useRfidSocket'
 import { useAuth } from '../context/AuthContext'
 
 const CATEGORIES = ['Audio', 'Iluminacion', 'Pantalla', 'Efectos', 'Estructuras', 'Energía', 'Tecnologia', 'Otros']
+
+// Mismos colores que Dashboard.jsx (CAT_COLORS) — se duplica acá para no
+// crear una dependencia cruzada entre páginas por un solo objeto chico.
+const CAT_COLORS = {
+    Audio: '#1D9E75', Iluminacion: '#378ADD', Estructuras: '#7F77DD',
+    Efectos: '#EF9F27', Energía: '#D85A30', Tecnologia: '#534AB7',
+    Pantalla: '#D4537E', Otros: '#888780',
+}
 
 // Convierte "3-5" → "Unidad 5", "12-2" → "Unidad 2"
 const unitLabel = (id) => {
@@ -30,7 +42,7 @@ const unitLabel = (id) => {
 }
 
 export default function RfidRegistrar() {
-    const { products, addProduct, linkEpc, epcMap, nextSkuForFamily } = useInventory()
+    const { products, addProduct, linkEpc, unlinkEpc, epcMap, nextSkuForFamily } = useInventory()
     const { role, currentUser: authUser } = useAuth()
     const currentUser = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
     const { isConnected, lastScan, unknownTags, clearLastScan } = useRfidSocket()
@@ -68,6 +80,19 @@ export default function RfidRegistrar() {
     const [bulkSearch, setBulkSearch] = React.useState('')
     const [bulkProductId, setBulkProductId] = React.useState('')
     const [bulkNotice, setBulkNotice] = React.useState({ open: false, severity: 'success', msg: '' })
+
+    /* ── Vinculación de tags: categoría → producto → sesión acotada ──
+     * bulkStep gobierna en qué paso de esta pantalla está el operador.
+     * bulkSessionLinks guarda SOLO lo vinculado en la sesión activa actual
+     * (se reinicia cada vez que se elige un producto nuevo), separado del
+     * historial general `registered` — así el botón de reset puede deshacer
+     * exactamente lo de esta sesión sin tocar vínculos de sesiones previas
+     * del mismo producto. */
+    const [bulkStep, setBulkStep] = React.useState('category') // 'category' | 'product' | 'session'
+    const [bulkCategory, setBulkCategory] = React.useState('')
+    const [bulkSort, setBulkSort] = React.useState('name-asc') // 'name-asc' | 'qty-desc' | 'qty-asc'
+    const [bulkSessionLinks, setBulkSessionLinks] = React.useState([]) // [{epc, unitId, at}]
+    const [resetConfirmOpen, setResetConfirmOpen] = React.useState(false)
     // Resalta por unos segundos la unidad que se acaba de vincular en la
     // grilla del lote, y deja un registro visible (no solo el snackbar
     // que desaparece) de cuál fue la última unidad vinculada.
@@ -111,6 +136,7 @@ export default function RfidRegistrar() {
         }
         linkEpc(epc, unit.id)
         setRegistered(prev => [entry, ...prev])
+        setBulkSessionLinks(prev => [...prev, { epc, unitId: unit.id, at: entry.timestamp }])
         setBulkNotice({ open: true, severity: 'success', msg: `Vinculado: ${unitLabel(unit.id)} — ${prod.name}` })
 
         // Feedback visual persistente (no depende del snackbar, que se
@@ -120,6 +146,36 @@ export default function RfidRegistrar() {
         setJustLinkedUnitId(unit.id)
         clearTimeout(justLinkedTimerRef.current)
         justLinkedTimerRef.current = setTimeout(() => setJustLinkedUnitId(null), 2200)
+    }
+
+    // Deshace SOLO la última lectura de la sesión activa (por si se pasó
+    // el sticker equivocado). No toca vínculos de sesiones anteriores.
+    const handleUndoLastBulk = () => {
+        if (bulkSessionLinks.length === 0) return
+        const last = bulkSessionLinks[bulkSessionLinks.length - 1]
+        unlinkEpc(last.epc)
+        setBulkSessionLinks(prev => prev.slice(0, -1))
+        setRegistered(prev => prev.filter(r => !(r.epc === last.epc && r.unitId === last.unitId)))
+        if (lastBulkLinked?.epc === last.epc) setLastBulkLinked(null)
+        setBulkNotice({ open: true, severity: 'info', msg: `Deshecho: ${unitLabel(last.unitId)}` })
+    }
+
+    // Botón de emergencia: si por cualquier motivo la antena reconoció más
+    // stickers de los solicitados (o alguno equivocado), esto libera TODOS
+    // los tags vinculados durante la sesión activa (no los de sesiones
+    // anteriores del mismo producto) y vuelve al inicio de la sección.
+    const handleResetBulkSession = () => {
+        bulkSessionLinks.forEach(({ epc }) => unlinkEpc(epc))
+        const linkedEpcs = new Set(bulkSessionLinks.map(l => l.epc))
+        setRegistered(prev => prev.filter(r => !linkedEpcs.has(r.epc)))
+        setBulkSessionLinks([])
+        setJustLinkedUnitId(null)
+        setLastBulkLinked(null)
+        setBulkProductId('')
+        setBulkCategory('')
+        setBulkStep('category')
+        setResetConfirmOpen(false)
+        setBulkNotice({ open: true, severity: 'info', msg: 'Vinculación detenida — los tags de esta sesión quedaron liberados.' })
     }
 
     // Punto único de entrada para cualquier EPC detectado (por antena o
@@ -234,7 +290,18 @@ export default function RfidRegistrar() {
     React.useEffect(() => {
         setJustLinkedUnitId(null)
         setLastBulkLinked(null)
+        setBulkSessionLinks([])
     }, [bulkProductId])
+
+    // Productos de la categoría elegida, ordenados según el criterio activo.
+    const bulkCategoryProducts = React.useMemo(() => {
+        const list = products.filter(p => p.category === bulkCategory)
+        const sorted = [...list]
+        if (bulkSort === 'name-asc') sorted.sort((a, b) => a.name.localeCompare(b.name))
+        else if (bulkSort === 'qty-desc') sorted.sort((a, b) => b.total - a.total)
+        else if (bulkSort === 'qty-asc') sorted.sort((a, b) => a.total - b.total)
+        return sorted
+    }, [products, bulkCategory, bulkSort])
 
     const handleVincular = async () => {
         if (!currentEpc || !selectedProd || !selectedUnit) return
@@ -297,53 +364,130 @@ export default function RfidRegistrar() {
                     startIcon={<LibraryAddIcon />}
                     onClick={() => setMode('bulk')}
                     sx={mode === 'bulk' ? { bgcolor: '#66FCF1', color: '#0B0C10', '&:hover': { bgcolor: '#45e8d5' } } : {}}>
-                    Vincular por lote
+                    Vinculación de tags
                 </Button>
             </Box>
 
-            {/* ═══ MODO POR LOTE ═══ */}
+            {/* ═══ MODO VINCULACIÓN DE TAGS (por categoría → producto → sesión) ═══ */}
             {mode === 'bulk' && (
                 <Box sx={{ mb: 2 }}>
-                    <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'divider' }}>
-                        <Typography variant="subtitle2" color="primary" sx={{ mb: 1.5 }}>
-                            Producto del lote
-                        </Typography>
-                        <TextField fullWidth size="small" label="Buscar por nombre o SKU"
-                            value={bulkSearch} onChange={e => setBulkSearch(e.target.value)} sx={{ mb: 1.5 }}
-                            autoComplete="off"
-                            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
-                        />
-                        <TextField select fullWidth size="small" label="Producto" value={bulkProductId}
-                            onChange={e => setBulkProductId(e.target.value)}>
-                            <MenuItem value="">— Selecciona —</MenuItem>
-                            {bulkFilteredProducts.map(p => (
-                                <MenuItem key={p.id} value={p.id}>
-                                    <Box>
-                                        <Typography variant="body2">{p.name}</Typography>
-                                        <Typography variant="caption" color="text.secondary">{p.sku} · {p.category}</Typography>
-                                    </Box>
-                                </MenuItem>
-                            ))}
-                        </TextField>
-                    </Paper>
 
-                    {bulkProduct ? (
+                    {/* PASO A: elegir categoría */}
+                    {bulkStep === 'category' && (
+                        <Paper sx={{ p: 2 }}>
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
+                                Elige una categoría para ver sus productos
+                            </Typography>
+                            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 1.5 }}>
+                                {CATEGORIES.map(cat => {
+                                    const color = CAT_COLORS[cat] || '#888780'
+                                    const count = products.filter(p => p.category === cat).length
+                                    return (
+                                        <Box key={cat}
+                                            onClick={() => { setBulkCategory(cat); setBulkStep('product') }}
+                                            sx={{
+                                                cursor: 'pointer', borderRadius: 2, p: 2,
+                                                border: '1px solid', borderColor: 'divider',
+                                                borderLeft: `6px solid ${color}`,
+                                                bgcolor: 'rgba(255,255,255,0.02)',
+                                                transition: 'all .15s ease',
+                                                '&:hover': { bgcolor: 'rgba(255,255,255,0.06)', transform: 'translateY(-2px)' }
+                                            }}>
+                                            <Typography variant="subtitle1" fontWeight={700}>{cat}</Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                                {count} producto{count !== 1 ? 's' : ''}
+                                            </Typography>
+                                        </Box>
+                                    )
+                                })}
+                            </Box>
+                        </Paper>
+                    )}
+
+                    {/* PASO B: elegir producto dentro de la categoría, con orden */}
+                    {bulkStep === 'product' && (
+                        <Paper sx={{ p: 2 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <Button size="small" startIcon={<ArrowBackIcon />}
+                                        onClick={() => { setBulkStep('category'); setBulkCategory('') }}>
+                                        Categorías
+                                    </Button>
+                                    <Typography variant="subtitle1" fontWeight={700}
+                                        sx={{ color: CAT_COLORS[bulkCategory] || 'text.primary' }}>
+                                        {bulkCategory}
+                                    </Typography>
+                                </Box>
+                                <TextField select size="small" label="Ordenar por" value={bulkSort}
+                                    onChange={e => setBulkSort(e.target.value)}
+                                    sx={{ minWidth: 200 }}
+                                    InputProps={{ startAdornment: <InputAdornment position="start"><SortIcon fontSize="small" /></InputAdornment> }}>
+                                    <MenuItem value="name-asc">Nombre (A-Z)</MenuItem>
+                                    <MenuItem value="qty-desc">Cantidad (mayor a menor)</MenuItem>
+                                    <MenuItem value="qty-asc">Cantidad (menor a mayor)</MenuItem>
+                                </TextField>
+                            </Box>
+
+                            {bulkCategoryProducts.length === 0 ? (
+                                <Alert severity="info">Esta categoría no tiene productos.</Alert>
+                            ) : (
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                    {bulkCategoryProducts.map(p => {
+                                        const linkedCount = p.units.filter(u => Boolean(unitToEpc[u.id])).length
+                                        return (
+                                            <Box key={p.id}
+                                                onClick={() => { setBulkProductId(p.id); setBulkStep('session') }}
+                                                sx={{
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                                    cursor: 'pointer', p: 1.5, borderRadius: 2,
+                                                    border: '1px solid', borderColor: 'divider',
+                                                    '&:hover': { bgcolor: 'rgba(255,255,255,0.06)' }
+                                                }}>
+                                                <Box>
+                                                    <Typography variant="body1">{p.name}</Typography>
+                                                    <Typography variant="caption" color="text.secondary">{p.sku}</Typography>
+                                                </Box>
+                                                <Chip size="small"
+                                                    label={`${linkedCount}/${p.total} vinculadas`}
+                                                    color={linkedCount === p.total ? 'success' : 'default'}
+                                                />
+                                            </Box>
+                                        )
+                                    })}
+                                </Box>
+                            )}
+                        </Paper>
+                    )}
+
+                    {/* PASO C: sesión de escaneo para el producto elegido */}
+                    {bulkStep === 'session' && (bulkProduct ? (
                         <Box>
                             {/* Encabezado del lote: nombre + barra de progreso grande,
                                 para que de un vistazo se sepa cuánto falta. */}
                             <Paper sx={{ p: 3, mb: 2, border: '2px solid #66FCF1', bgcolor: 'rgba(102,252,241,0.04)' }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                         <QrCodeScannerIcon sx={{ fontSize: 32, color: '#66FCF1' }} />
                                         <Box>
                                             <Typography variant="h6" sx={{ lineHeight: 1.2 }}>{bulkProduct.name}</Typography>
-                                            <Typography variant="caption" color="text.secondary">{bulkProduct.sku} · Lote activo</Typography>
+                                            <Typography variant="caption" color="text.secondary">{bulkProduct.sku} · Sesión activa</Typography>
                                         </Box>
                                     </Box>
-                                    <Button size="small" variant="outlined" color="error" startIcon={<CancelIcon />}
-                                        onClick={() => setBulkProductId('')}>
-                                        Cambiar de producto
-                                    </Button>
+                                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                                        <Button size="small" variant="outlined" startIcon={<UndoIcon />}
+                                            disabled={bulkSessionLinks.length === 0}
+                                            onClick={handleUndoLastBulk}>
+                                            Deshacer última lectura
+                                        </Button>
+                                        <Button size="small" variant="outlined" color="warning" startIcon={<RestartAltIcon />}
+                                            onClick={() => setResetConfirmOpen(true)}>
+                                            Detener vinculación
+                                        </Button>
+                                        <Button size="small" variant="outlined" color="error" startIcon={<CancelIcon />}
+                                            onClick={() => { setBulkProductId(''); setBulkStep('product') }}>
+                                            Cambiar de producto
+                                        </Button>
+                                    </Box>
                                 </Box>
 
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.5 }}>
@@ -356,7 +500,7 @@ export default function RfidRegistrar() {
                                 </Box>
                                 <Typography variant="caption" color="text.secondary">
                                     {bulkAvailableCount === 0
-                                        ? '✅ Todas las unidades ya están vinculadas'
+                                        ? '✅ Todas las unidades ya están vinculadas — la lectura se detiene automáticamente'
                                         : `Pasa el siguiente sticker por la antena — quedan ${bulkAvailableCount} unidad${bulkAvailableCount !== 1 ? 'es' : ''} sin vincular`}
                                 </Typography>
                             </Paper>
@@ -425,8 +569,26 @@ export default function RfidRegistrar() {
                             </Paper>
                         </Box>
                     ) : (
-                        <Alert severity="info">Selecciona un producto arriba para activar el modo lote.</Alert>
-                    )}
+                        <Alert severity="info">Selecciona un producto para iniciar la sesión de vinculación.</Alert>
+                    ))}
+
+                    {/* Modal de confirmación para el botón "Detener vinculación" —
+                        es la red de seguridad a prueba de fallas: si la restricción de
+                        lectura falla y se leen más stickers de los deseados, esto libera
+                        SOLO los tags vinculados durante la sesión activa y vuelve al inicio. */}
+                    <Dialog open={resetConfirmOpen} onClose={() => setResetConfirmOpen(false)}>
+                        <DialogTitle>¿Desea detener la vinculación?</DialogTitle>
+                        <DialogContent>
+                            <Typography variant="body2" color="text.secondary">
+                                Se liberarán los {bulkSessionLinks.length} tag{bulkSessionLinks.length !== 1 ? 's' : ''} vinculado{bulkSessionLinks.length !== 1 ? 's' : ''} en esta sesión
+                                y volverás al inicio de la sección. Los tags vinculados en sesiones anteriores no se ven afectados.
+                            </Typography>
+                        </DialogContent>
+                        <DialogActions>
+                            <Button onClick={() => setResetConfirmOpen(false)}>Cancelar</Button>
+                            <Button color="warning" variant="contained" onClick={handleResetBulkSession}>Aceptar</Button>
+                        </DialogActions>
+                    </Dialog>
                 </Box>
             )}
 
