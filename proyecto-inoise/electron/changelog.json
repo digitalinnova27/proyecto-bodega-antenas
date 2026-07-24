@@ -1,4 +1,10 @@
 {
+  "1.1.1": [
+    "Nueva campana de notificaciones en el panel principal",
+    "Nueva vista de perfiles para los usuarios Operador",
+    "Historial ampliado con sección de Auditoría",
+    "Corrección de un bug en la sección de Personal"
+  ],
   "1.0.7": [
     "Agente de IA integrado en el chat del equipo",
     "Mejoras en el panel de chat",

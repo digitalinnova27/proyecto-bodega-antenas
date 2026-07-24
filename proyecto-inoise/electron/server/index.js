@@ -158,15 +158,17 @@ app.post('/api/auth/login-pin', (req, res) => {
 })
 
 // Estado público: ¿existen usuarios? + lista mínima para pantalla de login.
-// No requiere token. Solo expone id, displayName, role, hasPin, avatar —
-// sin contraseñas, sin hashes.
+// No requiere token. Expone id, nombre, apellido, cargo, displayName, role,
+// hasPin, avatar — sin contraseñas, sin hashes. nombre/apellido/cargo van
+// por separado (además de displayName) porque las tarjetas de selección de
+// operador en Login.jsx los usan individualmente, no el nombre combinado.
 app.get('/api/auth/status', (req, res) => {
   const usersResult = safe(() => loadUsers())
   const list = (usersResult.ok && Array.isArray(usersResult.data)) ? usersResult.data : []
   // Solo usuarios activos en la pantalla de login
   const activeList = list.filter(u => u.active !== false)
-  const safeList = activeList.map(({ id, username, nombre, apellido, role, hasPin, avatar }) =>
-    ({ id, username, displayName: `${nombre} ${apellido}`.trim(), role, hasPin: Boolean(hasPin), avatar })
+  const safeList = activeList.map(({ id, username, nombre, apellido, cargo, role, hasPin, avatar }) =>
+    ({ id, username, nombre, apellido, cargo, displayName: `${nombre} ${apellido}`.trim(), role, hasPin: Boolean(hasPin), avatar })
   )
   res.json({ ok: true, hasUsers: list.length > 0, users: safeList, hasActiveUsers: activeList.length > 0 })
 })
@@ -267,11 +269,17 @@ app.patch('/api/users/:id/active', requireAuth, (req, res) => {
 
 app.post('/api/users/:id/pin', requireAuth, (req, res) => {
   const { pin } = req.body || {}
-  res.json(safe(() => setUserPin(req.params.id, pin)))
+  const result = safe(() => setUserPin(req.params.id, pin))
+  // Avisar a otras pantallas conectadas (ej. Login de otro PC) para que
+  // refresquen la lista y muestren el PIN recién configurado sin recargar.
+  if (result.ok) io.emit('users:updated')
+  res.json(result)
 })
 
 app.delete('/api/users/:id/pin', requireAuth, (req, res) => {
-  res.json(safe(() => removeUserPin(req.params.id)))
+  const result = safe(() => removeUserPin(req.params.id))
+  if (result.ok) io.emit('users:updated')
+  res.json(result)
 })
 
 // ── Rutas de datos (inventario, eventos, etc.) ────────────────────────────────
@@ -390,6 +398,32 @@ app.get('/api/info', (req, res) => {
   res.json({ ok: true, ip: getLocalIP(), port: PORT, version: '2.0.0' })
 })
 
+// ── Rutas de personal (staff) ─────────────────────────────────────────────────
+// IMPORTANTE: deben registrarse ANTES del fallback SPA de abajo (app.get('*', ...)).
+// Express hace match de rutas en el orden en que se registran, así que cualquier
+// ruta GET definida después del comodín '*' nunca se alcanza (el comodín la
+// intercepta primero). Esto causaba que GET /api/staff devolviera el JSON
+// genérico { server: 'iNOISE', status: 'running' } del fallback en vez de la
+// lista real de personal.
+app.get('/api/staff', requireAuth, (_req, res) => {
+  res.json(safe(() => loadStaff()))
+})
+
+app.post('/api/staff', requireAuth, (req, res) => {
+  const { nombre, apellido, rut, telefono, cargo } = req.body
+  if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido requeridos' })
+  res.json(safe(() => createStaff({ nombre, apellido, rut, telefono, cargo })))
+})
+
+app.put('/api/staff/:id', requireAuth, (req, res) => {
+  const { nombre, apellido, rut, telefono, cargo, activo } = req.body
+  res.json(safe(() => { updateStaff(req.params.id, { nombre, apellido, rut, telefono, cargo, activo }); return true }))
+})
+
+app.delete('/api/staff/:id', requireAuth, (req, res) => {
+  res.json(safe(() => { deleteStaff(req.params.id); return true }))
+})
+
 // ── SPA fallback — todas las rutas no-API sirven el index.html de React ───────
 
 app.get('*', (req, res) => {
@@ -484,25 +518,5 @@ function startServer() {
     })
   })
 }
-
-// ── Rutas de personal (staff) ─────────────────────────────────────────────────
-app.get('/api/staff', requireAuth, (_req, res) => {
-  res.json(safe(() => loadStaff()))
-})
-
-app.post('/api/staff', requireAuth, (req, res) => {
-  const { nombre, apellido, rut, telefono, cargo } = req.body
-  if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido requeridos' })
-  res.json(safe(() => createStaff({ nombre, apellido, rut, telefono, cargo })))
-})
-
-app.put('/api/staff/:id', requireAuth, (req, res) => {
-  const { nombre, apellido, rut, telefono, cargo, activo } = req.body
-  res.json(safe(() => { updateStaff(req.params.id, { nombre, apellido, rut, telefono, cargo, activo }); return true }))
-})
-
-app.delete('/api/staff/:id', requireAuth, (req, res) => {
-  res.json(safe(() => { deleteStaff(req.params.id); return true }))
-})
 
 module.exports = { startServer, getLocalIP, PORT }

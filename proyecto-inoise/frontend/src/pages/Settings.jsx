@@ -180,10 +180,21 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
         <AvatarPicker value={form.avatar} onChange={v => set('avatar', v)} />
         {errors.avatar && <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1, mt: -1 }}>{errors.avatar}</Typography>}
 
+        {/* Señuelos ocultos: Chrome/Edge ignoran autoComplete="off" en campos
+            usuario/contraseña reales cuando detectan un login guardado para
+            este mismo origen (la propia pantalla de Login) y los autocompletan
+            igual. Poniendo un par usuario/contraseña falso e invisible ANTES
+            de los campos reales, el navegador rellena el señuelo y deja los
+            campos de verdad vacíos. */}
+        <input type="text" name="fakeusernameremembered" autoComplete="username"
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} tabIndex={-1} />
+        <input type="password" name="fakepasswordremembered" autoComplete="new-password"
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} tabIndex={-1} />
+
         <TextField label="Usuario *" size="small" fullWidth sx={{ mb: 2 }}
           value={form.username} onChange={e => set('username', e.target.value.toLowerCase())}
           error={!!errors.username} helperText={errors.username}
-          inputProps={{ autoComplete: 'off' }} />
+          inputProps={{ autoComplete: 'off', name: 'inoise-operator-username' }} />
 
         <Box sx={{ display: 'flex', gap: 2 }}>
           <TextField
@@ -192,6 +203,7 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
             type={showPw ? 'text' : 'password'}
             value={form.password} onChange={e => set('password', e.target.value)}
             error={!!errors.password} helperText={errors.password}
+            inputProps={{ autoComplete: 'new-password', name: 'inoise-operator-password' }}
             InputProps={{
               endAdornment: (
                 <InputAdornment position="end">
@@ -205,7 +217,8 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
           <TextField label="Confirmar" size="small" sx={{ flex: 1 }}
             type={showPw ? 'text' : 'password'}
             value={form.confirm} onChange={e => set('confirm', e.target.value)}
-            error={!!errors.confirm} helperText={errors.confirm} />
+            error={!!errors.confirm} helperText={errors.confirm}
+            inputProps={{ autoComplete: 'new-password', name: 'inoise-operator-password-confirm' }} />
         </Box>
 
         {!isCreate && (
@@ -272,16 +285,29 @@ function UserManagement() {
     setLockError('')
   }
 
+  // Traduce mensajes crudos de SQLite a algo entendible para el usuario final
+  // (ej. "UNIQUE constraint failed: users.username" → nombre de usuario repetido).
+  const friendlyUserError = (msg) => {
+    if (!msg) return null
+    if (msg.includes('UNIQUE constraint failed: users.username')) {
+      return 'Ese nombre de usuario ya está en uso. Elige otro.'
+    }
+    if (msg.includes('UNIQUE constraint failed')) {
+      return 'Ya existe un usuario con esos datos.'
+    }
+    return msg
+  }
+
   const handleSaveUser = async (fields, newPassword) => {
     const res = await updateUser(editUser.id, fields, newPassword)
-    if (!res.ok) return res.error || 'Error al guardar'
+    if (!res.ok) return friendlyUserError(res.error) || 'Error al guardar'
     return null
   }
 
   const handleCreateUser = async (fields, password) => {
     // El rol viene del formulario (Operador o Administrador, elegido por el admin)
     const res = await createUser(fields, password)
-    if (!res.ok) return res.error || 'Error al crear usuario'
+    if (!res.ok) return friendlyUserError(res.error) || 'Error al crear usuario'
     return null
   }
 
