@@ -3,7 +3,7 @@ import {
     Box, Typography, Paper, TextField, MenuItem, Button,
     Chip, Alert, Divider, CircularProgress, InputAdornment,
     Table, TableHead, TableRow, TableCell, TableBody, Fade, List,
-    ListItem, ListItemText, Dialog, DialogTitle, DialogContent, DialogActions, IconButton,
+    ListItem, ListItemText, Dialog, DialogTitle, DialogContent, DialogActions,
     Autocomplete, Snackbar, LinearProgress
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
@@ -14,8 +14,6 @@ import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner'
 import AddCircleIcon from '@mui/icons-material/AddCircle'
 import CancelIcon from '@mui/icons-material/Cancel'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
-import CloseIcon from '@mui/icons-material/Close'
-import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import LibraryAddIcon from '@mui/icons-material/LibraryAdd'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import UndoIcon from '@mui/icons-material/Undo'
@@ -112,8 +110,6 @@ export default function RfidRegistrar() {
         return map
     }, [epcMap])
 
-    const [alreadyLinked, setAlreadyLinked] = React.useState(null) // { epc, productName, unitLabel }
-
     // Vincula automáticamente un EPC a la siguiente unidad disponible del
     // producto fijado en modo lote, sin pedirle al operador que vuelva a
     // elegir el producto en cada sticker.
@@ -179,63 +175,34 @@ export default function RfidRegistrar() {
     }
 
     // Punto único de entrada para cualquier EPC detectado (por antena o
-    // manual). El comportamiento frente a un EPC YA vinculado depende del
-    // modo:
-    //  - Individual: es el flujo "escanea primero" — mostrar el aviso
-    //    completo de "ya vinculado" es la forma principal en que el
-    //    operador se entera del estado del sticker, así que se mantiene
-    //    la pantalla bloqueante de siempre.
-    //  - Vinculación de tags (bulk), sesión activa: un sticker ajeno ya
-    //    vinculado (rollo de repuesto, otro producto sobre la mesa, una
-    //    unidad de ESTE producto ya hecha en una sesión anterior) puede
-    //    pasar cerca de la antena sin que eso sea relevante para lo que se
-    //    está haciendo — interrumpir con un modal cada vez que eso ocurre
-    //    frena la sesión sin necesidad. Se avisa de forma suave (snackbar)
-    //    y se ignora, sin tocar el progreso ni la lista de la sesión.
+    // manual).
+    //
+    // Regla estricta: un EPC YA vinculado a una unidad NO debe generar
+    // ninguna reacción en esta pantalla — ni modal, ni aviso, ni sonido —
+    // en NINGUNO de los dos modos. La antena puede tener stickers ya
+    // vinculados de otros productos (o de este mismo) cerca en cualquier
+    // momento, y eso no debe interrumpir ni distraer nada acá.
+    //
+    // Un tag ya vinculado solo "vuelve a activarse" en dos lugares, fuera
+    // de esta pantalla:
+    //  (a) Sección Operaciones, durante las fases de un evento o arriendo
+    //      (fase 1 a 4) — vive en Operations.jsx, que escucha lastScan de
+    //      forma independiente.
+    //  (b) Al desvincularlo manualmente desde "Productos Vinculados" →
+    //      Desvincular: en ese momento deja de existir en epcMap, así que
+    //      la próxima vez que se escanee acá se trata como un tag nuevo.
     const processEpc = (epc) => {
-        const existingUnitId = epcMap[epc]
+        if (epcMap[epc]) return // tag ya vinculado — se ignora por completo en esta pantalla
 
         if (mode === 'bulk') {
             // Fuera del paso de escaneo (eligiendo categoría o producto)
             // no hay nada que vincular todavía — se ignora cualquier
             // lectura ambiental de la antena.
             if (bulkStep !== 'session') return
-
-            if (existingUnitId) {
-                const belongsToCurrent = bulkProduct?.units.some(u => u.id === existingUnitId)
-                setBulkNotice({
-                    open: true,
-                    severity: belongsToCurrent ? 'info' : 'warning',
-                    msg: belongsToCurrent
-                        ? 'Esta unidad ya estaba vinculada — ignorado.'
-                        : 'Sticker ya vinculado a otro producto — ignorado.'
-                })
-                return
-            }
-
             handleBulkAutoLink(epc)
             return
         }
 
-        // ── Modo individual: comportamiento sin cambios ──
-        if (existingUnitId) {
-            let productName = 'Producto desconocido'
-            let uLabel = existingUnitId
-            for (const p of products) {
-                const u = p.units.find(u => u.id === existingUnitId)
-                if (u) {
-                    productName = p.name
-                    const parts = String(u.id).split('-')
-                    uLabel = 'Unidad ' + parts[parts.length - 1]
-                    break
-                }
-            }
-            setAlreadyLinked({ epc, productName, unitLabel: uLabel })
-            setStep('waiting')
-            return
-        }
-
-        setAlreadyLinked(null)
         setCurrentEpc(epc)
         setStep('detected')
         setSelectedProd('')
@@ -643,49 +610,6 @@ export default function RfidRegistrar() {
                     </Box>
                 </Paper>
             )}
-
-            {/* Modal grande: sticker ya vinculado */}
-            <Dialog
-                open={Boolean(alreadyLinked)}
-                onClose={() => setAlreadyLinked(null)}
-                fullWidth
-                maxWidth="sm"
-            >
-                <DialogTitle sx={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    bgcolor: 'rgba(255,167,38,0.12)', color: 'warning.main'
-                }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <WarningAmberIcon /> Sticker ya vinculado
-                    </Box>
-                    <IconButton size="small" onClick={() => setAlreadyLinked(null)}>
-                        <CloseIcon />
-                    </IconButton>
-                </DialogTitle>
-                <DialogContent dividers sx={{ pt: 3 }}>
-                    {alreadyLinked && (
-                        <>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                                EPC escaneado
-                            </Typography>
-                            <Typography variant="h6" fontFamily="monospace" sx={{ mb: 2, wordBreak: 'break-all' }}>
-                                {alreadyLinked.epc}
-                            </Typography>
-                            <Divider sx={{ mb: 2 }} />
-                            <Typography variant="body2" color="text.secondary">Asignado a</Typography>
-                            <Typography variant="h6" fontWeight={700} sx={{ mb: 0.5 }}>
-                                {alreadyLinked.productName}
-                            </Typography>
-                            <Chip label={alreadyLinked.unitLabel} color="warning" sx={{ mb: 2 }} />
-                            <Alert severity="warning" sx={{ mt: 1 }}>
-                                {alreadyLinked.productName === 'Producto desconocido'
-                                    ? 'Este sticker quedó vinculado a un producto que ya fue eliminado. Ve a "Productos Vinculados" → sección "Stickers sin producto válido" → Liberar, y luego vuelve a escanearlo aquí.'
-                                    : `Si necesitas usar este sticker en otro producto, ve a "Productos Vinculados" → busca ${alreadyLinked.productName} → Revisar → Desvincular, y luego vuelve a escanearlo aquí.`}
-                            </Alert>
-                        </>
-                    )}
-                </DialogContent>
-            </Dialog>
 
             {/* PASO 2: Detectado (modo individual) */}
             {mode === 'individual' && step === 'detected' && (

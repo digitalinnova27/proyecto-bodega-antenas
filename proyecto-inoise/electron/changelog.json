@@ -1,6 +1,6 @@
 {
   "1.1.4": [
-    "En 'Vinculación de tags', un sticker ya vinculado que pasa cerca de la antena ya no interrumpe la sesión con un modal — ahora es solo un aviso breve y se ignora",
+    "Registrar RFID: un sticker ya vinculado que pasa cerca de la antena ya no genera ninguna reacción (ni modal ni aviso) en Vincular individual ni en Vinculación de tags — se ignora por completo",
     "Corrección: una antena detectada ya no vuelve a mostrarse como 'Offline' — queda fija en la lista alternando solo entre 'Activa' y 'En espera' según si hay un sticker en el campo",
     "Verificado: la lectura de tags ya vinculados sigue funcionando normalmente durante las fases de arriendos y eventos (fase 1 a 4)"
   ],
