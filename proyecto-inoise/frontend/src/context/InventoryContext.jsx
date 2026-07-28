@@ -27,6 +27,9 @@ const InventoryContext = createContext(null)
 const BRIDGE_URL = 'http://localhost:3002'
 
 export function InventoryProvider({ children }) {
+  // IMPORTANTE: arranca con INITIAL_PRODUCTS (catálogo real importado del
+  // Excel del cliente) — esto NO es data de prueba, es inventario real que
+  // debe estar cargado de entrada en cualquier instalación. No cambiar a [].
   const [products, setProducts] = useState(INITIAL_PRODUCTS)
   const [epcMap, setEpcMap] = useState({}) // EPC → unitId
   const [events, setEvents] = useState([])

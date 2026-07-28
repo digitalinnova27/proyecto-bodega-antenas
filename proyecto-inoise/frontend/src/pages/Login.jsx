@@ -414,6 +414,13 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
 /* ─── Pantalla de setup inicial (primera vez, sin config) ──────────────── */
 function SetupScreen({ onDone, startAtConnect = false }) {
   const [step, setStep] = useState(startAtConnect ? 'connect' : 'choice') // 'choice' | 'connect'
+  // Confirmación antes de elegir "Servidor principal" — cada equipo decide
+  // este modo de forma local e independiente, así que no hay manera de que
+  // el sistema impida por sí solo que dos PCs distintas se autodeclaren
+  // servidor a la vez (cada una crearía su propia base de datos separada,
+  // un "split-brain" silencioso). Este paso extra es la mitigación
+  // práctica: obliga a pensarlo dos veces antes de crear una base nueva.
+  const [confirmServer, setConfirmServer] = useState(false)
 
   // Auto-descubrimiento
   const [discovering, setDiscovering]   = useState(false)
@@ -641,32 +648,57 @@ function SetupScreen({ onDone, startAtConnect = false }) {
       <p style={{ color: '#C5C6C7', fontSize: 14, marginBottom: 32 }}>
         ¿Cómo deseas usar este equipo?
       </p>
-      <div style={{ display: 'flex', gap: 20, justifyContent: 'center', flexWrap: 'wrap' }}>
-        <div
-          style={cardBase}
-          onClick={handleChooseServer}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
-        >
-          <div style={{ fontSize: 42, marginBottom: 12 }}>🖥️</div>
-          <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Servidor principal</h3>
-          <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
-            Este PC almacena todos los datos. Los demás equipos se conectarán a él.
-          </p>
+      {!confirmServer ? (
+        <div style={{ display: 'flex', gap: 20, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <div
+            style={cardBase}
+            onClick={() => setConfirmServer(true)}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
+          >
+            <div style={{ fontSize: 42, marginBottom: 12 }}>🖥️</div>
+            <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Servidor principal</h3>
+            <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+              Este PC almacena todos los datos. Los demás equipos se conectarán a él.
+            </p>
+          </div>
+          <div
+            style={cardBase}
+            onClick={() => setStep('connect')}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
+          >
+            <div style={{ fontSize: 42, marginBottom: 12 }}>🔗</div>
+            <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Conectarme a otro equipo</h3>
+            <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+              Este PC se conectará al servidor del administrador para ver todos los datos sincronizados.
+            </p>
+          </div>
         </div>
-        <div
-          style={cardBase}
-          onClick={() => setStep('connect')}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
-        >
-          <div style={{ fontSize: 42, marginBottom: 12 }}>🔗</div>
-          <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Conectarme a otro equipo</h3>
-          <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
-            Este PC se conectará al servidor del administrador para ver todos los datos sincronizados.
-          </p>
+      ) : (
+        <div style={{ maxWidth: 380, margin: '0 auto' }}>
+          <div style={{
+            background: 'rgba(226,75,74,0.08)', border: '1.5px solid rgba(226,75,74,0.35)',
+            borderRadius: 12, padding: '18px 20px', textAlign: 'left'
+          }}>
+            <p style={{ color: '#E24B4A', fontWeight: 700, fontSize: 14, margin: '0 0 8px' }}>
+              ⚠️ Confirma antes de continuar
+            </p>
+            <p style={{ color: '#C5C6C7', fontSize: 13, lineHeight: 1.6, margin: 0 }}>
+              Esto crea una base de datos <strong>nueva e independiente</strong> en este equipo.
+              Solo debería existir <strong>un</strong> servidor principal para todo el equipo de trabajo.
+              Si ya hay uno configurado en otra PC, elegí "Conectarme a otro equipo" en su lugar —
+              elegir esto por error crea un sistema separado que no se sincroniza con el resto.
+            </p>
+          </div>
+          <button onClick={handleChooseServer} style={btnPrimary(false)}>
+            Sí, este equipo es el servidor principal
+          </button>
+          <button onClick={() => setConfirmServer(false)} style={btnSecondary}>
+            ← Cancelar
+          </button>
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -766,7 +798,15 @@ export default function Login() {
       return
     }
 
-    // Modo cliente: saltar directo al formulario de operador (sin elección de rol)
+    // Modo cliente: se conecta a la base de datos de otro equipo, pero el
+    // login en sí funciona igual que en modo servidor — Carlos (admin)
+    // puede entrar como Administrador desde cualquier PC conectada como
+    // cliente, no solo como Operador. "Modo cliente" define de dónde vienen
+    // los datos, no quién puede loguearse como qué — eso ya lo protege el
+    // servidor (solo el admin real puede crear/editar otros usuarios, ver
+    // electron/server/index.js). Antes esto forzaba selectedRole='operador'
+    // y saltaba el paso de elegir rol, dejando a Carlos sin forma de entrar
+    // como admin desde un segundo dispositivo.
     if (cfg.mode === 'client') {
       // Sin serverUrl → volver al paso de conexión (handleResetConfig lo produce)
       if (!cfg.serverUrl) {
@@ -774,9 +814,7 @@ export default function Login() {
         return
       }
       if (hasAnyUsers === null) return // cargando
-      setPhase('login')
-      setSelectedRole('operador')
-      setLoginStep('credentials')
+      setPhase(hasAnyUsers ? 'login' : 'firstRun')
       return
     }
 
@@ -839,10 +877,13 @@ export default function Login() {
   const handleLogin = async () => {
     setLoginError('')
     setLoginLoading(true)
-    // En modo cliente no validamos rol (solo existe el operador en este equipo).
     // El rol esperado se valida DENTRO de login(), antes de guardar sesión,
-    // para que nunca llegue a autenticar globalmente si no coincide.
-    const expectedRole = isClientMode ? undefined : selectedRole
+    // para que nunca llegue a autenticar globalmente si no coincide (evita
+    // el parpadeo de "entró como admin desde la tarjeta Operador"). Esto
+    // aplica igual en modo cliente ahora que ahí también se elige tarjeta
+    // Admin/Operador — el modo (servidor/cliente) solo define de dónde
+    // vienen los datos, no qué rol puede loguearse.
+    const expectedRole = selectedRole
     const res = await login(username, password, expectedRole)
     setLoginLoading(false)
     if (!res.ok) { setLoginError(res.error || 'Credenciales incorrectas'); return }
@@ -1006,7 +1047,7 @@ export default function Login() {
 
   return (
     <div className="login-container">
-      {loginStep === 'credentials' && !isClientMode && (
+      {loginStep === 'credentials' && (
         <button className="back-arrow" onClick={handleBack} aria-label="Volver">
           <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"
             strokeLinecap="round" strokeLinejoin="round">
@@ -1350,23 +1391,15 @@ export default function Login() {
           )}
 
           {/* ── Escape al fondo del panel de credenciales ─────────────────
-              • Modo cliente: resetear config → volver al setup
-              • Modo servidor viendo operador: cambiar a admin            */}
+              • Alternar Admin ↔ Operador: disponible en modo servidor Y en
+                modo cliente por igual — el rol de quien inicia sesión no
+                depende de si este equipo guarda la base de datos o no
+                (eso lo sigue protegiendo el servidor, no esta pantalla).
+              • Modo cliente además suma "Cambiar configuración de equipo",
+                por si hace falta apuntar a otra IP o volver a elegir modo. */}
           {loginStep === 'credentials' && (
-            <div style={{ marginTop: 14, textAlign: 'center' }}>
-              {isClientMode ? (
-                <button
-                  onClick={handleResetConfig}
-                  style={{
-                    background: 'none', border: 'none', padding: 0,
-                    color: 'rgba(255,255,255,0.28)', fontSize: 11,
-                    cursor: 'pointer', textDecoration: 'underline',
-                    animation: 'none', opacity: 1
-                  }}
-                >
-                  ← Cambiar configuración de equipo
-                </button>
-              ) : selectedRole === 'operador' ? (
+            <div style={{ marginTop: 14, textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center' }}>
+              {selectedRole === 'operador' ? (
                 <button
                   onClick={() => handleLoginRoleSelect('admin')}
                   style={{
@@ -1391,6 +1424,19 @@ export default function Login() {
                   ← Ingresar como Operador
                 </button>
               ) : null}
+              {isClientMode && (
+                <button
+                  onClick={handleResetConfig}
+                  style={{
+                    background: 'none', border: 'none', padding: 0,
+                    color: 'rgba(255,255,255,0.2)', fontSize: 10,
+                    cursor: 'pointer', textDecoration: 'underline',
+                    animation: 'none', opacity: 1
+                  }}
+                >
+                  ← Cambiar configuración de equipo
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1402,8 +1448,8 @@ export default function Login() {
         className={`login-logo ${loginStep === 'credentials' ? 'hide' : ''}`}
       />
 
-      {/* Enlace de escape en pantalla de selección de rol (modo servidor) */}
-      {loginStep === 'role' && !isClientMode && (
+      {/* Enlace de escape en pantalla de selección de rol (cualquier modo) */}
+      {loginStep === 'role' && (
         <button
           onClick={handleResetConfig}
           style={{
