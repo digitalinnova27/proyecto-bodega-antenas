@@ -1,10 +1,12 @@
 {
-  "1.1.5": [
-    "Seguridad: crear, editar o eliminar usuarios ahora está restringido al administrador también del lado del servidor (antes solo se ocultaba el botón en la pantalla)",
-    "Nuevo: aviso en tiempo real 'Fulano está editando esto' en Inventario — si dos PCs abren el mismo producto casi al mismo tiempo, el segundo ve quién lo tiene abierto y no puede guardar por encima hasta que el primero termine",
+  "1.1.6": [
     "Operaciones: al escanear en eventos/arriendos, ahora se valida por producto (SKU) y no por la unidad exacta preasignada — si se toma por error el sticker de una unidad gemela del mismo producto, igual se acepta (mientras no se hayan completado ya todas las unidades necesarias de ese producto en la fase)",
     "El administrador ya puede iniciar sesión con su cuenta desde cualquier PC conectada como cliente, no solo desde la PC servidor — sigue existiendo un solo servidor (base de datos), pero el rol de quien entra ya no depende de eso",
     "Nuevo aviso de confirmación al elegir 'Servidor principal' en la configuración inicial, para evitar crear por error una segunda base de datos independiente"
+  ],
+  "1.1.5": [
+    "Seguridad: crear, editar o eliminar usuarios ahora está restringido al administrador también del lado del servidor (antes solo se ocultaba el botón en la pantalla)",
+    "Nuevo: aviso en tiempo real 'Fulano está editando esto' en Inventario — si dos PCs abren el mismo producto casi al mismo tiempo, el segundo ve quién lo tiene abierto y no puede guardar por encima hasta que el primero termine"
   ],
   "1.1.4": [
     "Registrar RFID: un sticker ya vinculado que pasa cerca de la antena ya no genera ninguna reacción (ni modal ni aviso) en Vincular individual ni en Vinculación de tags — se ignora por completo",
