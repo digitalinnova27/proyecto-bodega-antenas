@@ -778,11 +778,38 @@ function useRfidScanMatcher({ open, allItems, isAlreadyHandled, onValidScan, not
     if (lastSeenScanRef.current === scanKey) return // ya estaba ahí cuando se abrió este modal
     lastSeenScanRef.current = scanKey
     const unitId = lastScan.sku
-    const item = allItems.find(it => it.id === unitId)
+
+    // 1) Coincidencia exacta con una unidad preasignada — camino normal.
+    let item = allItems.find(it => it.id === unitId)
+    let quotaFull = false
+
+    // 2) Si no coincide exactamente, puede ser el MISMO producto pero una
+    //    unidad física distinta (dos micrófonos iguales, se tomó el sticker
+    //    equivocado por error). La reserva de cantidad ya está garantizada
+    //    por SKU al crear el evento/arriendo (nunca se reserva de más), así
+    //    que para el operario no importa cuál unidad específica es — solo
+    //    que sea el producto correcto y que a esta fase todavía le falten
+    //    unidades de ese producto por marcar. Se busca un cupo pendiente
+    //    del mismo producto y se acepta con ESE cupo (conserva nombre,
+    //    incidencias y marcado manual existentes, solo cambia qué sticker
+    //    físico lo satisface).
+    if (!item) {
+      const productId = Number(String(unitId).split('-')[0])
+      const productItems = allItems.filter(it => it.productId === productId)
+      if (productItems.length > 0) {
+        item = productItems.find(it => !isAlreadyHandled(it))
+        if (!item) quotaFull = true // el producto es correcto, pero ya no quedan cupos libres de él
+      }
+    }
 
     // ── 2) AZUL con letra blanca: existe pero no pertenece a esta operación ──
     if (!item) {
-      setScanAlert({ severity: 'info', tone: 'doesntBelong', msg: notBelongMsg || 'Este sticker no pertenece a este evento' })
+      setScanAlert({
+        severity: 'info', tone: 'doesntBelong',
+        msg: quotaFull
+          ? 'Ya se completaron todas las unidades de este producto en esta fase.'
+          : (notBelongMsg || 'Este sticker no pertenece a este evento')
+      })
       clearLastScan()
       return
     }
@@ -1086,6 +1113,7 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
       id: unitId,
       name: prod.name,
       sku: prod.sku,
+      productId: prod.id,
     }))
   })
 
