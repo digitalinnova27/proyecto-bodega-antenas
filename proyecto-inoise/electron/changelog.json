@@ -1,4 +1,15 @@
 {
+  "1.1.8": [
+    "Nuevo: enlace '¿Olvidaste tu contraseña?' en la pantalla de inicio de sesión — envía un código de 6 dígitos al correo registrado del usuario y permite fijar una contraseña nueva sin necesitar la anterior (requiere tener configurado el correo emisor en Ajustes)",
+    "El código de recuperación vence en 15 minutos y se invalida solo (no se puede reutilizar ni adivinar por fuerza bruta con reintentos ilimitados)"
+  ],
+  "1.1.7": [
+    "Corrección: la verificación de la contraseña de administrador ya no se demora — el cálculo del hash de contraseña pasó a ser asíncrono (antes bloqueaba momentáneamente el servidor) y se evita disparar varias verificaciones a la vez si se presiona Enter repetido",
+    "Al crear o cambiar la contraseña de un operador, ahora se puede elegir entre generarla automáticamente (segura, se completa sola) o escribirla a mano (mínimo 8 caracteres, mayúscula, minúscula, número y signo especial, con confirmación)",
+    "Nuevo: tras crear un usuario o cambiarle la contraseña, se puede enviar directamente por WhatsApp (si tiene teléfono cargado) o por correo (si tiene email y está configurado el correo emisor en Ajustes)",
+    "Nueva sección en Ajustes (solo admin): configuración del correo emisor de credenciales (SMTP)",
+    "Nuevo campo Teléfono en el perfil de usuario"
+  ],
   "1.1.6": [
     "Operaciones: al escanear en eventos/arriendos, ahora se valida por producto (SKU) y no por la unidad exacta preasignada — si se toma por error el sticker de una unidad gemela del mismo producto, igual se acepta (mientras no se hayan completado ya todas las unidades necesarias de ese producto en la fase)",
     "El administrador ya puede iniciar sesión con su cuenta desde cualquier PC conectada como cliente, no solo desde la PC servidor — sigue existiendo un solo servidor (base de datos), pero el rol de quien entra ya no depende de eso",

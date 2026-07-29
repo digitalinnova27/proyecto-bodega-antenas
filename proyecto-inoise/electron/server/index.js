@@ -18,6 +18,7 @@ const { Server } = require('socket.io')
 const jwt      = require('jsonwebtoken')
 const path     = require('path')
 const os       = require('os')
+const nodemailer = require('nodemailer')
 
 const {
   loadAll,
@@ -28,7 +29,9 @@ const {
   setUserPin, removeUserPin, authLoginPin, setUserActive,
   createSession, closeSession, closeAllOpenSessions, loadUserSessions,
   getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
-  loadStaff, createStaff, updateStaff, deleteStaff
+  loadStaff, createStaff, updateStaff, deleteStaff,
+  getSetting, setSetting,
+  createPasswordReset, verifyAndConsumePasswordReset, setUserPassword
 } = require('../db')
 
 // ── Constantes ───────────────────────────────────────────────────────────────
@@ -107,6 +110,12 @@ const safe = (fn) => {
   catch (e) { return { ok: false, error: e.message } }
 }
 
+/** Igual que safe(), pero para funciones async (ej. las que hashean contraseña) */
+const safeAsync = async (fn) => {
+  try   { return { ok: true,  data: await fn() } }
+  catch (e) { return { ok: false, error: e.message } }
+}
+
 /**
  * Middleware JWT.
  * Rutas de auth (login) no lo necesitan; todo lo demás sí.
@@ -139,9 +148,9 @@ app.get('/api/health', (_req, res) => {
 
 // ── Rutas de autenticación ────────────────────────────────────────────────────
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {}
-  const result = safe(() => authLogin(username, password))
+  const result = await safeAsync(() => authLogin(username, password))
   if (!result.ok || !result.data) {
     return res.json({ ok: false, error: 'Usuario o contraseña incorrectos' })
   }
@@ -207,9 +216,9 @@ app.get('/api/sessions/user/:id', requireAuth, (req, res) => {
 })
 
 // Re-verifica contraseña sin cambiar sesión (para acciones sensibles)
-app.post('/api/auth/verify', requireAuth, (req, res) => {
+app.post('/api/auth/verify', requireAuth, async (req, res) => {
   const { password } = req.body || {}
-  const result = safe(() => authLogin(req.user.username, password))
+  const result = await safeAsync(() => authLogin(req.user.username, password))
   res.json({ ok: result.ok && !!result.data })
 })
 
@@ -223,7 +232,7 @@ app.get('/api/users/count-admins', requireAuth, (req, res) => {
   res.json(safe(() => countAdmins()))
 })
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', async (req, res) => {
   // En first-run (sin ningún administrador todavía) se permite sin token,
   // y el primer usuario SIEMPRE se crea como admin sin importar lo que
   // mande el body — así nadie puede arrancar la app y autoasignarse un
@@ -237,7 +246,7 @@ app.post('/api/users', (req, res) => {
   const isFirstRun = count.ok && count.data === 0
   const { data, password } = req.body || {}
   if (isFirstRun) {
-    const result = safe(() => createUser({ ...data, role: 'admin' }, password))
+    const result = await safeAsync(() => createUser({ ...data, role: 'admin' }, password))
     if (result.ok) io.emit('users:updated')
     return res.json(result)
   }
@@ -250,12 +259,12 @@ app.post('/api/users', (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ ok: false, error: 'Solo el administrador puede crear usuarios' })
   }
-  const result = safe(() => createUser(data, password))
+  const result = await safeAsync(() => createUser(data, password))
   if (result.ok) io.emit('users:updated')
   res.json(result)
 })
 
-app.put('/api/users/:id', requireAuth, (req, res) => {
+app.put('/api/users/:id', requireAuth, async (req, res) => {
   // Editar cuentas (incluido cambiar contraseñas o el rol de alguien) es
   // exclusivo del administrador — antes solo exigía estar logueado.
   if (req.user.role !== 'admin') {
@@ -263,7 +272,7 @@ app.put('/api/users/:id', requireAuth, (req, res) => {
   }
   const id = req.params.id
   const { fields, newPassword } = req.body || {}
-  const result = safe(() => updateUser(id, fields, newPassword || null))
+  const result = await safeAsync(() => updateUser(id, fields, newPassword || null))
   if (result.ok) io.emit('users:updated')
   res.json(result)
 })
@@ -333,6 +342,161 @@ app.delete('/api/users/:id/pin', requireAuth, (req, res) => {
   const result = safe(() => removeUserPin(req.params.id))
   if (result.ok) io.emit('users:updated')
   res.json(result)
+})
+
+// ── Configuración SMTP (envío automático de credenciales por correo) ────────
+// Solo el admin puede ver/editar. La contraseña de aplicación nunca se
+// devuelve al frontend una vez guardada — solo se informa si ya hay una
+// configurada (hasPassword), para que el admin pueda dejarla como está al
+// actualizar el resto de los datos.
+app.get('/api/settings/smtp', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede ver esto' })
+  }
+  try {
+    const raw = getSetting('smtp_config')
+    if (!raw) return res.json({ ok: true, email: '', host: 'smtp.gmail.com', port: 465, hasPassword: false })
+    const cfg = JSON.parse(raw)
+    return res.json({ ok: true, email: cfg.email || '', host: cfg.host || 'smtp.gmail.com', port: cfg.port || 465, hasPassword: !!cfg.appPassword })
+  } catch (e) {
+    return res.json({ ok: false, error: e.message })
+  }
+})
+
+app.post('/api/settings/smtp', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
+  const { email, appPassword, host, port } = req.body || {}
+  try {
+    const raw = getSetting('smtp_config')
+    const prev = raw ? JSON.parse(raw) : {}
+    const cfg = {
+      email: email !== undefined ? email : prev.email,
+      // Si no mandan una contraseña nueva (campo vacío), se conserva la que ya había guardada.
+      appPassword: appPassword ? appPassword : prev.appPassword,
+      host: host || prev.host || 'smtp.gmail.com',
+      port: port || prev.port || 465
+    }
+    setSetting('smtp_config', JSON.stringify(cfg))
+    return res.json({ ok: true, email: cfg.email, host: cfg.host, port: cfg.port, hasPassword: !!cfg.appPassword })
+  } catch (e) {
+    return res.json({ ok: false, error: e.message })
+  }
+})
+
+// Helper compartido: arma el transporter desde la config guardada y manda
+// un correo. Lanza un error con mensaje entendible si falta configuración.
+async function _sendAppMail({ to, subject, text, html }) {
+  const raw = getSetting('smtp_config')
+  if (!raw) throw new Error('Todavía no se configuró el correo emisor en Ajustes')
+  const cfg = JSON.parse(raw)
+  if (!cfg.email || !cfg.appPassword) throw new Error('Falta completar la configuración SMTP en Ajustes')
+
+  const transporter = nodemailer.createTransport({
+    host: cfg.host || 'smtp.gmail.com',
+    port: cfg.port || 465,
+    secure: (cfg.port || 465) === 465,
+    auth: { user: cfg.email, pass: cfg.appPassword }
+  })
+  await transporter.sendMail({ from: `"iNOISE Control Bodega" <${cfg.email}>`, to, subject, text, html })
+}
+
+// ── Envío de credenciales al operador (correo) ───────────────────────────
+// El admin acaba de crear/cambiar la contraseña de un usuario y quiere
+// avisarle sus datos de acceso. La contraseña en texto plano solo existe
+// en este momento (recién se hasheó) — el cliente la manda una única vez,
+// nunca se guarda en texto plano en la base de datos.
+app.post('/api/users/:id/send-credentials', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
+  const { password, accessUrl } = req.body || {}
+  if (!password) return res.json({ ok: false, error: 'Falta la contraseña a enviar' })
+
+  const usersResult = safe(() => loadUsers())
+  const target = usersResult.ok ? usersResult.data.find(u => u.id === req.params.id) : null
+  if (!target) return res.json({ ok: false, error: 'Usuario no encontrado' })
+  if (!target.email) return res.json({ ok: false, error: 'Este usuario no tiene correo cargado' })
+
+  try {
+    const nombreCompleto = `${target.nombre} ${target.apellido}`.trim()
+    await _sendAppMail({
+      to: target.email,
+      subject: 'Tus credenciales de acceso a iNOISE',
+      text: `Hola ${nombreCompleto},\n\nSe creó tu cuenta en iNOISE Control Bodega.\n\nUsuario: ${target.username}\nContraseña: ${password}\n${accessUrl ? `\nAccedé desde: ${accessUrl}\n` : ''}\nPor seguridad, te recomendamos cambiar la contraseña la primera vez que ingreses.\n\n— iNOISE`,
+      html: `<p>Hola <strong>${nombreCompleto}</strong>,</p><p>Se creó tu cuenta en <strong>iNOISE Control Bodega</strong>.</p><p><strong>Usuario:</strong> ${target.username}<br/><strong>Contraseña:</strong> ${password}</p>${accessUrl ? `<p>Accedé desde: <a href="${accessUrl}">${accessUrl}</a></p>` : ''}<p>Por seguridad, te recomendamos cambiar la contraseña la primera vez que ingreses.</p><p>— iNOISE</p>`
+    })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[SMTP] Error enviando credenciales:', e.message)
+    res.json({ ok: false, error: 'No se pudo enviar el correo: ' + e.message })
+  }
+})
+
+// ── Recuperar contraseña olvidada ─────────────────────────────────────────
+// Flujo estándar de "olvidé mi contraseña": el usuario pide un código, se le
+// manda por correo (si tiene uno cargado), y con ese código puede fijar una
+// contraseña nueva sin necesitar la anterior. Público (sin token) porque
+// justamente se usa cuando no se puede iniciar sesión.
+//
+// Por seguridad no se revela si el usuario existe o no ni si tiene correo
+// cargado — la respuesta es siempre la misma frase genérica. La única
+// excepción real es cuando el correo emisor todavía no está configurado en
+// Ajustes, porque eso no depende de qué usuario pidió el código.
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { username } = req.body || {}
+  const generic = { ok: true, message: 'Si el usuario existe y tiene un correo cargado, le enviamos un código de verificación.' }
+  if (!username) return res.json(generic)
+
+  const raw = getSetting('smtp_config')
+  if (!raw) return res.json({ ok: false, error: 'El envío de correo todavía no está configurado. Pedile a un administrador que lo configure en Ajustes, o que te restablezca la contraseña manualmente.' })
+
+  const usersResult = safe(() => loadUsers())
+  const target = usersResult.ok ? usersResult.data.find(u => u.username === username) : null
+  if (!target || !target.email || target.active === false) return res.json(generic)
+
+  try {
+    const code = createPasswordReset(target.id)
+    const nombreCompleto = `${target.nombre} ${target.apellido}`.trim()
+    await _sendAppMail({
+      to: target.email,
+      subject: 'Código para recuperar tu contraseña — iNOISE',
+      text: `Hola ${nombreCompleto},\n\nTu código para restablecer la contraseña es: ${code}\n\nVence en 15 minutos. Si vos no pediste este código, podés ignorar este correo.\n\n— iNOISE`,
+      html: `<p>Hola <strong>${nombreCompleto}</strong>,</p><p>Tu código para restablecer la contraseña es:</p><p style="font-size:28px;font-weight:bold;letter-spacing:4px;">${code}</p><p>Vence en 15 minutos. Si vos no pediste este código, podés ignorar este correo.</p><p>— iNOISE</p>`
+    })
+    return res.json(generic)
+  } catch (e) {
+    console.error('[SMTP] Error enviando código de recuperación:', e.message)
+    // Acá sí conviene avisar del error real — si no, el admin nunca se
+    // entera de que el correo emisor está mal configurado.
+    return res.json({ ok: false, error: 'No se pudo enviar el correo: ' + e.message })
+  }
+})
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { username, code, newPassword } = req.body || {}
+  if (!username || !code || !newPassword) {
+    return res.json({ ok: false, error: 'Faltan datos' })
+  }
+  // Mismas reglas que en la creación/edición de usuario desde Ajustes.
+  if (newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) ||
+      !/[0-9]/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+    return res.json({ ok: false, error: 'La contraseña debe tener 8+ caracteres, mayúscula, minúscula, número y signo especial' })
+  }
+
+  const usersResult = safe(() => loadUsers())
+  const target = usersResult.ok ? usersResult.data.find(u => u.username === username) : null
+  // Mensaje genérico también acá — no revela si el usuario existe.
+  const invalidMsg = { ok: false, error: 'Código inválido o vencido' }
+  if (!target) return res.json(invalidMsg)
+
+  const valid = safe(() => verifyAndConsumePasswordReset(target.id, code))
+  if (!valid.ok || !valid.data) return res.json(invalidMsg)
+
+  const result = await safeAsync(() => setUserPassword(target.id, newPassword))
+  if (!result.ok) return res.json({ ok: false, error: result.error })
+  res.json({ ok: true })
 })
 
 // ── Rutas de datos (inventario, eventos, etc.) ────────────────────────────────

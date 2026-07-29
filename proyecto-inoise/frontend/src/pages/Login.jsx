@@ -4,6 +4,10 @@ import { useNavigate } from 'react-router-dom'
 import adminImg from '../assets/admin.png'
 import operadorImg from '../assets/operador.png'
 import '../styles/login.css'
+import {
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  TextField, Button, Alert, CircularProgress, InputAdornment, IconButton, Typography
+} from '@mui/material'
 
 /* ─── Presets de avatar ─────────────────────────────────────────────────── */
 export const AVATARS = [
@@ -703,6 +707,148 @@ function SetupScreen({ onDone, startAtConnect = false }) {
   )
 }
 
+/* ─── Diálogo: Olvidé mi contraseña ─────────────────────────────────────────
+ * Flujo estándar de recuperación: pedir código → el código llega al correo
+ * registrado del usuario → ingresar código + contraseña nueva. No requiere
+ * conocer la contraseña anterior — pensado justamente para cuando se perdió.
+ * Reutiliza las mismas reglas de contraseña que Ajustes › Gestión de
+ * usuarios (8+ caracteres, mayúscula, minúscula, número, signo especial). */
+function validateNewPassword(pw) {
+  if (!pw) return 'Requerido'
+  if (pw.length < 8) return 'Mínimo 8 caracteres'
+  if (!/[A-Z]/.test(pw)) return 'Debe incluir una mayúscula'
+  if (!/[a-z]/.test(pw)) return 'Debe incluir una minúscula'
+  if (!/[0-9]/.test(pw)) return 'Debe incluir un número'
+  if (!/[^A-Za-z0-9]/.test(pw)) return 'Debe incluir un signo especial'
+  return null
+}
+
+function ForgotPasswordDialog({ open, onClose, initialUsername }) {
+  const { forgotPassword, resetPasswordWithCode } = useAuth()
+  const [phase, setPhase] = useState('request') // 'request' | 'code' | 'success'
+  const [username, setUsernameLocal] = useState(initialUsername || '')
+  const [requesting, setRequesting] = useState(false)
+  const [requestMsg, setRequestMsg] = useState('')
+  const [requestError, setRequestError] = useState('')
+
+  const [code, setCode] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [confirmPw, setConfirmPw] = useState('')
+  const [showPw, setShowPw] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [resetError, setResetError] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setPhase('request')
+      setUsernameLocal(initialUsername || '')
+      setRequestMsg('')
+      setRequestError('')
+      setCode('')
+      setNewPw('')
+      setConfirmPw('')
+      setResetError('')
+    }
+  }, [open, initialUsername])
+
+  const handleRequest = async () => {
+    if (!username.trim()) { setRequestError('Ingresá tu usuario'); return }
+    setRequesting(true)
+    setRequestError('')
+    const res = await forgotPassword(username.trim())
+    setRequesting(false)
+    if (!res.ok) { setRequestError(res.error || 'No se pudo enviar el código'); return }
+    setRequestMsg(res.message || 'Si el usuario existe y tiene un correo cargado, le enviamos un código.')
+    setPhase('code')
+  }
+
+  const handleReset = async () => {
+    setResetError('')
+    if (!code.trim()) { setResetError('Ingresá el código que te llegó por correo'); return }
+    const pErr = validateNewPassword(newPw)
+    if (pErr) { setResetError(pErr); return }
+    if (newPw !== confirmPw) { setResetError('Las contraseñas no coinciden'); return }
+    setResetting(true)
+    const res = await resetPasswordWithCode(username.trim(), code.trim(), newPw)
+    setResetting(false)
+    if (!res.ok) { setResetError(res.error || 'No se pudo restablecer la contraseña'); return }
+    setPhase('success')
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
+      <DialogTitle>Recuperar contraseña</DialogTitle>
+      <DialogContent>
+        {phase === 'request' && (
+          <>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Ingresá tu usuario. Si tiene un correo registrado, te enviamos un código para restablecer la contraseña.
+            </Typography>
+            <TextField
+              label="Usuario" size="small" fullWidth autoFocus
+              value={username}
+              onChange={e => { setUsernameLocal(e.target.value); setRequestError('') }}
+              onKeyDown={e => e.key === 'Enter' && handleRequest()}
+              error={!!requestError} helperText={requestError}
+            />
+          </>
+        )}
+
+        {phase === 'code' && (
+          <>
+            <Alert severity="info" sx={{ mb: 2 }}>{requestMsg}</Alert>
+            <TextField
+              label="Código de 6 dígitos" size="small" fullWidth sx={{ mb: 2 }}
+              value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              inputProps={{ inputMode: 'numeric', maxLength: 6 }}
+            />
+            <TextField
+              label="Contraseña nueva" size="small" fullWidth sx={{ mb: 2 }}
+              type={showPw ? 'text' : 'password'}
+              value={newPw} onChange={e => setNewPw(e.target.value)}
+              helperText="Mín. 8 caracteres, mayúscula, minúscula, número y signo especial"
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setShowPw(v => !v)}>
+                      <EyeIcon open={showPw} />
+                    </IconButton>
+                  </InputAdornment>
+                )
+              }}
+            />
+            <TextField
+              label="Confirmar contraseña" size="small" fullWidth
+              type={showPw ? 'text' : 'password'}
+              value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleReset()}
+            />
+            {resetError && <Alert severity="error" sx={{ mt: 2 }}>{resetError}</Alert>}
+            <Button size="small" sx={{ mt: 1 }} onClick={() => setPhase('request')}>← Pedir otro código</Button>
+          </>
+        )}
+
+        {phase === 'success' && (
+          <Alert severity="success">Contraseña actualizada. Ya podés iniciar sesión con tu nueva contraseña.</Alert>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>{phase === 'success' ? 'Cerrar' : 'Cancelar'}</Button>
+        {phase === 'request' && (
+          <Button variant="contained" onClick={handleRequest} disabled={requesting}>
+            {requesting ? <CircularProgress size={20} /> : 'Enviar código'}
+          </Button>
+        )}
+        {phase === 'code' && (
+          <Button variant="contained" onClick={handleReset} disabled={resetting}>
+            {resetting ? <CircularProgress size={20} /> : 'Restablecer contraseña'}
+          </Button>
+        )}
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 /* ─── Pantalla principal de Login ───────────────────────────────────────── */
 /* ── Auto-login de desarrollo ────────────────────────────────────────────
  * Solo para agilizar la revisión mientras se desarrolla: guarda usuario y
@@ -765,6 +911,7 @@ export default function Login() {
   const [showPw, setShowPw]         = useState(false)
   const [loginError, setLoginError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
+  const [forgotOpen, setForgotOpen] = useState(false)
 
   // PIN mode
   const [pinUser, setPinUser]       = useState(null)
@@ -1239,6 +1386,18 @@ export default function Login() {
                   {loginError}
                 </p>
               )}
+              <button
+                type="button"
+                onClick={() => setForgotOpen(true)}
+                style={{
+                  background: 'none', border: 'none', padding: 0, marginTop: -6,
+                  color: 'rgba(255,255,255,0.6)', fontSize: 12, cursor: 'pointer',
+                  textDecoration: 'underline', animation: 'none', opacity: 1,
+                  alignSelf: 'center'
+                }}
+              >
+                ¿Olvidaste tu contraseña?
+              </button>
               {/* Solo en desarrollo (npm run electron:dev) — no aparece en el .exe */}
               {import.meta.env.DEV && (
                 <label style={{
@@ -1463,6 +1622,12 @@ export default function Login() {
           ← Cambiar configuración de equipo
         </button>
       )}
+
+      <ForgotPasswordDialog
+        open={forgotOpen}
+        onClose={() => setForgotOpen(false)}
+        initialUsername={username}
+      />
     </div>
   )
 }

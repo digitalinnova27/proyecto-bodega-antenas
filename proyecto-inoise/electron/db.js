@@ -306,6 +306,37 @@ function runMigrations(db) {
     ensureColumn(db, 'users', 'pin_hash', 'TEXT')
     // Habilitado/deshabilitado por el admin (1 = activo, 0 = deshabilitado)
     ensureColumn(db, 'users', 'active', 'INTEGER NOT NULL DEFAULT 1')
+    // Teléfono (WhatsApp) — opcional, usado para enviar credenciales al crear la cuenta
+    ensureColumn(db, 'users', 'telefono', 'TEXT')
+
+    // ── Recuperación de contraseña ("olvidé mi contraseña") ────────────
+    // code_hash: sha256(código de 6 dígitos) — no hace falta pbkdf2 acá
+    // porque el código vive solo unos minutos y se invalida al usarse o
+    // al pedir uno nuevo (no es una contraseña permanente que haya que
+    // proteger contra fuerza bruta en el largo plazo).
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    TEXT NOT NULL,
+      code_hash  TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used       INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    `)
+
+    // ── Configuración general de la app (clave/valor) ──────────────────
+    // Usado por ahora para guardar la config SMTP del correo emisor de
+    // credenciales. Los valores se guardan como texto plano (JSON cuando
+    // corresponde) — esta base de datos vive solo en el disco local del
+    // PC servidor, nunca se transmite a otro lado salvo por Tailscale
+    // (ya cifrado a nivel de red).
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+    `)
 
     // ── Personal de trabajo ───────────────────────────────────────────
     db.exec(`
@@ -700,19 +731,35 @@ function loadAuditLog() {
  * El formato almacenado es "${salt}:${hash}" donde salt y hash son hex.
  * El proceso main es el único que toca crypto — el renderer nunca ve
  * contraseñas en texto plano ni hashes en el contexto React. */
-function _hashPassword(password) {
+// pbkdf2 ASÍNCRONO (no bloqueante) — antes esto usaba pbkdf2Sync, que
+// corre en el hilo principal de Node y frena TODO lo demás (otras
+// requests HTTP, el bridge RFID, sockets) mientras calcula. Con varios
+// PCs conectados por Tailscale (más latencia de red) esa pausa se sentía
+// como una demora larga al verificar la contraseña, sobre todo si el
+// usuario reintentaba y quedaban varios cálculos encolados. La versión
+// async libera el hilo principal mientras se calcula el hash.
+function _pbkdf2Async(password, salt) {
+    return new Promise((resolve, reject) => {
+        crypto.pbkdf2(String(password), salt, 10000, 64, 'sha256', (err, derivedKey) => {
+            if (err) reject(err)
+            else resolve(derivedKey.toString('hex'))
+        })
+    })
+}
+
+async function _hashPassword(password) {
     const salt = crypto.randomBytes(16).toString('hex')
-    const hash = crypto.pbkdf2Sync(String(password), salt, 10000, 64, 'sha256').toString('hex')
+    const hash = await _pbkdf2Async(password, salt)
     return salt + ':' + hash
 }
 
-function _verifyPassword(password, stored) {
+async function _verifyPassword(password, stored) {
     try {
         if (!stored || stored.indexOf(':') === -1) return false
         const colonIdx = stored.indexOf(':')
         const storedSalt = stored.substring(0, colonIdx)
         const storedHash = stored.substring(colonIdx + 1)
-        const verify = crypto.pbkdf2Sync(String(password), storedSalt, 10000, 64, 'sha256').toString('hex')
+        const verify = await _pbkdf2Async(password, storedSalt)
         return verify === storedHash
     } catch (err) {
         console.error('[Auth] verify error:', err.message)
@@ -724,6 +771,7 @@ function _mapUser(u) {
     return {
         id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
         email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
+        telefono: u.telefono ?? '',
         username: u.username, passwordHash: u.password_hash,
         hasPin: !!u.pin_hash,
         active: u.active !== 0,   // 0 = deshabilitado, 1 o NULL → activo
@@ -736,32 +784,32 @@ function loadUsers() {
     return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all().map(_mapUser)
 }
 
-function createUser(data, plainPassword) {
+async function createUser(data, plainPassword) {
     const db = getDb()
     const id = `usr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    const hash = _hashPassword(plainPassword)
+    const hash = await _hashPassword(plainPassword)
     const now = new Date().toISOString()
-    db.prepare(`INSERT INTO users (id, role, nombre, apellido, email, cargo, avatar, username, password_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO users (id, role, nombre, apellido, email, cargo, avatar, username, password_hash, telefono, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, data.role, data.nombre, data.apellido,
            data.email || null, data.cargo || null, data.avatar || null,
-           data.username, hash, now)
+           data.username, hash, data.telefono || null, now)
     return { id, ...data, passwordHash: hash, createdAt: now }
 }
 
-function updateUser(id, fields, plainPassword) {
+async function updateUser(id, fields, plainPassword) {
     const db = getDb()
     const role = fields.role || null  // puede ser 'admin' | 'operador' | null (sin cambio)
     if (plainPassword) {
-        const hash = _hashPassword(plainPassword)
-        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?, password_hash=?${role ? ', role=?' : ''} WHERE id=?`)
+        const hash = await _hashPassword(plainPassword)
+        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?, telefono=?, password_hash=?${role ? ', role=?' : ''} WHERE id=?`)
           .run(...[fields.nombre, fields.apellido, fields.email || null,
-               fields.cargo || null, fields.avatar || null, fields.username, hash,
+               fields.cargo || null, fields.avatar || null, fields.username, fields.telefono || null, hash,
                ...(role ? [role] : []), id])
     } else {
-        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?${role ? ', role=?' : ''} WHERE id=?`)
+        db.prepare(`UPDATE users SET nombre=?, apellido=?, email=?, cargo=?, avatar=?, username=?, telefono=?${role ? ', role=?' : ''} WHERE id=?`)
           .run(...[fields.nombre, fields.apellido, fields.email || null,
-               fields.cargo || null, fields.avatar || null, fields.username,
+               fields.cargo || null, fields.avatar || null, fields.username, fields.telefono || null,
                ...(role ? [role] : []), id])
     }
 }
@@ -771,17 +819,75 @@ function deleteUser(id) {
     db.prepare('DELETE FROM users WHERE id=?').run(id)
 }
 
-function authLogin(username, plainPassword) {
+async function authLogin(username, plainPassword) {
     const db = getDb()
     const u = db.prepare('SELECT * FROM users WHERE username=?').get(username)
     if (!u) return null
     if (u.active === 0) return { disabled: true }   // usuario deshabilitado
-    if (!_verifyPassword(plainPassword, u.password_hash)) return null
+    if (!(await _verifyPassword(plainPassword, u.password_hash))) return null
     return {
         id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
         email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
         username: u.username, hasPin: !!u.pin_hash, active: true, createdAt: u.created_at
     }
+}
+
+// ── Recuperación de contraseña ("olvidé mi contraseña") ──────────────────
+// Genera un código numérico de 6 dígitos, invalida cualquier código previo
+// sin usar de ese mismo usuario (para que solo el último pedido sea válido)
+// y lo guarda hasheado con vencimiento a 15 minutos. Devuelve el código en
+// texto plano — es responsabilidad de quien llama mandarlo por correo y no
+// guardarlo en ningún lado más.
+function createPasswordReset(userId) {
+    const db = getDb()
+    const code = String(Math.floor(100000 + Math.random() * 900000)) // 6 dígitos
+    const codeHash = crypto.createHash('sha256').update(code).digest('hex')
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString()
+    db.transaction(() => {
+        db.prepare('UPDATE password_resets SET used=1 WHERE user_id=? AND used=0').run(userId)
+        db.prepare(`INSERT INTO password_resets (user_id, code_hash, expires_at, used, created_at)
+                    VALUES (?, ?, ?, 0, ?)`)
+          .run(userId, codeHash, expiresAt, now.toISOString())
+    })()
+    return code
+}
+
+// Verifica un código contra el último pedido sin usar y no vencido de ese
+// usuario. Si es válido, lo marca usado de una (un código sirve una sola
+// vez) y devuelve true.
+function verifyAndConsumePasswordReset(userId, code) {
+    const db = getDb()
+    const codeHash = crypto.createHash('sha256').update(String(code)).digest('hex')
+    const row = db.prepare(`SELECT * FROM password_resets
+                             WHERE user_id=? AND used=0 AND expires_at > ?
+                             ORDER BY created_at DESC LIMIT 1`)
+      .get(userId, new Date().toISOString())
+    if (!row || row.code_hash !== codeHash) return false
+    db.prepare('UPDATE password_resets SET used=1 WHERE id=?').run(row.id)
+    return true
+}
+
+// Fija una contraseña nueva directamente (usado por el flujo de
+// recuperación, donde ya se validó el código — no requiere conocer la
+// contraseña anterior).
+async function setUserPassword(userId, plainPassword) {
+    const db = getDb()
+    const hash = await _hashPassword(plainPassword)
+    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash, userId)
+}
+
+// ── Configuración general (clave/valor) ──────────────────────────────────
+function getSetting(key) {
+    const db = getDb()
+    const row = db.prepare('SELECT value FROM app_settings WHERE key=?').get(key)
+    return row ? row.value : null
+}
+
+function setSetting(key, value) {
+    const db = getDb()
+    db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run(key, value)
 }
 
 function countAdmins() {
@@ -978,5 +1084,7 @@ module.exports = {
     setUserPin, removeUserPin, authLoginPin, setUserActive,
     createSession, closeSession, closeAllOpenSessions, loadUserSessions,
     getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
-    loadStaff, createStaff, updateStaff, deleteStaff
+    loadStaff, createStaff, updateStaff, deleteStaff,
+    getSetting, setSetting,
+    createPasswordReset, verifyAndConsumePasswordReset, setUserPassword
 }

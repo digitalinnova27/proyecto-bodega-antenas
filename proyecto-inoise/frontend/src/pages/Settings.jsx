@@ -17,6 +17,12 @@ import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import FingerprintIcon from '@mui/icons-material/Fingerprint'
 import WifiIcon from '@mui/icons-material/Wifi'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import AutorenewIcon from '@mui/icons-material/Autorenew'
+import EditNoteIcon from '@mui/icons-material/EditNote'
+import EmailIcon from '@mui/icons-material/Email'
+import WhatsAppIcon from '@mui/icons-material/WhatsApp'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import { ToggleButtonGroup, ToggleButton } from '@mui/material'
 import { useAuth } from '../context/AuthContext'
 import { AVATARS, CARGO_OPTIONS, PinPad } from './Login'
 
@@ -66,20 +72,61 @@ function validatePassword(pw) {
   if (!pw) return null                       // campo opcional en edición
   if (pw.length < 8) return 'Mínimo 8 caracteres'
   if (!/[A-Z]/.test(pw)) return 'Debe incluir al menos una mayúscula'
+  if (!/[a-z]/.test(pw)) return 'Debe incluir al menos una minúscula'
   if (!/[0-9]/.test(pw)) return 'Debe incluir al menos un número'
+  if (!/[^A-Za-z0-9]/.test(pw)) return 'Debe incluir al menos un signo especial (ej. ! @ # $ %)'
   return null
+}
+
+/* ─── Generador de contraseña aleatoria segura ─────────────────────────────
+ * Usa Web Crypto (crypto.getRandomValues), disponible en el renderer sin
+ * imports extra. Se evitan caracteres ambiguos (I, l, 1, O, 0) para que
+ * copiarla a mano o leerla en voz alta no genere errores, y se garantiza
+ * al menos un carácter de cada categoría exigida por validatePassword. */
+function generatePassword(length = 14) {
+  const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+  const LOWER = 'abcdefghijkmnpqrstuvwxyz'
+  const NUMS = '23456789'
+  const SPECIAL = '!@#$%&*-_=+?'
+  const ALL = UPPER + LOWER + NUMS + SPECIAL
+
+  const randInt = (max) => {
+    const arr = new Uint32Array(1)
+    window.crypto.getRandomValues(arr)
+    return arr[0] % max
+  }
+  const pick = (set) => set[randInt(set.length)]
+
+  const chars = [pick(UPPER), pick(LOWER), pick(NUMS), pick(SPECIAL)]
+  while (chars.length < length) chars.push(pick(ALL))
+  // Fisher-Yates para que las 4 categorías garantizadas no queden siempre al inicio
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randInt(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  return chars.join('')
 }
 
 /* ─── Modal: Crear / Editar usuario ────────────────────────────────────── */
 function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole }) {
+  const { sendCredentialsEmail } = useAuth()
+
   const [form, setForm] = React.useState({
-    nombre: '', apellido: '', email: '', cargo: CARGO_OPTIONS[0],
+    nombre: '', apellido: '', email: '', telefono: '', cargo: CARGO_OPTIONS[0],
     avatar: '', username: '', password: '', confirm: '', role: 'operador'
   })
+  const [pwMode, setPwMode] = React.useState('auto') // 'auto' | 'manual'
   const [errors, setErrors] = React.useState({})
   const [showPw, setShowPw] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [saveError, setSaveError] = React.useState('')
+  const [copyMsg, setCopyMsg] = React.useState('')
+
+  // Tras guardar con éxito y haber fijado una contraseña, se muestra un
+  // paso final para copiarla / mandársela al operador antes de cerrar.
+  const [savedStep, setSavedStep] = React.useState(null)
+  const [sendingEmail, setSendingEmail] = React.useState(false)
+  const [sendMsg, setSendMsg] = React.useState('')
 
   React.useEffect(() => {
     if (open) {
@@ -87,26 +134,49 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
       // caer al primer elemento para evitar que el select quede vacío.
       const savedCargo = initialData?.cargo || ''
       const cargoValue = CARGO_OPTIONS.includes(savedCargo) ? savedCargo : CARGO_OPTIONS[0]
+      const initialPw = isCreate ? generatePassword() : ''
       setForm({
         nombre: initialData?.nombre || '',
         apellido: initialData?.apellido || '',
         email: initialData?.email || '',
+        telefono: initialData?.telefono || '',
         cargo: cargoValue,
         avatar: initialData?.avatar || '',
         username: initialData?.username || '',
-        password: '',
-        confirm: '',
+        password: initialPw,
+        confirm: initialPw,
         role: forceRole || initialData?.role || 'operador'
       })
+      setPwMode(isCreate ? 'auto' : 'manual')
       setErrors({})
       setSaveError('')
+      setSavedStep(null)
+      setSendMsg('')
     }
-  }, [open, initialData, forceRole])
+  }, [open, initialData, forceRole, isCreate])
 
   const set = (k, v) => {
     setForm(f => ({ ...f, [k]: v }))
     setErrors(e => ({ ...e, [k]: '' }))
     setSaveError('')
+  }
+
+  const handleRegenerate = () => {
+    const pw = generatePassword()
+    setForm(f => ({ ...f, password: pw, confirm: pw }))
+    setErrors(e => ({ ...e, password: '', confirm: '' }))
+  }
+
+  const handleModeChange = (_e, mode) => {
+    if (!mode) return
+    setPwMode(mode)
+    if (mode === 'auto') {
+      const pw = generatePassword()
+      setForm(f => ({ ...f, password: pw, confirm: pw }))
+    } else {
+      setForm(f => ({ ...f, password: '', confirm: '' }))
+    }
+    setErrors(e => ({ ...e, password: '', confirm: '' }))
   }
 
   const validate = () => {
@@ -137,14 +207,113 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
     setSaving(true)
     const fields = {
       nombre: form.nombre.trim(), apellido: form.apellido.trim(),
-      email: form.email.trim(), cargo: form.cargo,
+      email: form.email.trim(), telefono: form.telefono.trim(), cargo: form.cargo,
       avatar: form.avatar, username: form.username.trim(),
       role: form.role
     }
-    const err = await onSave(fields, form.password || null)
+    const result = await onSave(fields, form.password || null)
     setSaving(false)
-    if (err) { setSaveError(err); return }
-    onClose()
+    if (result?.error) { setSaveError(result.error); return }
+    if (form.password) {
+      setSavedStep({
+        id: result?.id || initialData?.id,
+        username: form.username.trim(),
+        password: form.password,
+        nombre: form.nombre.trim(),
+        email: form.email.trim(),
+        telefono: form.telefono.trim()
+      })
+    } else {
+      onClose()
+    }
+  }
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(savedStep.password)
+      setCopyMsg('¡Copiada!')
+      setTimeout(() => setCopyMsg(''), 2000)
+    } catch {
+      setCopyMsg('No se pudo copiar')
+    }
+  }
+
+  const handleSendEmail = async () => {
+    if (!savedStep.id) return
+    setSendingEmail(true)
+    setSendMsg('')
+    const accessUrl = typeof window !== 'undefined' ? window.location.origin : ''
+    const res = await sendCredentialsEmail(savedStep.id, savedStep.password, accessUrl)
+    setSendingEmail(false)
+    setSendMsg(res.ok ? '✅ Correo enviado' : `❌ ${res.error || 'No se pudo enviar el correo'}`)
+  }
+
+  const handleSendWhatsapp = () => {
+    const phone = (savedStep.telefono || '').replace(/[^0-9]/g, '')
+    const msg = `Hola ${savedStep.nombre}, estas son tus credenciales de acceso a iNOISE:\nUsuario: ${savedStep.username}\nContraseña: ${savedStep.password}`
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
+    window.open(url, '_blank')
+  }
+
+  // ── Paso final: credenciales listas para copiar/enviar ──────────────────
+  if (savedStep) {
+    return (
+      <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <CheckCircleIcon color="success" />
+          {isCreate ? 'Usuario creado' : 'Contraseña actualizada'}
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Guardá o enviá estos datos ahora — la contraseña no se puede volver a ver más adelante.
+          </Alert>
+          <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+            <TextField label="Usuario" size="small" fullWidth value={savedStep.username}
+              InputProps={{ readOnly: true }} />
+            <TextField label="Contraseña" size="small" fullWidth value={savedStep.password}
+              type={showPw ? 'text' : 'password'}
+              InputProps={{
+                readOnly: true,
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setShowPw(v => !v)}>
+                      {showPw ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                    </IconButton>
+                    <IconButton size="small" onClick={handleCopy}>
+                      <ContentCopyIcon fontSize="small" />
+                    </IconButton>
+                  </InputAdornment>
+                )
+              }}
+            />
+          </Box>
+          {copyMsg && <Typography variant="caption" color="success.main" sx={{ display: 'block', mb: 1 }}>{copyMsg}</Typography>}
+
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>
+            <Button
+              variant="outlined" startIcon={sendingEmail ? <CircularProgress size={16} /> : <EmailIcon />}
+              disabled={!savedStep.email || sendingEmail}
+              onClick={handleSendEmail}
+            >
+              Enviar por correo
+            </Button>
+            <Button
+              variant="outlined" color="success" startIcon={<WhatsAppIcon />}
+              disabled={!savedStep.telefono}
+              onClick={handleSendWhatsapp}
+            >
+              Enviar por WhatsApp
+            </Button>
+          </Box>
+          {!savedStep.email && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>Para enviar por correo, cargá un email en el perfil del usuario.</Typography>}
+          {!savedStep.telefono && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Para enviar por WhatsApp, cargá un teléfono en el perfil del usuario.</Typography>}
+          {sendMsg && <Alert severity={sendMsg.startsWith('✅') ? 'success' : 'error'} sx={{ mt: 2 }}>{sendMsg}</Alert>}
+        </DialogContent>
+        <DialogActions>
+          <Button variant="contained" onClick={onClose}>Cerrar</Button>
+        </DialogActions>
+      </Dialog>
+    )
   }
 
   return (
@@ -161,8 +330,13 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
             value={form.apellido} onChange={e => set('apellido', e.target.value)}
             error={!!errors.apellido} helperText={errors.apellido} />
         </Box>
-        <TextField label="Correo electrónico" size="small" fullWidth sx={{ mb: 2 }}
-          type="email" value={form.email} onChange={e => set('email', e.target.value)} />
+        <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+          <TextField label="Correo electrónico" size="small" fullWidth
+            type="email" value={form.email} onChange={e => set('email', e.target.value)} />
+          <TextField label="Teléfono (WhatsApp)" size="small" fullWidth
+            placeholder="+56 9 1234 5678"
+            value={form.telefono} onChange={e => set('telefono', e.target.value)} />
+        </Box>
         <TextField label="Cargo *" select size="small" fullWidth sx={{ mb: 2 }}
           value={form.cargo} onChange={e => set('cargo', e.target.value)}>
           {CARGO_OPTIONS.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
@@ -196,35 +370,69 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
           error={!!errors.username} helperText={errors.username}
           inputProps={{ autoComplete: 'off', name: 'inoise-operator-username' }} />
 
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <TextField
-            label={isCreate ? 'Contraseña *' : 'Nueva contraseña (opcional)'}
-            size="small" sx={{ flex: 1 }}
-            type={showPw ? 'text' : 'password'}
-            value={form.password} onChange={e => set('password', e.target.value)}
-            error={!!errors.password} helperText={errors.password}
-            inputProps={{ autoComplete: 'new-password', name: 'inoise-operator-password' }}
-            InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  <IconButton size="small" onClick={() => setShowPw(v => !v)}>
-                    {showPw ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
-                  </IconButton>
-                </InputAdornment>
-              )
-            }}
-          />
-          <TextField label="Confirmar" size="small" sx={{ flex: 1 }}
-            type={showPw ? 'text' : 'password'}
-            value={form.confirm} onChange={e => set('confirm', e.target.value)}
-            error={!!errors.confirm} helperText={errors.confirm}
-            inputProps={{ autoComplete: 'new-password', name: 'inoise-operator-password-confirm' }} />
+        <Box sx={{ mb: 1 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+            {isCreate ? 'Contraseña *' : 'Nueva contraseña (opcional — dejá "Escribir manual" en blanco para no cambiarla)'}
+          </Typography>
+          <ToggleButtonGroup
+            size="small" exclusive value={pwMode} onChange={handleModeChange} sx={{ mb: 1 }}
+          >
+            <ToggleButton value="auto">
+              <AutorenewIcon fontSize="small" sx={{ mr: 0.5 }} /> Generar automática
+            </ToggleButton>
+            <ToggleButton value="manual">
+              <EditNoteIcon fontSize="small" sx={{ mr: 0.5 }} /> Escribir manual
+            </ToggleButton>
+          </ToggleButtonGroup>
         </Box>
 
-        {!isCreate && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-            Deja la contraseña en blanco para no cambiarla.
-          </Typography>
+        {pwMode === 'auto' ? (
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', mb: 1 }}>
+            <TextField
+              label={isCreate ? 'Contraseña generada *' : 'Nueva contraseña generada'}
+              size="small" sx={{ flex: 1 }}
+              type={showPw ? 'text' : 'password'}
+              value={form.password}
+              InputProps={{
+                readOnly: true,
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setShowPw(v => !v)}>
+                      {showPw ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                    </IconButton>
+                  </InputAdornment>
+                )
+              }}
+            />
+            <Button variant="outlined" size="small" startIcon={<AutorenewIcon />} onClick={handleRegenerate} sx={{ mt: 0.3 }}>
+              Generar otra
+            </Button>
+          </Box>
+        ) : (
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            <TextField
+              label={isCreate ? 'Contraseña *' : 'Nueva contraseña (opcional)'}
+              size="small" sx={{ flex: 1 }}
+              type={showPw ? 'text' : 'password'}
+              value={form.password} onChange={e => set('password', e.target.value)}
+              error={!!errors.password} helperText={errors.password || 'Mín. 8 caracteres, mayúscula, minúscula, número y signo especial'}
+              inputProps={{ autoComplete: 'new-password', name: 'inoise-operator-password' }}
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setShowPw(v => !v)}>
+                      {showPw ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                    </IconButton>
+                  </InputAdornment>
+                )
+              }}
+            />
+            <TextField label="Confirmar" size="small" sx={{ flex: 1 }}
+              type={showPw ? 'text' : 'password'}
+              value={form.confirm} onChange={e => set('confirm', e.target.value)}
+              error={!!errors.confirm} helperText={errors.confirm}
+              inputProps={{ autoComplete: 'new-password', name: 'inoise-operator-password-confirm' }} />
+          </Box>
         )}
 
         {saveError && <Alert severity="error" sx={{ mt: 2 }}>{saveError}</Alert>}
@@ -276,6 +484,11 @@ function UserManagement() {
   const [createOpen, setCreateOpen] = React.useState(false)
 
   const handleUnlock = async () => {
+    // Guard: si ya hay una verificación en curso (ej. el usuario apretó
+    // Enter varias veces seguidas), no disparar otra — antes esto podía
+    // apilar varios pedidos al servidor y la respuesta tardaba mucho más
+    // en llegar de lo esperado, sobre todo en conexiones remotas (Tailscale).
+    if (lockLoading) return
     setLockLoading(true)
     const ok = await verifyAdminPassword(lockPw)
     setLockLoading(false)
@@ -300,15 +513,15 @@ function UserManagement() {
 
   const handleSaveUser = async (fields, newPassword) => {
     const res = await updateUser(editUser.id, fields, newPassword)
-    if (!res.ok) return friendlyUserError(res.error) || 'Error al guardar'
-    return null
+    if (!res.ok) return { error: friendlyUserError(res.error) || 'Error al guardar' }
+    return { error: null, id: editUser.id }
   }
 
   const handleCreateUser = async (fields, password) => {
     // El rol viene del formulario (Operador o Administrador, elegido por el admin)
     const res = await createUser(fields, password)
-    if (!res.ok) return friendlyUserError(res.error) || 'Error al crear usuario'
-    return null
+    if (!res.ok) return { error: friendlyUserError(res.error) || 'Error al crear usuario' }
+    return { error: null, id: res.data?.id }
   }
 
   const handleDeleteConfirm = async () => {
@@ -369,6 +582,7 @@ function UserManagement() {
               type={showLockPw ? 'text' : 'password'}
               label="Contraseña admin"
               value={lockPw}
+              disabled={lockLoading}
               onChange={e => { setLockPw(e.target.value); setLockError('') }}
               onKeyDown={e => e.key === 'Enter' && handleUnlock()}
               error={!!lockError} helperText={lockError}
@@ -506,6 +720,88 @@ function UserManagement() {
   )
 }
 
+/* ─── Configuración SMTP — correo emisor de credenciales (solo admin) ────── */
+function SmtpSettings() {
+  const { getSmtpConfig, setSmtpConfig } = useAuth()
+  const [email, setEmail] = React.useState('')
+  const [appPassword, setAppPassword] = React.useState('')
+  const [host, setHost] = React.useState('smtp.gmail.com')
+  const [port, setPort] = React.useState(465)
+  const [hasPassword, setHasPassword] = React.useState(false)
+  const [showPw, setShowPw] = React.useState(false)
+  const [loading, setLoading] = React.useState(true)
+  const [saving, setSaving] = React.useState(false)
+  const [msg, setMsg] = React.useState('')
+
+  React.useEffect(() => {
+    (async () => {
+      const res = await getSmtpConfig()
+      if (res.ok !== false) {
+        setEmail(res.email || '')
+        setHost(res.host || 'smtp.gmail.com')
+        setPort(res.port || 465)
+        setHasPassword(!!res.hasPassword)
+      }
+      setLoading(false)
+    })()
+  }, [getSmtpConfig])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setMsg('')
+    const res = await setSmtpConfig({ email: email.trim(), appPassword: appPassword || undefined, host, port: Number(port) })
+    setSaving(false)
+    if (res.ok === false) { setMsg(`❌ ${res.error || 'No se pudo guardar'}`); return }
+    setHasPassword(!!res.hasPassword)
+    setAppPassword('')
+    setMsg('✅ Configuración guardada')
+    setTimeout(() => setMsg(''), 3000)
+  }
+
+  if (loading) return null
+
+  return (
+    <Paper sx={{ p: 2.5, mt: 2 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+        <EmailIcon color="primary" />
+        <Typography variant="h6">Correo emisor de credenciales</Typography>
+      </Box>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        Cuenta usada para enviar automáticamente el usuario y contraseña a los operadores nuevos.
+        Con Gmail, usá una "contraseña de aplicación" (no tu contraseña normal de Google) —
+        se genera en la configuración de seguridad de tu cuenta de Google.
+      </Alert>
+      <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
+        <TextField label="Correo emisor" size="small" sx={{ flex: 1, minWidth: 220 }}
+          type="email" value={email} onChange={e => setEmail(e.target.value)} />
+        <TextField
+          label={hasPassword ? 'Contraseña de aplicación (guardada — dejar en blanco para no cambiar)' : 'Contraseña de aplicación'}
+          size="small" sx={{ flex: 1, minWidth: 260 }}
+          type={showPw ? 'text' : 'password'}
+          value={appPassword} onChange={e => setAppPassword(e.target.value)}
+          InputProps={{
+            endAdornment: (
+              <InputAdornment position="end">
+                <IconButton size="small" onClick={() => setShowPw(v => !v)}>
+                  {showPw ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                </IconButton>
+              </InputAdornment>
+            )
+          }}
+        />
+      </Box>
+      <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+        <TextField label="Servidor SMTP" size="small" sx={{ flex: 1 }} value={host} onChange={e => setHost(e.target.value)} />
+        <TextField label="Puerto" size="small" sx={{ width: 120 }} type="number" value={port} onChange={e => setPort(e.target.value)} />
+      </Box>
+      <Button variant="contained" onClick={handleSave} disabled={saving} startIcon={saving ? <CircularProgress size={16} /> : null}>
+        Guardar configuración
+      </Button>
+      {msg && <Typography variant="body2" sx={{ mt: 1.5 }}>{msg}</Typography>}
+    </Paper>
+  )
+}
+
 /* ─── Panel de conexión en red ───────────────────────────────────────────── */
 function NetworkPanel() {
   const [info, setInfo] = React.useState(null)
@@ -608,6 +904,7 @@ function PinManagement() {
   }
 
   const handleVerifyPw = async () => {
+    if (loading) return  // evita apilar pedidos si se presiona Enter varias veces
     if (!pwValue) { setPwError('Ingresa tu contraseña'); return }
     setLoading(true)
     const ok = await verifyAdminPassword(pwValue)
@@ -714,6 +1011,7 @@ function PinManagement() {
               type={showPw ? 'text' : 'password'}
               label="Contraseña actual"
               value={pwValue}
+              disabled={loading}
               onChange={e => { setPwValue(e.target.value); setPwError('') }}
               onKeyDown={e => e.key === 'Enter' && handleVerifyPw()}
               error={!!pwError} helperText={pwError}
@@ -803,6 +1101,7 @@ export default function Settings() {
         <>
           <Divider sx={{ my: 2 }} />
           <UserManagement />
+          <SmtpSettings />
         </>
       )}
     </Box>

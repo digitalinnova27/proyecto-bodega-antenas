@@ -218,6 +218,34 @@ export function AuthProvider({ children }) {
     }
   }, [loadUsers])
 
+  // ── Recuperar contraseña olvidada ──────────────────────────────────────────
+  // Públicas (sin token) — se usan justamente cuando no se puede iniciar sesión.
+  const forgotPassword = useCallback(async (username) => {
+    try { return await api.post('/api/auth/forgot-password', { username }) }
+    catch (e) { return { ok: false, error: 'Sin conexión con el servidor' } }
+  }, [])
+
+  const resetPasswordWithCode = useCallback(async (username, code, newPassword) => {
+    try { return await api.post('/api/auth/reset-password', { username, code, newPassword }) }
+    catch (e) { return { ok: false, error: 'Sin conexión con el servidor' } }
+  }, [])
+
+  // ── Credenciales por correo (SMTP) ─────────────────────────────────────────
+  const getSmtpConfig = useCallback(async () => {
+    try { return await api.get('/api/settings/smtp') }
+    catch (e) { return { ok: false, error: 'Sin conexión con el servidor' } }
+  }, [])
+
+  const setSmtpConfig = useCallback(async (config) => {
+    try { return await api.post('/api/settings/smtp', config) }
+    catch (e) { return { ok: false, error: 'Sin conexión con el servidor' } }
+  }, [])
+
+  const sendCredentialsEmail = useCallback(async (userId, password, accessUrl) => {
+    try { return await api.post(`/api/users/${userId}/send-credentials`, { password, accessUrl }) }
+    catch (e) { return { ok: false, error: 'Sin conexión con el servidor' } }
+  }, [])
+
   // ── Restaurar sesión desde sessionStorage al recargar página ──────────────
   React.useEffect(() => {
     // Consultar si existen usuarios (endpoint público).
@@ -263,7 +291,12 @@ export function AuthProvider({ children }) {
       verifyAdminPassword,
       setUserPin,
       removeUserPin,
-      setUserActive
+      setUserActive,
+      getSmtpConfig,
+      setSmtpConfig,
+      sendCredentialsEmail,
+      forgotPassword,
+      resetPasswordWithCode
     }}>
       {children}
     </AuthContext.Provider>

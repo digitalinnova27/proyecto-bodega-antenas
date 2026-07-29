@@ -52,9 +52,13 @@ const { startServer, getLocalIP, PORT: SERVER_PORT } = require('./server/index')
  * error } y puede decidir qué mostrarle al usuario, en vez de que la app
  * completa se cuelgue silenciosamente. */
 function registerIpcHandlers() {
+  // "await" acá funciona tanto si fn(...) devuelve un valor normal como si
+  // devuelve una Promise (ej. createUser/updateUser/authLogin, que ahora
+  // hashean la contraseña de forma asíncrona) — sin el await, "result"
+  // habría quedado como la Promise sin resolver en vez del dato real.
   const wrap = (fn) => async (_evt, ...args) => {
     try {
-      const result = fn(...args)
+      const result = await fn(...args)
       return { ok: true, data: result }
     } catch (e) {
       console.error('[IPC] Error:', e.message)
