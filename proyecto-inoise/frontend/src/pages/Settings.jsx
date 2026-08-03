@@ -20,7 +20,6 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import EditNoteIcon from '@mui/icons-material/EditNote'
 import EmailIcon from '@mui/icons-material/Email'
-import WhatsAppIcon from '@mui/icons-material/WhatsApp'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import { ToggleButtonGroup, ToggleButton } from '@mui/material'
 import { useAuth } from '../context/AuthContext'
@@ -112,7 +111,7 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
   const { sendCredentialsEmail } = useAuth()
 
   const [form, setForm] = React.useState({
-    nombre: '', apellido: '', email: '', telefono: '', cargo: CARGO_OPTIONS[0],
+    nombre: '', apellido: '', email: '', cargo: CARGO_OPTIONS[0],
     avatar: '', username: '', password: '', confirm: '', role: 'operador'
   })
   const [pwMode, setPwMode] = React.useState('auto') // 'auto' | 'manual'
@@ -139,7 +138,6 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
         nombre: initialData?.nombre || '',
         apellido: initialData?.apellido || '',
         email: initialData?.email || '',
-        telefono: initialData?.telefono || '',
         cargo: cargoValue,
         avatar: initialData?.avatar || '',
         username: initialData?.username || '',
@@ -207,7 +205,7 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
     setSaving(true)
     const fields = {
       nombre: form.nombre.trim(), apellido: form.apellido.trim(),
-      email: form.email.trim(), telefono: form.telefono.trim(), cargo: form.cargo,
+      email: form.email.trim(), cargo: form.cargo,
       avatar: form.avatar, username: form.username.trim(),
       role: form.role
     }
@@ -220,8 +218,7 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
         username: form.username.trim(),
         password: form.password,
         nombre: form.nombre.trim(),
-        email: form.email.trim(),
-        telefono: form.telefono.trim()
+        email: form.email.trim()
       })
     } else {
       onClose()
@@ -246,13 +243,6 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
     const res = await sendCredentialsEmail(savedStep.id, savedStep.password, accessUrl)
     setSendingEmail(false)
     setSendMsg(res.ok ? '✅ Correo enviado' : `❌ ${res.error || 'No se pudo enviar el correo'}`)
-  }
-
-  const handleSendWhatsapp = () => {
-    const phone = (savedStep.telefono || '').replace(/[^0-9]/g, '')
-    const msg = `Hola ${savedStep.nombre}, estas son tus credenciales de acceso a iNOISE:\nUsuario: ${savedStep.username}\nContraseña: ${savedStep.password}`
-    const url = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
-    window.open(url, '_blank')
   }
 
   // ── Paso final: credenciales listas para copiar/enviar ──────────────────
@@ -297,16 +287,8 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
             >
               Enviar por correo
             </Button>
-            <Button
-              variant="outlined" color="success" startIcon={<WhatsAppIcon />}
-              disabled={!savedStep.telefono}
-              onClick={handleSendWhatsapp}
-            >
-              Enviar por WhatsApp
-            </Button>
           </Box>
           {!savedStep.email && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>Para enviar por correo, cargá un email en el perfil del usuario.</Typography>}
-          {!savedStep.telefono && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Para enviar por WhatsApp, cargá un teléfono en el perfil del usuario.</Typography>}
           {sendMsg && <Alert severity={sendMsg.startsWith('✅') ? 'success' : 'error'} sx={{ mt: 2 }}>{sendMsg}</Alert>}
         </DialogContent>
         <DialogActions>
@@ -330,13 +312,8 @@ function UserFormModal({ open, onClose, onSave, initialData, isCreate, forceRole
             value={form.apellido} onChange={e => set('apellido', e.target.value)}
             error={!!errors.apellido} helperText={errors.apellido} />
         </Box>
-        <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-          <TextField label="Correo electrónico" size="small" fullWidth
-            type="email" value={form.email} onChange={e => set('email', e.target.value)} />
-          <TextField label="Teléfono (WhatsApp)" size="small" fullWidth
-            placeholder="+56 9 1234 5678"
-            value={form.telefono} onChange={e => set('telefono', e.target.value)} />
-        </Box>
+        <TextField label="Correo electrónico" size="small" fullWidth sx={{ mb: 2 }}
+          type="email" value={form.email} onChange={e => set('email', e.target.value)} />
         <TextField label="Cargo *" select size="small" fullWidth sx={{ mb: 2 }}
           value={form.cargo} onChange={e => set('cargo', e.target.value)}>
           {CARGO_OPTIONS.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}

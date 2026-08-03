@@ -1,4 +1,11 @@
 {
+  "1.2.0": [
+    "Nuevo: soporte para el lector de escritorio USB VD-67E en modo teclado — al leerse un tag ahora se reconoce automáticamente en Registrar RFID y en las fases de Operaciones (eventos/arriendos), igual que con las antenas de red. No requiere ningún software adicional del fabricante.",
+    "Sigue pendiente la función de escritura de tags con este lector (necesita documentación del fabricante que todavía no llegó)"
+  ],
+  "1.1.9": [
+    "Se quitó la opción de enviar credenciales por WhatsApp (y el campo Teléfono del formulario de usuario) — el envío de credenciales queda solo por correo"
+  ],
   "1.1.8": [
     "Nuevo: enlace '¿Olvidaste tu contraseña?' en la pantalla de inicio de sesión — envía un código de 6 dígitos al correo registrado del usuario y permite fijar una contraseña nueva sin necesitar la anterior (requiere tener configurado el correo emisor en Ajustes)",
     "El código de recuperación vence en 15 minutos y se invalida solo (no se puede reutilizar ni adivinar por fuerza bruta con reintentos ilimitados)"
