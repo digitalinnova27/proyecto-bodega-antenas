@@ -1,4 +1,5 @@
 import React from 'react'
+import { useLocation } from 'react-router-dom'
 import {
   Box, Typography, Paper, Table, TableHead, TableRow, TableCell, TableBody,
   Tabs, Tab, Chip, IconButton, Collapse, TextField, InputAdornment, Stack
@@ -32,11 +33,30 @@ const matchesQuery = (h, q) => {
 // (forzada o no) y, si hubo pérdidas, el detalle por artículo (fase exacta,
 // estado y motivo) — antes esto solo se podía ver en el PDF mensual de
 // Reporte de Operaciones, filtrado por mes.
-function EventRow({ h }) {
-  const [open, setOpen] = React.useState(false)
+function EventRow({ h, autoExpand }) {
+  const [open, setOpen] = React.useState(!!autoExpand)
+  const rowRef = React.useRef(null)
+
+  // Si se llega a esta fila desde "Ver detalle" (al cerrar el evento en
+  // Operaciones), se abre sola y se hace scroll hasta ella para que la
+  // persona no tenga que buscarla en la tabla.
+  React.useEffect(() => {
+    if (autoExpand && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoExpand])
+
   return (
     <React.Fragment>
-      <TableRow hover onClick={() => setOpen(o => !o)} sx={{ cursor: 'pointer', '& > *': { borderBottom: 'unset' } }}>
+      <TableRow
+        ref={rowRef}
+        hover onClick={() => setOpen(o => !o)}
+        sx={{
+          cursor: 'pointer', '& > *': { borderBottom: 'unset' },
+          bgcolor: autoExpand ? 'action.selected' : undefined
+        }}
+      >
         <TableCell sx={{ width: 40 }}>
           <IconButton size="small">
             {open ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
@@ -145,7 +165,7 @@ function EventRow({ h }) {
   )
 }
 
-function EventsHistoryTable({ rows, query }) {
+function EventsHistoryTable({ rows, query, expandOrderNumber }) {
   const filtered = React.useMemo(() => rows.filter(h => matchesQuery(h, query)), [rows, query])
 
   if (rows.length === 0) {
@@ -180,14 +200,39 @@ function EventsHistoryTable({ rows, query }) {
         </TableRow>
       </TableHead>
       <TableBody>
-        {filtered.map(h => <EventRow key={h.id} h={h} />)}
+        {filtered.map(h => <EventRow key={h.id} h={h} autoExpand={!!expandOrderNumber && h.orderNumber === expandOrderNumber} />)}
       </TableBody>
     </Table>
   )
 }
 
 /* ─── Historial de Rentas ─── */
-function RentalsHistoryTable({ rows, query }) {
+// Esta tabla no tiene detalle expandible (ya muestra todos los datos
+// relevantes en la fila) — al llegar desde "Ver detalle" en Operaciones,
+// solo se resalta la fila y se hace scroll hasta ella.
+function RentalRow({ h, highlight }) {
+  const rowRef = React.useRef(null)
+  React.useEffect(() => {
+    if (highlight && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight])
+  return (
+    <TableRow ref={rowRef} hover sx={{ bgcolor: highlight ? 'action.selected' : undefined }}>
+      <TableCell>{fmtDateTime(h.closedAt)}</TableCell>
+      <TableCell>{h.orderNumber}</TableCell>
+      <TableCell>{h.name}</TableCell>
+      <TableCell>{h.clientName || '—'}</TableCell>
+      <TableCell>{h.date}</TableCell>
+      <TableCell>{h.endDate || '—'}</TableCell>
+      <TableCell align="right">{h.totalItems}</TableCell>
+      <TableCell>{h.closedBy}</TableCell>
+    </TableRow>
+  )
+}
+
+function RentalsHistoryTable({ rows, query, expandOrderNumber }) {
   const filtered = React.useMemo(() => rows.filter(h => matchesQuery(h, query)), [rows, query])
 
   if (rows.length === 0) {
@@ -221,16 +266,7 @@ function RentalsHistoryTable({ rows, query }) {
       </TableHead>
       <TableBody>
         {filtered.map(h => (
-          <TableRow key={h.id}>
-            <TableCell>{fmtDateTime(h.closedAt)}</TableCell>
-            <TableCell>{h.orderNumber}</TableCell>
-            <TableCell>{h.name}</TableCell>
-            <TableCell>{h.clientName || '—'}</TableCell>
-            <TableCell>{h.date}</TableCell>
-            <TableCell>{h.endDate || '—'}</TableCell>
-            <TableCell align="right">{h.totalItems}</TableCell>
-            <TableCell>{h.closedBy}</TableCell>
-          </TableRow>
+          <RentalRow key={h.id} h={h} highlight={!!expandOrderNumber && h.orderNumber === expandOrderNumber} />
         ))}
       </TableBody>
     </Table>
@@ -421,8 +457,13 @@ function AuditTable({ entries }) {
 
 export default function History() {
   const { eventHistory, rentalHistory, purchaseHistory, auditLog } = useInventory()
-  const [tab, setTab] = React.useState(0)
+  // Al llegar desde el botón "Ver detalle" (al cerrar un evento/arriendo en
+  // Operaciones), se abre directo en la pestaña correspondiente con esa
+  // fila resaltada y expandida — ver EventRow/RentalRow más abajo.
+  const location = useLocation()
+  const [tab, setTab] = React.useState(location.state?.tab ?? 0)
   const [query, setQuery] = React.useState('')
+  const expandOrderNumber = location.state?.expandOrderNumber || null
 
   return (
     <Box>
@@ -448,8 +489,8 @@ export default function History() {
       </Paper>
 
       <Paper sx={{ p: 2, borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
-        {tab === 0 && <EventsHistoryTable rows={eventHistory} query={query} />}
-        {tab === 1 && <RentalsHistoryTable rows={rentalHistory} query={query} />}
+        {tab === 0 && <EventsHistoryTable rows={eventHistory} query={query} expandOrderNumber={expandOrderNumber} />}
+        {tab === 1 && <RentalsHistoryTable rows={rentalHistory} query={query} expandOrderNumber={expandOrderNumber} />}
         {tab === 2 && <PurchasesHistoryTable rows={purchaseHistory} query={query} />}
         {tab === 3 && <AuditTable entries={auditLog || []} />}
       </Paper>

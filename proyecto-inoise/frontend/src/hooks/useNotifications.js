@@ -130,7 +130,7 @@ export function useNotifications() {
         events.forEach(e => {
             const diff = daysFromToday(e.date)
             if (diff == null || diff < 0 || diff > EVENT_WINDOW_DAYS) return
-            if (['Realizado', 'Concluido', 'Suspendido'].includes(e.status)) return
+            if (['Realizado', 'Concluido', 'Suspendido', 'Cancelado'].includes(e.status)) return
             list.push({
                 id: `event-soon-${e.id}`,
                 severity: 'info',
@@ -145,6 +145,7 @@ export function useNotifications() {
         // Si el rental dura 1 día (mismo día inicio/fin) avisa ese mismo día.
         // Si dura más, avisa cuando falten RENTAL_WINDOW_DAYS días o menos.
         rentals.forEach(r => {
+            if (r.status === 'Concluido') return
             const diffEnd = daysFromToday(r.endDate)
             if (diffEnd == null || diffEnd < 0) return
             const duration = r.date ? daysFromToday(r.date) - diffEnd : null // negativo o 0

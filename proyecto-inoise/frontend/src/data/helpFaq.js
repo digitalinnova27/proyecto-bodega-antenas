@@ -97,14 +97,14 @@ export const HELP_FAQ = [
     category: 'Productos',
     question: '¿En qué se diferencia Productos de Inventario?',
     keywords: ['productos', 'catalogo', 'diferencia inventario'],
-    answer: 'Inventario muestra el estado operativo de cada unidad (disponible, ocupada, etc.). Productos es más bien el catálogo: permite ver y administrar la vinculación entre cada unidad física y su tag RFID (EPC), incluyendo desvincular stickers "huérfanos" cuyo producto ya no existe.'
+    answer: 'Inventario muestra el estado operativo de cada unidad (disponible, ocupada, etc.). Productos es más bien el catálogo: permite ver y administrar la vinculación entre cada unidad física y su tag RFID (EPC), incluyendo desvincular tags "huérfanos" cuyo producto ya no existe.'
   },
   {
     id: 'vincular-epc',
     category: 'Productos',
     question: '¿Cómo vinculo o desvinculo un tag RFID a un producto?',
-    keywords: ['vincular', 'desvincular', 'epc', 'tag', 'sticker'],
-    answer: 'En Productos puedes ver qué unidades tienen un tag RFID (EPC) vinculado. Para vincular uno nuevo, usa la sección "Registrar RFID" del menú lateral, donde asocias el sticker físico a la unidad correspondiente escaneándolo.'
+    keywords: ['vincular', 'desvincular', 'epc', 'tag', 'tag'],
+    answer: 'En Productos puedes ver qué unidades tienen un tag RFID (EPC) vinculado. Para vincular uno nuevo, usa la sección "Registrar RFID" del menú lateral, donde asocias el tag físico a la unidad correspondiente escaneándolo.'
   },
 
   // ── Antenas / Registrar RFID ─────────────────────────────────────────
@@ -119,8 +119,8 @@ export const HELP_FAQ = [
     id: 'registrar-rfid',
     category: 'Antenas',
     question: '¿Cómo registro un nuevo tag RFID?',
-    keywords: ['registrar rfid', 'nuevo tag', 'sticker nuevo'],
-    answer: 'Ve a "Registrar RFID" en el menú lateral. Ahí puedes escanear o ingresar el código EPC del sticker y asociarlo a la unidad de producto correspondiente.'
+    keywords: ['registrar rfid', 'nuevo tag', 'tag nuevo'],
+    answer: 'Ve a "Registrar RFID" en el menú lateral. Ahí puedes escanear o ingresar el código EPC del tag y asociarlo a la unidad de producto correspondiente.'
   },
 
   // ── Eventos ──────────────────────────────────────────────────────────
@@ -148,9 +148,9 @@ export const HELP_FAQ = [
   {
     id: 'deshacer-evento',
     category: 'Eventos',
-    question: '¿Cómo deshago o elimino un evento?',
+    question: '¿Cómo cancelo un evento?',
     keywords: ['deshacer evento', 'eliminar evento', 'papelera', 'cancelar evento'],
-    answer: 'Cada evento tiene un botón "Deshacer" (ícono de papelera roja). Al confirmar, el evento se elimina y todo el equipo que tenía reservado vuelve automáticamente a estado Disponible en el inventario.'
+    answer: 'Cada evento tiene un botón "Cancelar evento" (ícono de papelera roja), que pide un motivo obligatorio. Al confirmar, el evento queda marcado "Cancelado" (visible en Operaciones → Todos y en el Reporte de operaciones, con su motivo) y todo el equipo que tenía reservado vuelve automáticamente a estado Disponible en el inventario.'
   },
 
   // ── Rental ───────────────────────────────────────────────────────────

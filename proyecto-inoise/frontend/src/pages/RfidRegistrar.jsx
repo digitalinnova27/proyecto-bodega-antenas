@@ -19,6 +19,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import UndoIcon from '@mui/icons-material/Undo'
 import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import SortIcon from '@mui/icons-material/Sort'
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import { useInventory } from '../context/InventoryContext'
 import { useRfidSocket } from '../hooks/useRfidSocket'
 import { useAuth } from '../context/AuthContext'
@@ -43,13 +44,48 @@ export default function RfidRegistrar() {
     const { products, addProduct, linkEpc, unlinkEpc, epcMap, nextSkuForFamily } = useInventory()
     const { role, currentUser: authUser } = useAuth()
     const currentUser = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
-    const { isConnected, lastScan, unknownTags, clearLastScan } = useRfidSocket()
+    const { keyboardLastReadAt, lastScan, unknownTags, clearLastScan } = useRfidSocket()
+
+    // ── Presencia REAL de antenas/lector, para el aviso de arriba ──────────
+    // Antes este aviso usaba "isConnected" del socket, que solo indica si el
+    // software (bridge) está corriendo — no si hay una antena o el lector USB
+    // realmente conectados. Por eso decía "Antena conectada" aunque el
+    // lector estuviera desenchufado. Ahora se arma con la lista real de
+    // antenas (/api/antennas, igual que en Antenas.jsx) y la última lectura
+    // del lector USB en modo teclado.
+    //
+    // Aclaración: ni el protocolo de las antenas (UDP) ni un lector USB en
+    // modo teclado avisan cuando se desconectan — no existe ese evento a
+    // nivel de sistema. Por eso el lector USB se considera "conectado" solo
+    // si tuvo una lectura en los últimos PRESENCE_TIMEOUT_MS: pasado ese
+    // tiempo sin leer nada, se asume desconectado. Es una aproximación por
+    // tiempo, no una detección instantánea del cable.
+    const PRESENCE_TIMEOUT_MS = 90000
+    const [antennaList, setAntennaList] = React.useState([])
+    const [, forceTick] = React.useState(0)
+
+    React.useEffect(() => {
+        const fetchAntennas = async () => {
+            try {
+                const res = await fetch('http://localhost:3002/api/antennas')
+                const data = await res.json()
+                setAntennaList(Array.isArray(data.antennas) ? data.antennas : [])
+            } catch (e) { }
+        }
+        fetchAntennas()
+        const interval = setInterval(fetchAntennas, 2000)
+        const tick = setInterval(() => forceTick(v => v + 1), 2000)
+        return () => { clearInterval(interval); clearInterval(tick) }
+    }, [])
+
+    const antennaCount = antennaList.length
+    const keyboardPresent = !!keyboardLastReadAt && (Date.now() - keyboardLastReadAt) < PRESENCE_TIMEOUT_MS
     // BUG FIX: useRfidSocket ahora comparte UNA sola conexión para toda la
     // app (ver RfidSocketContext), así que al entrar a esta pantalla
     // `lastScan`/`unknownTags` pueden traer arrastrado un scan de ANTES de
     // abrir esta página (de Operaciones, de una vinculación anterior en la
     // misma sesión, etc.). Sin esto, el primer render procesaba ese scan
-    // viejo como si el operador recién hubiera pasado un sticker. Por eso
+    // viejo como si el operador recién hubiera pasado un tag. Por eso
     // se inicializan estos refs con el valor YA presente al montar, así
     // solo se reacciona a lo que llegue de ahora en adelante.
     const lastUnknownRef = React.useRef(unknownTags && unknownTags.length > 0 ? unknownTags[unknownTags.length - 1] : null)
@@ -69,9 +105,9 @@ export default function RfidRegistrar() {
     const [selectedProd, setSelectedProd] = React.useState('')
 
     /* ────────────────────────────────────────────────────────────────────
-     * MODO POR LOTE — vincular varios stickers al MISMO producto sin tener
+     * MODO POR LOTE — vincular varios tags al MISMO producto sin tener
      * que volver a elegirlo cada vez. El operador elige el producto una
-     * sola vez y luego cada sticker escaneado se vincula automáticamente
+     * sola vez y luego cada tag escaneado se vincula automáticamente
      * a la siguiente unidad disponible de ese producto.
      * ──────────────────────────────────────────────────────────────────── */
     const [mode, setMode] = React.useState('individual') // 'individual' | 'bulk'
@@ -112,7 +148,7 @@ export default function RfidRegistrar() {
 
     // Vincula automáticamente un EPC a la siguiente unidad disponible del
     // producto fijado en modo lote, sin pedirle al operador que vuelva a
-    // elegir el producto en cada sticker.
+    // elegir el producto en cada tag.
     const handleBulkAutoLink = (epc) => {
         const prod = products.find(p => p.id === Number(bulkProductId))
         if (!prod) {
@@ -145,7 +181,7 @@ export default function RfidRegistrar() {
     }
 
     // Deshace SOLO la última lectura de la sesión activa (por si se pasó
-    // el sticker equivocado). No toca vínculos de sesiones anteriores.
+    // el tag equivocado). No toca vínculos de sesiones anteriores.
     const handleUndoLastBulk = () => {
         if (bulkSessionLinks.length === 0) return
         const last = bulkSessionLinks[bulkSessionLinks.length - 1]
@@ -157,7 +193,7 @@ export default function RfidRegistrar() {
     }
 
     // Botón de emergencia: si por cualquier motivo la antena reconoció más
-    // stickers de los solicitados (o alguno equivocado), esto libera TODOS
+    // tags de los solicitados (o alguno equivocado), esto libera TODOS
     // los tags vinculados durante la sesión activa (no los de sesiones
     // anteriores del mismo producto) y vuelve al inicio de la sección.
     const handleResetBulkSession = () => {
@@ -179,7 +215,7 @@ export default function RfidRegistrar() {
     //
     // Regla estricta: un EPC YA vinculado a una unidad NO debe generar
     // ninguna reacción en esta pantalla — ni modal, ni aviso, ni sonido —
-    // en NINGUNO de los dos modos. La antena puede tener stickers ya
+    // en NINGUNO de los dos modos. La antena puede tener tags ya
     // vinculados de otros productos (o de este mismo) cerca en cualquier
     // momento, y eso no debe interrumpir ni distraer nada acá.
     //
@@ -223,10 +259,10 @@ export default function RfidRegistrar() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lastScan])
 
-    // Captura de stickers NUEVOS / no registrados (el bridge los manda como
+    // Captura de tags NUEVOS / no registrados (el bridge los manda como
     // 'rfid_unknown' porque no existen en epcMap todavía). Antes esta página
     // solo escuchaba lastScan, que únicamente se dispara para EPCs YA
-    // conocidos por el bridge — por eso un sticker nunca antes escaneado no
+    // conocidos por el bridge — por eso un tag nunca antes escaneado no
     // hacía nada en esta pantalla. Mismo patrón que usa Operations.jsx.
     React.useEffect(() => {
         if (!unknownTags || unknownTags.length === 0) return
@@ -290,6 +326,25 @@ export default function RfidRegistrar() {
         setBulkSessionLinks([])
     }, [bulkProductId])
 
+    // Cuando se vincula la última unidad pendiente del producto actual, la
+    // sesión se cierra sola — unos segundos después vuelve automáticamente
+    // a la pantalla inicial (selección de categoría), sin que el operador
+    // tenga que tocar "Continuar" a mano. Solo se dispara si algo se
+    // vinculó realmente en ESTA sesión (bulkSessionLinks.length > 0), para
+    // no saltar de inmediato si se entra a un producto que ya estaba 100%
+    // vinculado de antes sin escanear nada nuevo.
+    React.useEffect(() => {
+        if (bulkStep !== 'session' || !bulkProduct) return
+        if (bulkAvailableCount !== 0 || bulkSessionLinks.length === 0) return
+        const t = setTimeout(() => {
+            setBulkNotice({ open: true, severity: 'success', msg: `${bulkProduct.name}: todas las unidades vinculadas. Volviendo al inicio…` })
+            setBulkProductId('')
+            setBulkStep('category')
+        }, 1500)
+        return () => clearTimeout(t)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [bulkAvailableCount, bulkStep, bulkSessionLinks.length])
+
     // Productos de la categoría elegida, ordenados según el criterio activo.
     const bulkCategoryProducts = React.useMemo(() => {
         const list = products.filter(p => p.category === bulkCategory)
@@ -337,16 +392,22 @@ export default function RfidRegistrar() {
     return (
         <Box>
             <Typography variant="h5" sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                <QrCodeScannerIcon /> Registrar Stickers RFID
+                <QrCodeScannerIcon /> Registrar Tags RFID
             </Typography>
 
-            <Alert severity={isConnected ? 'success' : 'warning'} icon={<WifiIcon />} sx={{ mb: 2 }}>
-                {isConnected ? '🟢 Antena conectada — pasa un sticker por la antena' : '⚫ Antena desconectada — ejecuta: node server/rfid-bridge.js'}
+            <Alert severity={(antennaCount > 0 || keyboardPresent) ? 'success' : 'warning'} icon={<WifiIcon />} sx={{ mb: 2 }}>
+                {antennaCount > 0 && keyboardPresent
+                    ? `🟢 ${antennaCount} antena${antennaCount !== 1 ? 's' : ''} + lector USB conectados — pasa un tag`
+                    : antennaCount > 0
+                        ? `🟢 ${antennaCount} antena${antennaCount !== 1 ? 's' : ''} conectada${antennaCount !== 1 ? 's' : ''} — pasa un tag por la antena`
+                        : keyboardPresent
+                            ? '🟢 Lector USB conectado — pasa un tag por el lector'
+                            : '⚫ No hay ninguna antena ni lector conectado'}
             </Alert>
 
-            {/* SELECTOR DE MODO — vinculación individual (un sticker a la vez,
+            {/* SELECTOR DE MODO — vinculación individual (un tag a la vez,
                 eligiendo producto y unidad cada vez) vs. por lote (se fija el
-                producto una sola vez y cada sticker se vincula solo a la
+                producto una sola vez y cada tag se vincula solo a la
                 siguiente unidad disponible). */}
             <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
                 <Button
@@ -354,7 +415,7 @@ export default function RfidRegistrar() {
                     startIcon={<LinkIcon />}
                     onClick={() => setMode('individual')}
                     sx={mode === 'individual' ? { bgcolor: '#66FCF1', color: '#0B0C10', '&:hover': { bgcolor: '#45e8d5' } } : {}}>
-                    Vincular individual
+                    Vinculación manual
                 </Button>
                 <Button
                     variant={mode === 'bulk' ? 'contained' : 'outlined'}
@@ -480,9 +541,9 @@ export default function RfidRegistrar() {
                                             onClick={() => setResetConfirmOpen(true)}>
                                             Detener vinculación
                                         </Button>
-                                        <Button size="small" variant="outlined" color="error" startIcon={<CancelIcon />}
-                                            onClick={() => { setBulkProductId(''); setBulkStep('product') }}>
-                                            Cambiar de producto
+                                        <Button size="small" variant="outlined" color="success" startIcon={<ArrowForwardIcon />}
+                                            onClick={() => { setBulkProductId(''); setBulkStep('category') }}>
+                                            Continuar
                                         </Button>
                                     </Box>
                                 </Box>
@@ -498,13 +559,13 @@ export default function RfidRegistrar() {
                                 <Typography variant="caption" color="text.secondary">
                                     {bulkAvailableCount === 0
                                         ? '✅ Todas las unidades ya están vinculadas — la lectura se detiene automáticamente'
-                                        : `Pasa el siguiente sticker por la antena — quedan ${bulkAvailableCount} unidad${bulkAvailableCount !== 1 ? 'es' : ''} sin vincular`}
+                                        : `Pasa el siguiente tag por la antena — quedan ${bulkAvailableCount} unidad${bulkAvailableCount !== 1 ? 'es' : ''} sin vincular`}
                                 </Typography>
                             </Paper>
 
                             {/* Aviso persistente del último vinculado — a diferencia del
                                 snackbar (que se cierra solo a los 3s), este se queda visible
-                                hasta el próximo sticker, para que quede claro qué pasó. */}
+                                hasta el próximo tag, para que quede claro qué pasó. */}
                             {lastBulkLinked && (
                                 <Alert severity="success" icon={<CheckCircleIcon />} sx={{ mb: 2 }}>
                                     Último vinculado: <strong>{unitLabel(lastBulkLinked.unitId)}</strong>
@@ -515,7 +576,7 @@ export default function RfidRegistrar() {
                             {/* Grilla visual de unidades: cada casilla representa una unidad
                                 física del producto. Verde con check = ya vinculada; la última
                                 vinculada parpadea/resalta un par de segundos para que se note
-                                de inmediato cuál fue. Gris = todavía sin sticker. */}
+                                de inmediato cuál fue. Gris = todavía sin tag. */}
                             <Paper sx={{ p: 2, mb: 2 }}>
                                 <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
                                     Unidades de {bulkProduct.name}
@@ -571,7 +632,7 @@ export default function RfidRegistrar() {
 
                     {/* Modal de confirmación para el botón "Detener vinculación" —
                         es la red de seguridad a prueba de fallas: si la restricción de
-                        lectura falla y se leen más stickers de los deseados, esto libera
+                        lectura falla y se leen más tags de los deseados, esto libera
                         SOLO los tags vinculados durante la sesión activa y vuelve al inicio. */}
                     <Dialog open={resetConfirmOpen} onClose={() => setResetConfirmOpen(false)}>
                         <DialogTitle>¿Desea detener la vinculación?</DialogTitle>
@@ -593,9 +654,9 @@ export default function RfidRegistrar() {
             {mode === 'individual' && step === 'waiting' && (
                 <Paper sx={{ p: 4, textAlign: 'center', mb: 2 }}>
                     <QrCodeScannerIcon sx={{ fontSize: 72, color: 'text.disabled', mb: 2 }} />
-                    <Typography variant="h6" color="text.secondary">Esperando sticker...</Typography>
+                    <Typography variant="h6" color="text.secondary">Esperando tag...</Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                        Pasa un sticker RFID por la antena para comenzar
+                        Pasa un tag RFID por la antena para comenzar
                     </Typography>
                     <Divider sx={{ my: 2 }}>o ingresa manualmente</Divider>
                     <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
@@ -616,7 +677,7 @@ export default function RfidRegistrar() {
                 <Fade in>
                     <Box>
                         <Alert severity="info" sx={{ mb: 2 }} icon={<QrCodeScannerIcon />}>
-                            <Typography variant="body1" fontWeight={600}>✅ Sticker detectado</Typography>
+                            <Typography variant="body1" fontWeight={600}>✅ Tag detectado</Typography>
                             <Typography variant="body2" fontFamily="monospace" sx={{ mt: 0.5 }}>
                                 EPC: <strong>{currentEpc}</strong>
                             </Typography>
@@ -772,7 +833,7 @@ export default function RfidRegistrar() {
                         <Typography variant="h6" sx={{ color: '#66FCF1', mb: 2 }}>¡Vinculado correctamente!</Typography>
                         <Box sx={{ textAlign: 'left', bgcolor: '#1F2833', border: '1px solid rgba(102,252,241,0.2)', borderRadius: 2, p: 2, mb: 2 }}>
                             <Typography variant="body2" sx={{ color: '#C5C6C7', mb: 0.5 }}>
-                                <strong style={{ color: '#66FCF1' }}>Sticker:</strong> <code style={{ fontFamily: 'monospace', fontSize: 12 }}>{registered[0].epc}</code>
+                                <strong style={{ color: '#66FCF1' }}>Tag:</strong> <code style={{ fontFamily: 'monospace', fontSize: 12 }}>{registered[0].epc}</code>
                             </Typography>
                             <Typography variant="body2" sx={{ color: '#C5C6C7', mb: 0.5 }}>
                                 <strong style={{ color: '#66FCF1' }}>Producto:</strong> {registered[0].productName}
@@ -786,11 +847,11 @@ export default function RfidRegistrar() {
                             {registered[0].isNew && <Chip label="Producto nuevo creado" color="warning" size="small" sx={{ mt: 1 }} />}
                         </Box>
                         <Typography variant="body2" sx={{ color: '#C5C6C7', mb: 2 }}>
-                            📌 Pega el sticker en el elemento físico: <strong style={{ color: '#66FCF1' }}>{registered[0].productName} — {unitLabel(registered[0].unitId)}</strong>
+                            📌 Pega el tag en el elemento físico: <strong style={{ color: '#66FCF1' }}>{registered[0].productName} — {unitLabel(registered[0].unitId)}</strong>
                         </Typography>
                         <Button variant="contained" size="large" onClick={handleNuevo}
                             sx={{ bgcolor: '#66FCF1', color: '#0B0C10', '&:hover': { bgcolor: '#45e8d5' } }}>
-                            Registrar siguiente sticker
+                            Registrar siguiente tag
                         </Button>
                     </Paper>
                 </Fade>
@@ -805,7 +866,7 @@ export default function RfidRegistrar() {
                     <Table size="small">
                         <TableHead>
                             <TableRow>
-                                <TableCell>Sticker (EPC)</TableCell>
+                                <TableCell>Tag (EPC)</TableCell>
                                 <TableCell>Unidad</TableCell>
                                 <TableCell>Producto</TableCell>
                                 <TableCell>SKU</TableCell>

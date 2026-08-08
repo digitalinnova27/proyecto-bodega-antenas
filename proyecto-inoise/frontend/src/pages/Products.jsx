@@ -12,6 +12,7 @@ import LinkOffIcon from '@mui/icons-material/LinkOff'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 import { useInventory } from '../context/InventoryContext'
+import { useAuth } from '../context/AuthContext'
 
 // "3-5" → "Unidad 5"
 const unitLabel = (id) => {
@@ -19,8 +20,41 @@ const unitLabel = (id) => {
   return `Unidad ${parts[parts.length - 1]}`
 }
 
+// Colores para el estado físico real de cada unidad (independiente de si
+// tiene o no un tag RFID vinculado — antes este modal solo mostraba
+// "Vinculada"/"Sin tag", sin decir nunca si la unidad estaba realmente
+// Disponible, Reservada, Ocupada, etc.)
+const STATE_COLORS = {
+  Disponible: 'success',
+  Reservado: 'warning',
+  Ocupado: 'error',
+  Rental: 'secondary',
+  'En Mantenimiento': 'default',
+  Perdido: 'error'
+}
+
 export default function Products() {
-  const { products, epcMap, unlinkEpc, unlinkAllForProduct } = useInventory()
+  const { products, epcMap, unlinkEpc, unlinkAllForProduct, events, rentals, forceReleaseUnit } = useInventory()
+  const { role, currentUser: authUser } = useAuth()
+  const roleLabel = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
+
+  // Si una unidad no está Disponible, busca qué evento o arriendo ACTIVO la
+  // tiene asignada — así se puede distinguir "está reservada de verdad
+  // para tal evento" de "quedó atascada sin ningún evento activo detrás"
+  // (este segundo caso es un dato inconsistente que se puede liberar a mano).
+  const findUnitHolder = (unitId) => {
+    const ev = events.find(e =>
+      (e.assignments || []).some(a => (a.unitIds || []).includes(unitId)) &&
+      !['Realizado', 'Concluido', 'Cancelado'].includes(e.status)
+    )
+    if (ev) return { kind: 'Evento', label: `${ev.orderNumber} · ${ev.name}` }
+    const rt = rentals.find(r =>
+      (r.assignments || []).some(a => (a.unitIds || []).includes(unitId)) &&
+      r.status !== 'Concluido'
+    )
+    if (rt) return { kind: 'Arriendo', label: `${rt.orderNumber} · ${rt.name}` }
+    return null
+  }
 
   const [search, setSearch] = React.useState('')
   const [sortBy, setSortBy] = React.useState('az')
@@ -35,13 +69,13 @@ export default function Products() {
     return map
   }, [epcMap])
 
-  // Stickers "fantasma": EPCs vinculados (en epcMap) a un unitId cuyo
+  // Tags "fantasma": EPCs vinculados (en epcMap) a un unitId cuyo
   // producto ya no existe — típicamente porque el producto se eliminó
   // antes de que existiera la limpieza automática (ver deleteProduct en
   // InventoryContext). Sin esto, esos EPCs quedaban invisibles para
   // siempre: RfidRegistrar los marca como "ya vinculados" a "Producto
   // desconocido", pero no aparecían en ningún listado para poder
-  // liberarlos y reutilizar el sticker físico en otro producto.
+  // liberarlos y reutilizar el tag físico en otro producto.
   const orphanEpcs = React.useMemo(() => {
     const allUnitIds = new Set(products.flatMap(p => p.units.map(u => u.id)))
     return Object.entries(epcMap || {})
@@ -137,21 +171,21 @@ export default function Products() {
         </Box>
       </Paper>
 
-      {/* Stickers sin producto válido (huérfanos) — EPCs que quedaron
+      {/* Tags sin producto válido (huérfanos) — EPCs que quedaron
           vinculados a un producto que ya fue eliminado. Antes de este
           arreglo no había forma de verlos ni liberarlos desde la UI. */}
       {orphanEpcs.length > 0 && (
         <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'warning.main', bgcolor: 'rgba(239,159,39,0.06)' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
             <Typography variant="subtitle2" color="warning.main">
-              Stickers sin producto válido ({orphanEpcs.length})
+              Tags sin producto válido ({orphanEpcs.length})
             </Typography>
             <Button size="small" variant="outlined" color="warning" onClick={handleFreeAllOrphans}>
               Liberar todos
             </Button>
           </Box>
           <Alert severity="warning" sx={{ mb: 1.5 }}>
-            Estos stickers quedaron vinculados a un producto que ya fue eliminado.
+            Estos tags quedaron vinculados a un producto que ya fue eliminado.
             Libéralos para poder usarlos en otro producto.
           </Alert>
           <List dense disablePadding>
@@ -279,6 +313,8 @@ export default function Products() {
                   {units.map((u, idx) => {
                     const epc = unitToEpc[u.id]
                     const isLinked = Boolean(epc)
+                    const isAvailable = u.state === 'Disponible'
+                    const holder = !isAvailable ? findUnitHolder(u.id) : null
                     return (
                       <ListItem key={u.id} sx={{
                         py: 0.8, px: 1.5, mb: 0.3, borderRadius: 1,
@@ -295,7 +331,7 @@ export default function Products() {
                         }>
                         <ListItemText
                           primary={
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                               {isLinked
                                 ? <CheckCircleIcon sx={{ fontSize: 16, color: '#1D9E75' }} />
                                 : <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
@@ -308,13 +344,36 @@ export default function Products() {
                                 <Chip label="Vinculada" size="small" color="success"
                                   sx={{ fontSize: 10, height: 20, ml: 0.5 }} />
                               )}
+                              <Chip label={u.state || 'Sin estado'} size="small"
+                                color={STATE_COLORS[u.state] || 'default'}
+                                variant="outlined" sx={{ fontSize: 10, height: 20 }} />
                             </Box>
                           }
                           secondary={
-                            isLinked
-                              ? <Typography variant="caption" color="text.secondary" fontFamily="monospace"
-                                sx={{ fontSize: 10 }}>EPC: {epc}</Typography>
-                              : <Typography variant="caption" color="text.disabled">Sin sticker asignado</Typography>
+                            <Box sx={{ mt: 0.3 }}>
+                              <Typography variant="caption" color="text.secondary" fontFamily="monospace" sx={{ fontSize: 10, display: 'block' }}>
+                                {isLinked ? `EPC: ${epc}` : 'Sin tag asignado'}
+                              </Typography>
+                              {!isAvailable && (
+                                holder ? (
+                                  <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>
+                                    {holder.kind}: {holder.label}
+                                  </Typography>
+                                ) : (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.3 }}>
+                                    <Typography variant="caption" sx={{ fontSize: 10, color: 'error.main' }}>
+                                      No hay ningún evento ni arriendo activo que la tenga asignada — dato inconsistente.
+                                    </Typography>
+                                    {role === 'admin' && (
+                                      <Button size="small" variant="text" color="warning" sx={{ fontSize: 10, py: 0, minWidth: 0 }}
+                                        onClick={() => forceReleaseUnit(modalProduct.id, u.id, roleLabel)}>
+                                        Liberar
+                                      </Button>
+                                    )}
+                                  </Box>
+                                )
+                              )}
+                            </Box>
                           }
                         />
                       </ListItem>
@@ -324,7 +383,7 @@ export default function Products() {
                 {toUnlink.length > 0 && (
                   <Alert severity="warning" sx={{ mt: 1.5 }}>
                     Se desvincularán {toUnlink.length} unidad{toUnlink.length > 1 ? 'es' : ''}.
-                    Los stickers físicos conservarán su EPC grabado.
+                    Los tags físicos conservarán su EPC grabado.
                   </Alert>
                 )}
               </>

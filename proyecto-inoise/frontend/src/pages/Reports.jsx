@@ -1,7 +1,7 @@
 import React from 'react'
 import {
   Box, Typography, Paper, Button, TextField, Divider,
-  Table, TableBody, TableCell, TableHead, TableRow, Chip, Alert
+  Table, TableBody, TableCell, TableHead, TableRow, Chip, Alert, Snackbar
 } from '@mui/material'
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf'
 import BarChartIcon from '@mui/icons-material/BarChart'
@@ -15,10 +15,26 @@ const monthOf = (isoOrDate) => {
 }
 
 export default function Reports() {
-  const { eventHistory, rentalHistory } = useInventory()
+  const { eventHistory, rentalHistory, events } = useInventory()
   const todayMonth = new Date().toISOString().slice(0, 7)
   const [month, setMonth] = React.useState(todayMonth)
   const [generating, setGenerating] = React.useState(false)
+  const [snack, setSnack] = React.useState({ open: false, msg: '', severity: 'info' })
+
+  // Refs para que los chips de arriba puedan hacer scroll hasta su sección
+  // (antes eran chips puramente decorativos, no hacían nada al tocarlos).
+  const eventsRef = React.useRef(null)
+  const rentalsRef = React.useRef(null)
+  const lossesRef = React.useRef(null)
+  const cancelledRef = React.useRef(null)
+
+  const scrollToOrNotify = (ref, emptyMsg) => {
+    if (ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } else {
+      setSnack({ open: true, msg: emptyMsg, severity: 'info' })
+    }
+  }
 
   // Se filtra por la fecha del evento/arriendo (cuándo se retiró el
   // material), no por cuándo se cerró el ciclo — así el reporte de "junio"
@@ -31,6 +47,14 @@ export default function Reports() {
   const rentalEntries = React.useMemo(
     () => rentalHistory.filter(r => monthOf(r.date) === month),
     [rentalHistory, month]
+  )
+  // Eventos cancelados del mes — antes se perdían por completo (el viejo
+  // botón "Deshacer" borraba el evento sin dejar rastro). Ahora quedan en
+  // `events` con status "Cancelado" + su motivo, así que este reporte
+  // también puede mostrarlos.
+  const cancelledEntries = React.useMemo(
+    () => (events || []).filter(e => e.status === 'Cancelado' && monthOf(e.date) === month),
+    [events, month]
   )
 
   const totalItems = eventEntries.reduce((s, e) => s + (e.totalItems || 0), 0) +
@@ -48,11 +72,13 @@ export default function Reports() {
   const genPDF = async () => {
     setGenerating(true)
     try {
-      await generateMonthlyReportPDF(month, eventEntries, rentalEntries)
+      await generateMonthlyReportPDF(month, eventEntries, rentalEntries, cancelledEntries)
     } finally {
       setGenerating(false)
     }
   }
+
+  const hasAnyData = eventEntries.length > 0 || rentalEntries.length > 0 || cancelledEntries.length > 0
 
   return (
     <Box>
@@ -78,19 +104,35 @@ export default function Reports() {
         </Box>
       </Paper>
 
-      {eventEntries.length === 0 && rentalEntries.length === 0 ? (
-        <Alert severity="info">No hay eventos ni arriendos cerrados con fecha en este mes.</Alert>
+      {!hasAnyData ? (
+        <Alert severity="info">No hay eventos ni arriendos cerrados o cancelados con fecha en este mes.</Alert>
       ) : (
         <>
           <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
-            <Chip label={`${eventEntries.length} eventos cerrados`} color="primary" variant="outlined" />
-            <Chip label={`${rentalEntries.length} arriendos cerrados`} sx={{ borderColor: '#EF9F27', color: '#EF9F27' }} variant="outlined" />
-            <Chip label={`${totalItems} artículos movidos`} color="success" variant="outlined" />
-            <Chip label={`${totalLosses} incidencias/pérdidas`} color={totalLosses > 0 ? 'warning' : 'default'} variant="outlined" />
+            <Chip
+              label={`${eventEntries.length} eventos cerrados`} color="primary" variant="outlined"
+              clickable onClick={() => scrollToOrNotify(eventsRef, 'No hay eventos cerrados este mes.')}
+            />
+            <Chip
+              label={`${rentalEntries.length} arriendos cerrados`} sx={{ borderColor: '#EF9F27', color: '#EF9F27' }} variant="outlined"
+              clickable onClick={() => scrollToOrNotify(rentalsRef, 'No hay arriendos cerrados este mes.')}
+            />
+            <Chip
+              label={`${totalItems} artículos movidos`} color="success" variant="outlined"
+              clickable onClick={() => scrollToOrNotify(eventEntries.length ? eventsRef : rentalsRef, 'No hay artículos movidos este mes.')}
+            />
+            <Chip
+              label={`${totalLosses} incidencias/pérdidas`} color={totalLosses > 0 ? 'warning' : 'default'} variant="outlined"
+              clickable onClick={() => scrollToOrNotify(lossesRef, 'No hay incidencias ni pérdidas registradas este mes.')}
+            />
+            <Chip
+              label={`${cancelledEntries.length} eventos cancelados`} color={cancelledEntries.length > 0 ? 'error' : 'default'} variant="outlined"
+              clickable onClick={() => scrollToOrNotify(cancelledRef, 'No hay eventos cancelados este mes.')}
+            />
           </Box>
 
           {eventEntries.length > 0 && (
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper ref={eventsRef} sx={{ p: 2, mb: 2 }}>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>Eventos</Typography>
               <Divider sx={{ mb: 1 }} />
               <Table size="small">
@@ -128,7 +170,7 @@ export default function Reports() {
           )}
 
           {rentalEntries.length > 0 && (
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper ref={rentalsRef} sx={{ p: 2, mb: 2 }}>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>Arriendos</Typography>
               <Divider sx={{ mb: 1 }} />
               <Table size="small">
@@ -153,7 +195,7 @@ export default function Reports() {
           )}
 
           {allLosses.length > 0 && (
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper ref={lossesRef} sx={{ p: 2, mb: 2 }}>
               <Typography variant="subtitle2" sx={{ mb: 1, color: 'warning.main' }}>
                 Incidencias y pérdidas
               </Typography>
@@ -186,8 +228,49 @@ export default function Reports() {
               </Table>
             </Paper>
           )}
+
+          {cancelledEntries.length > 0 && (
+            <Paper ref={cancelledRef} sx={{ p: 2, mb: 2 }}>
+              <Typography variant="subtitle2" sx={{ mb: 1, color: 'error.main' }}>
+                Eventos cancelados
+              </Typography>
+              <Divider sx={{ mb: 1 }} />
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Evento</TableCell>
+                    <TableCell>Fecha</TableCell>
+                    <TableCell>Ubicación</TableCell>
+                    <TableCell>Cancelado por</TableCell>
+                    <TableCell>Motivo</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {cancelledEntries.map(ev => (
+                    <TableRow key={ev.id}>
+                      <TableCell>{ev.orderNumber} · {ev.name}</TableCell>
+                      <TableCell>{ev.date}</TableCell>
+                      <TableCell>{ev.location || '—'}</TableCell>
+                      <TableCell>{ev.cancelledBy || '—'}</TableCell>
+                      <TableCell>{ev.cancelReason || 'Sin motivo especificado'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Paper>
+          )}
         </>
       )}
+
+      <Snackbar
+        open={snack.open} autoHideDuration={3500}
+        onClose={() => setSnack(s => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert severity={snack.severity} onClose={() => setSnack(s => ({ ...s, open: false }))}>
+          {snack.msg}
+        </Alert>
+      </Snackbar>
     </Box>
   )
 }

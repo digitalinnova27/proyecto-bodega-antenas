@@ -1,4 +1,14 @@
 {
+  "1.2.1": [
+    "Operaciones: se reordenaron las pestañas de Eventos y Rental a solo tres — 'En curso' (con contador, verde, se archiva solo al terminar), 'Próximos' (pasa a En curso automáticamente el día del evento) y 'Todos' (buscador por fecha/día/semana/mes, por nombre, y filtros de Cancelados/Con incidencia/Realizados, agrupado por fecha y desplegable)",
+    "Nuevo: cancelar un evento ahora pide un motivo obligatorio y el evento queda visible en 'Todos' y en el Reporte de operaciones con la explicación de por qué se canceló (antes se borraba sin dejar rastro)",
+    "Reporte de operaciones: los botones-resumen ahora funcionan (llevan a la sección correspondiente) y se agregó una tabla de eventos cancelados con su motivo, también incluida en el PDF exportado",
+    "Corrección: unidades vinculadas a un evento cancelado quedaban contadas como 'en uso' y no aparecían disponibles al crear un evento nuevo",
+    "Inventario: nueva vista del estado físico de cada unidad (Disponible/Reservado/Ocupado/etc.) con botón para liberarla manualmente si queda inconsistente",
+    "Vinculación de tags: el botón para seguir vinculando ahora es verde ('Continuar') y, al llegar al 100% de unidades vinculadas, la sesión se cierra sola y vuelve a la pantalla de categorías",
+    "Eventos: nuevo panel de resumen (Hoy / Semana / Año) con el detalle por estado",
+    "Seguridad: el Administrador ahora queda 'de confianza' solo en el equipo donde se creó por primera vez. Desde cualquier otro equipo, su perfil aparece restringido y solo se puede entrar con un código de un solo uso enviado a su correo (vence en 10 minutos)"
+  ],
   "1.2.0": [
     "Nuevo: soporte para el lector de escritorio USB VD-67E en modo teclado — al leerse un tag ahora se reconoce automáticamente en Registrar RFID y en las fases de Operaciones (eventos/arriendos), igual que con las antenas de red. No requiere ningún software adicional del fabricante.",
     "Sigue pendiente la función de escritura de tags con este lector (necesita documentación del fabricante que todavía no llegó)"

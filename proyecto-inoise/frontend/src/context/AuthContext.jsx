@@ -4,6 +4,27 @@ import { getSocket, authenticateSocket, deauthenticateSocket } from '../lib/sock
 
 const AuthContext = createContext(null)
 
+// ── Identificador de este dispositivo ────────────────────────────────────
+// En Electron viene de un archivo persistente en userData (ver
+// electron/main.js: getOrCreateDeviceId). Fuera de Electron (acceso web
+// directo desde un navegador) no hay ese puente, así que se genera uno y
+// se guarda en localStorage — sigue siendo estable por navegador/perfil,
+// que es lo que importa acá (saber si ESTE dispositivo es el del admin).
+const WEB_DEVICE_ID_KEY = 'inoise_device_id'
+function getDeviceId() {
+  try {
+    if (window.api?.getDeviceId) return window.api.getDeviceId()
+    let id = localStorage.getItem(WEB_DEVICE_ID_KEY)
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : `web-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      localStorage.setItem(WEB_DEVICE_ID_KEY, id)
+    }
+    return id
+  } catch {
+    return null
+  }
+}
+
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null)
   const [users, setUsers] = useState([])
@@ -16,6 +37,10 @@ export function AuthProvider({ children }) {
   const [sessionId, setSessionId] = useState(null)
   // IDs de usuarios actualmente conectados (actualizado vía Socket.io)
   const [onlineUserIds, setOnlineUserIds] = useState([])
+  // ID persistente de este equipo, y si es (o no) el dispositivo de
+  // confianza del administrador — ver Login.jsx para el uso.
+  const [deviceId] = useState(getDeviceId)
+  const [adminDeviceTrusted, setAdminDeviceTrusted] = useState(true)
 
   // ── Cargar lista de usuarios ───────────────────────────────────────────────
   const loadUsers = useCallback(async () => {
@@ -50,10 +75,11 @@ export function AuthProvider({ children }) {
     // Actualización de usuarios desde otros clientes
     const onUsersUpdated = () => {
       loadUsers()
-      api.get('/api/auth/status').then(res => {
+      api.get(`/api/auth/status?deviceId=${encodeURIComponent(deviceId || '')}`).then(res => {
         if (res.ok) {
           setHasAnyUsers(res.hasUsers)
           if (Array.isArray(res.users)) setLoginUsers(res.users)
+          if (typeof res.adminDeviceTrusted === 'boolean') setAdminDeviceTrusted(res.adminDeviceTrusted)
         }
       }).catch(() => {})
     }
@@ -119,6 +145,33 @@ export function AuthProvider({ children }) {
     }
   }, [loadUsers])
 
+  // ── Login de administrador desde dispositivo no confiable (PIN al correo) ──
+  // requestAdminOtp: pide que se mande el código de un solo uso al correo
+  // del admin. loginAdminOtp: lo canjea por una sesión real — mismo
+  // resultado que login()/loginPin() (token + currentUser + socket).
+  const requestAdminOtp = useCallback(async (username) => {
+    try { return await api.post('/api/auth/admin-otp/request', { username }) }
+    catch (e) { return { ok: false, error: 'Sin conexión con el servidor' } }
+  }, [])
+
+  const loginAdminOtp = useCallback(async (username, code) => {
+    try {
+      const res = await api.post('/api/auth/admin-otp/verify', { username, code })
+      if (res.ok && res.data && res.token) {
+        setToken(res.token)
+        setCurrentUser(res.data)
+        setSessionId(res.sessionId || null)
+        await loadUsers()
+        authenticateSocket(res.token, res.sessionId || null)
+        window.dispatchEvent(new Event('inoise:auth-changed'))
+        return { ok: true, user: res.data }
+      }
+      return { ok: false, error: res.error || 'Código inválido o vencido' }
+    } catch (e) {
+      return { ok: false, error: 'Sin conexión con el servidor' }
+    }
+  }, [loadUsers])
+
   // ── Logout ─────────────────────────────────────────────────────────────────
   const logout = useCallback(async () => {
     // 1. Cerrar sesión en BD (fire-and-forget — no bloquear la UI)
@@ -138,14 +191,20 @@ export function AuthProvider({ children }) {
   // ── CRUD de usuarios ───────────────────────────────────────────────────────
   const createUser = useCallback(async (data, password) => {
     try {
-      const res = await api.post('/api/users', { data, password })
+      // deviceId solo tiene efecto en el servidor cuando esta llamada crea
+      // la cuenta admin en first-run (ver POST /api/users) — ese es el
+      // momento en que este equipo queda registrado como el dispositivo de
+      // confianza del administrador. Para cualquier otra creación de
+      // usuario (un admin ya logueado creando un operador) el servidor
+      // simplemente lo ignora.
+      const res = await api.post('/api/users', { data, password, deviceId })
       if (res.ok) await loadUsers()
       return res
     } catch (e) {
       console.error('[Auth] createUser:', e)
       return { ok: false, error: 'Sin conexión con el servidor' }
     }
-  }, [loadUsers])
+  }, [loadUsers, deviceId])
 
   const updateUser = useCallback(async (id, fields, newPassword) => {
     try {
@@ -248,12 +307,14 @@ export function AuthProvider({ children }) {
 
   // ── Restaurar sesión desde sessionStorage al recargar página ──────────────
   React.useEffect(() => {
-    // Consultar si existen usuarios (endpoint público).
-    api.get('/api/auth/status')
+    // Consultar si existen usuarios (endpoint público) + si este equipo es
+    // el dispositivo de confianza del administrador.
+    api.get(`/api/auth/status?deviceId=${encodeURIComponent(deviceId || '')}`)
       .then(res => {
         if (res.ok) {
           setHasAnyUsers(res.hasUsers)
           if (Array.isArray(res.users)) setLoginUsers(res.users)
+          if (typeof res.adminDeviceTrusted === 'boolean') setAdminDeviceTrusted(res.adminDeviceTrusted)
         } else {
           setHasAnyUsers(false)
         }
@@ -281,9 +342,13 @@ export function AuthProvider({ children }) {
       isAuthenticated: Boolean(currentUser),
       onlineUserIds,
       sessionId,
+      deviceId,
+      adminDeviceTrusted,
       loadUsers,
       login,
       loginPin,
+      requestAdminOtp,
+      loginAdminOtp,
       logout,
       createUser,
       updateUser,

@@ -155,11 +155,11 @@ export function InventoryProvider({ children }) {
    * se sincronizaba con el bridge al cargar la página: cada refresh dejaba
    * el epcMap del frontend vacío, aunque el bridge seguía resolviendo los
    * escaneos correctamente con sus vínculos ya guardados. Resultado: un
-   * sticker que SÍ estaba registrado en sesiones anteriores aparecía como
+   * tag que SÍ estaba registrado en sesiones anteriores aparecía como
    * "nunca vinculado" en toda la UI (Productos Vinculados, Registrar RFID),
    * pero al pasarlo por la antena, el bridge lo resolvía bien y mostraba el
    * modal de "completado" — pareciendo un falso positivo cuando en
-   * realidad el sticker sí pertenecía al evento.
+   * realidad el tag sí pertenecía al evento.
    * ──────────────────────────────────────────────────────────────────────── */
   React.useEffect(() => {
     fetch(`${BRIDGE_URL}/api/epcmap`)
@@ -192,7 +192,7 @@ export function InventoryProvider({ children }) {
         // Solo si la fecha del evento es >= la fecha consultada
         e.date >= cutoff &&
         // No contar eventos que ya salieron (Ocupado) ni realizados
-        !['Realizado', 'Concluido', 'Suspendido'].includes(e.status)
+        !['Realizado', 'Concluido', 'Suspendido', 'Cancelado'].includes(e.status)
       )
       .flatMap(e => e.assignments || [])
       .filter(a => a.productId === productId)
@@ -200,7 +200,7 @@ export function InventoryProvider({ children }) {
 
     // Solo cuentan como "reservadas" las unidades que TODAVÍA están
     // físicamente en estado 'Reservado'. Si ya pasaron a Ocupado/Rental
-    // (porque el sticker fue escaneado en Operaciones), ya no se cuentan
+    // (porque el tag fue escaneado en Operaciones), ya no se cuentan
     // aquí — evita el doble conteo que excedía el total del producto.
     return product.units.filter(u =>
       unitIdsInPlay.includes(u.id) && u.state === 'Reservado'
@@ -229,9 +229,9 @@ export function InventoryProvider({ children }) {
    * getLinkedAvailableQty(productId, forDate?, excludeEventId?)
    *
    * Igual que getAvailableQty, pero solo cuenta unidades físicamente
-   * 'Disponible' que además tienen un sticker RFID vinculado (epcMap).
+   * 'Disponible' que además tienen un tag RFID vinculado (epcMap).
    * Se usa al crear/editar eventos: NO se debe poder asignar una unidad
-   * sin sticker, porque luego no hay forma de rastrearla por RFID en
+   * sin tag, porque luego no hay forma de rastrearla por RFID en
    * Operaciones — eso permitiría crear eventos con información falsa
    * (equipos "asignados" que en realidad no existen vinculados).
    * ──────────────────────────────────────────────────────────────────────── */
@@ -245,7 +245,7 @@ export function InventoryProvider({ children }) {
         e.id !== excludeEventId &&
         isActiveOnDate(e.date) &&
         e.date >= cutoff &&
-        !['Realizado', 'Concluido', 'Suspendido'].includes(e.status)
+        !['Realizado', 'Concluido', 'Suspendido', 'Cancelado'].includes(e.status)
       )
       .flatMap(e => e.assignments || [])
       .filter(a => a.productId === productId)
@@ -277,7 +277,7 @@ export function InventoryProvider({ children }) {
         e.id !== eventId &&
         isActiveOnDate(e.date) &&
         e.date >= cutoff &&
-        !['Realizado', 'Concluido', 'Suspendido'].includes(e.status)
+        !['Realizado', 'Concluido', 'Suspendido', 'Cancelado'].includes(e.status)
       )
       .flatMap(e => e.assignments || [])
       .filter(a => a.productId === productId)
@@ -412,15 +412,15 @@ export function InventoryProvider({ children }) {
    *
    * El operador NO puede borrar eventos directamente: solo puede marcarlos
    * con `pendingDelete: true` (la UI los muestra en rojo). El admin ve esa
-   * marca, y desde ahí puede "Aprobar y eliminar" (ejecuta deleteEvent de
+   * marca, y desde ahí puede "Aprobar y eliminar" (ejecuta cancelEvent de
    * verdad) o "Rechazar" (quita la marca y el evento sigue como antes). El
    * admin sigue pudiendo eliminar directo sin pasar por este flujo (su
-   * botón "Deshacer" de siempre no cambió).
+   * botón "Cancelar evento" de siempre no cambió).
    * ──────────────────────────────────────────────────────────────────────── */
-  const requestDeleteEvent = (eventId, requestedBy) => {
+  const requestDeleteEvent = (eventId, requestedBy, reason) => {
     setEvents(prev => prev.map(e =>
       e.id === eventId
-        ? { ...e, pendingDelete: true, pendingDeleteBy: requestedBy || 'Operador', pendingDeleteAt: new Date().toISOString() }
+        ? { ...e, pendingDelete: true, pendingDeleteBy: requestedBy || 'Operador', pendingDeleteAt: new Date().toISOString(), pendingDeleteReason: reason || '' }
         : e
     ))
   }
@@ -428,9 +428,38 @@ export function InventoryProvider({ children }) {
   const cancelDeleteEvent = (eventId) => {
     setEvents(prev => prev.map(e =>
       e.id === eventId
-        ? { ...e, pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null }
+        ? { ...e, pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null, pendingDeleteReason: null }
         : e
     ))
+  }
+
+  /* ── Cancelar evento (con motivo) ──────────────────────────────────────
+   * A diferencia de deleteEvent (que borraba el evento sin dejar rastro),
+   * esto deja el evento marcado como "Cancelado" con su motivo — sigue
+   * siendo visible en el filtro "Todos" de Operaciones, en Eventos y en el
+   * Reporte de operaciones, solo que ya no requiere ninguna acción
+   * logística. El inventario reservado se libera igual que antes. */
+  const cancelEvent = (eventId, reason, cancelledBy) => {
+    const ev = events.find(e => e.id === eventId)
+    if (!ev) return
+    const unitIds = (ev.assignments || []).flatMap(a => a.unitIds || [])
+    setProducts(prev => prev.map(product => ({
+      ...product,
+      units: product.units.map(u =>
+        unitIds.includes(u.id) && ['Reservado', 'Ocupado'].includes(u.state)
+          ? { ...u, state: 'Disponible' }
+          : u
+      )
+    })))
+    setEvents(prev => prev.map(e => e.id === eventId ? {
+      ...e,
+      status: 'Cancelado',
+      cancelReason: reason || 'Sin motivo especificado',
+      cancelledBy: cancelledBy || 'Administrador',
+      cancelledAt: new Date().toISOString(),
+      pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null, pendingDeleteReason: null
+    } : e))
+    addAuditEntry('Evento cancelado', `${ev.orderNumber} · ${ev.name}${reason ? ' · Motivo: ' + reason : ''}`, 'evento', cancelledBy)
   }
 
   /* ── Crear arriendo ── */
@@ -514,6 +543,20 @@ export function InventoryProvider({ children }) {
     epcsToUnlink.forEach(epc => {
       fetch(`${BRIDGE_URL}/api/epcmap/${encodeURIComponent(epc)}`, { method: 'DELETE' }).catch(() => { })
     })
+  }
+
+  /* ── Liberar unidad manualmente (admin) ──────────────────────────────────
+   * Vía de escape para unidades que quedan "atascadas" en un estado que no
+   * es Disponible (Reservado/Ocupado/etc.) sin estar realmente ligadas a
+   * ningún evento o arriendo activo — por ejemplo, si un evento se editó,
+   * se forzó a mitad de camino, o quedó de una versión anterior del
+   * sistema. Antes no había forma de corregir esto desde la interfaz. */
+  const forceReleaseUnit = (productId, unitId, user) => {
+    setProducts(prev => prev.map(p => p.id === productId ? {
+      ...p,
+      units: p.units.map(u => u.id === unitId ? { ...u, state: 'Disponible' } : u)
+    } : p))
+    addAuditEntry('Unidad liberada manualmente', `${unitId} (${productId})`, 'producto', user)
   }
 
   /* ── Cambio de estado por scan RFID real ── */
@@ -672,7 +715,13 @@ export function InventoryProvider({ children }) {
     setEvents(prev => prev.map(e => e.id === event.id ? { ...e, status: 'Concluido' } : e))
   }
 
-  /* ── Cerrar arriendo → mover de Operaciones al Historial de Rentas ── */
+  /* ── Cerrar arriendo → mover de Operaciones al Historial de Rentas ──
+   * Igual que closeEventToHistory: el arriendo YA NO se borra de `rentals`
+   * — queda marcado status='Concluido' y se mantiene, así el filtro
+   * "Todos" de Operaciones (sección Rental) puede mostrarlo directamente
+   * sin tener que mezclar dos estructuras de datos distintas (rentals +
+   * rentalHistory). El detalle completo sigue guardándose en rentalHistory
+   * para el Reporte de operaciones, igual que antes. */
   const closeRentalToHistory = (rental, totalItems, closedBy) => {
     if (!rental) return
     const items = (rental.assignments || []).map(a => {
@@ -698,7 +747,7 @@ export function InventoryProvider({ children }) {
       items
     }
     setRentalHistory(prev => [entry, ...prev])
-    setRentals(prev => prev.filter(r => r.id !== rental.id))
+    setRentals(prev => prev.map(r => r.id === rental.id ? { ...r, status: 'Concluido' } : r))
     addAuditEntry('Arriendo cerrado (Operaciones)', `${rental.orderNumber} · ${rental.name}${rental.clientName ? ' · ' + rental.clientName : ''}`, 'arriendo', closedBy)
   }
 
@@ -727,10 +776,10 @@ export function InventoryProvider({ children }) {
   // ahora es una baja directa; el flujo de aprobación admin/operador para
   // esta acción se agrega en una etapa siguiente.
   const deleteProduct = (productId) => {
-    // Antes esto borraba el producto sin soltar sus stickers RFID: el
+    // Antes esto borraba el producto sin soltar sus tags RFID: el
     // epcMap (que vive en el bridge, separado de la lista de productos)
     // se quedaba con EPC → unitId apuntando a un producto que ya no
-    // existe. Esos stickers quedaban "fantasma": al volver a escanearlos
+    // existe. Esos tags quedaban "fantasma": al volver a escanearlos
     // RfidRegistrar los marcaba como "ya vinculados" a "Producto
     // desconocido" y no había forma de liberarlos desde la UI, porque
     // Productos Vinculados solo lista productos reales. Por eso ahora
@@ -802,7 +851,15 @@ export function InventoryProvider({ children }) {
    * Nota: los efectos deben ser llamadas directas de useEffect (regla de hooks). */
   const skipOrSave = (entity, path, value) => {
     if (fromSocket.current[entity]) { fromSocket.current[entity] = false; return }
-    api.put(path, value).catch(() => {})
+    // Antes un error acá (red caída, servidor no disponible, etc.) quedaba
+    // completamente silencioso: el cambio se veía bien en pantalla (estado
+    // local ya actualizado) pero nunca llegaba a guardarse en la base de
+    // datos, y recién se notaba al recargar la app y ver que "desapareció".
+    // Ahora al menos queda un registro en consola con la entidad y el
+    // motivo, para poder diagnosticar este tipo de caso.
+    api.put(path, value)
+      .then(res => { if (res && res.ok === false) console.error(`[guardado] ${entity} respondió con error:`, res.error) })
+      .catch(err => console.error(`[guardado] Falló el guardado de "${entity}" en el servidor:`, err))
   }
 
   React.useEffect(() => {
@@ -856,13 +913,13 @@ export function InventoryProvider({ children }) {
       events, setEvents,
       getReservedQty, getAvailableQty, getAvailableQtyForEvent, getLinkedAvailableQty,
       countByState,
-      createEvent, updateEvent, deleteEvent,
+      createEvent, updateEvent, deleteEvent, cancelEvent,
       requestDeleteEvent, cancelDeleteEvent,
       rentals, setRentals, createRental, deleteRental,
       addProduct, deleteProduct, requestDeleteProduct, cancelDeleteProduct, nextSkuForFamily,
       opStates, setOpStates,
       epcMap, linkEpc, unlinkEpc, unlinkAllForProduct,
-      markUnitOccupied, markUnitAvailable, markUnitBackFromRental,
+      markUnitOccupied, markUnitAvailable, markUnitBackFromRental, forceReleaseUnit,
       isActiveOnDate,
       eventHistory, rentalHistory, purchaseHistory,
       closeEventToHistory, closeRentalToHistory,

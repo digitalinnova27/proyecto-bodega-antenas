@@ -27,6 +27,31 @@ function readConfig() {
 function writeConfig(cfg) {
   fs.writeFileSync(getConfigPath(), JSON.stringify(cfg, null, 2), 'utf8')
 }
+
+// ── Identificador único de este equipo (para el dispositivo de confianza
+//    del administrador) ─────────────────────────────────────────────────
+// Vive en un archivo aparte de inoise-config.json a propósito: saveConfig()
+// reemplaza el config completo cada vez que se elige modo servidor/cliente
+// (ver handleChooseServer/handleConnect en Login.jsx), así que si el
+// deviceId viviera ahí adentro se perdería en cualquier reconfiguración.
+// Se genera una sola vez y persiste en userData (sobrevive reinstalaciones
+// y actualizaciones, igual que inoise-config.json).
+function getDeviceIdPath() {
+  return path.join(app.getPath('userData'), 'inoise-device-id.txt')
+}
+
+function getOrCreateDeviceId() {
+  try {
+    const p = getDeviceIdPath()
+    if (fs.existsSync(p)) {
+      const id = fs.readFileSync(p, 'utf8').trim()
+      if (id) return id
+    }
+  } catch {}
+  const id = require('crypto').randomUUID()
+  try { fs.writeFileSync(getDeviceIdPath(), id, 'utf8') } catch {}
+  return id
+}
 const {
   getDb, closeDb, loadAll,
   saveProducts, saveEvents, saveRentals, saveOpStates,
@@ -102,6 +127,7 @@ ipcMain.handle('app:version', () => app.getVersion())
 ipcMain.handle('app:get-pending-update', () => pendingUpdate)
 ipcMain.handle('app:get-pending-changelog', () => pendingChangelog)
 ipcMain.on('get-config', (e) => { e.returnValue = readConfig() })
+ipcMain.on('get-device-id', (e) => { e.returnValue = getOrCreateDeviceId() })
 
 ipcMain.handle('save-config', (_e, cfg) => {
   try { writeConfig(cfg); return { ok: true } }

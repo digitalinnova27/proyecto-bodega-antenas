@@ -18,6 +18,7 @@ import { useAuth } from '../context/AuthContext'
 
 const CATEGORIES = ['Audio', 'Iluminacion', 'Pantalla', 'Efectos', 'Estructuras', 'Energía', 'Tecnologia', 'Otros']
 const ASSIGN_PAGE_SIZE = 10
+const RENTAL_STATUS_COLORS = { Programado: 'warning', 'En curso': 'warning', Realizado: 'default', Concluido: 'success' }
 
 const AssignPanel = React.memo(({
     products, assignSkuSearch, setAssignSkuSearch,
@@ -236,7 +237,7 @@ export default function Rental() {
                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                                                 <Typography variant="body1" fontWeight={600}>{r.name}</Typography>
                                                 <Chip label={r.orderNumber} size="small" color="warning" variant="outlined" sx={{ fontSize: 10 }} />
-                                                <Chip label={r.status} size="small" color="warning" />
+                                                <Chip label={r.status} size="small" color={RENTAL_STATUS_COLORS[r.status] || 'warning'} />
                                             </Box>
                                         }
                                         secondary={

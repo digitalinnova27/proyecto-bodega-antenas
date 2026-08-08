@@ -482,7 +482,7 @@ const monthLabel = (monthStr) => {
   return `${months[parseInt(m, 10) - 1]} ${y}`
 }
 
-export async function generateMonthlyReportPDF(month, eventEntries, rentalEntries) {
+export async function generateMonthlyReportPDF(month, eventEntries, rentalEntries, cancelledEntries = []) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
 
   const pageW = doc.internal.pageSize.getWidth()
@@ -550,19 +550,25 @@ export async function generateMonthlyReportPDF(month, eventEntries, rentalEntrie
 
   doc.setFillColor(...DARK_BG)
   doc.roundedRect(marginL, y, contentW, 26, 3, 3, 'F')
-  const colW = contentW / 4
+  const colW = contentW / 5
+  const RED = [211, 47, 47]
   const summaryItems = [
     ['EVENTOS CERRADOS', String(eventEntries.length)],
     ['ARRIENDOS CERRADOS', String(rentalEntries.length)],
     ['ARTÍCULOS MOVIDOS', String(totalEventItems + totalRentalItems)],
-    ['INCIDENCIAS/PÉRDIDAS', String(totalLosses)]
+    ['INCIDENCIAS/PÉRDIDAS', String(totalLosses)],
+    ['EVENTOS CANCELADOS', String(cancelledEntries.length)]
   ]
   summaryItems.forEach(([label, value], i) => {
     const x = marginL + 6 + colW * i
     doc.setFontSize(7); doc.setFont('helvetica', 'normal'); doc.setTextColor(...GRAY_MID)
     doc.text(label, x, y + 10)
     doc.setFontSize(15); doc.setFont('helvetica', 'bold')
-    doc.setTextColor(...(label === 'INCIDENCIAS/PÉRDIDAS' && totalLosses > 0 ? WARN : ACCENT))
+    doc.setTextColor(...(
+      label === 'INCIDENCIAS/PÉRDIDAS' && totalLosses > 0 ? WARN
+        : label === 'EVENTOS CANCELADOS' && cancelledEntries.length > 0 ? RED
+          : ACCENT
+    ))
     doc.text(value, x, y + 20)
   })
   y += 34
@@ -637,9 +643,28 @@ export async function generateMonthlyReportPDF(month, eventEntries, rentalEntrie
     drawTable(doc, { startY: y, headers, rows, colWidths, marginL, pageW, marginR })
   }
 
-  if (eventEntries.length === 0 && rentalEntries.length === 0) {
+  // ─── TABLA: EVENTOS CANCELADOS ────────────────────────────────────────
+  if (cancelledEntries.length > 0) {
+    if (y + 30 > pageH - 24) { doc.addPage(); y = 20 }
+    doc.setFillColor(...RED)
+    doc.rect(marginL, y, 3, 8, 'F')
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...WHITE)
+    doc.text('Eventos cancelados', marginL + 7, y + 6.5)
+    y += 14
+
+    const rows = cancelledEntries.map(ev => ({
+      cells: [`${ev.orderNumber || ''} ${ev.name}`, ev.date || '—', ev.location || '—', ev.cancelledBy || '—', ev.cancelReason || 'Sin motivo especificado']
+    }))
+    const headers = ['Evento', 'Fecha', 'Ubicación', 'Cancelado por', 'Motivo']
+    const w = contentW
+    const colWidths = [w * 0.22, w * 0.13, w * 0.17, w * 0.16, w * 0.32]
+    y = drawTable(doc, { startY: y, headers, rows, colWidths, marginL, pageW, marginR })
+    y += 6
+  }
+
+  if (eventEntries.length === 0 && rentalEntries.length === 0 && cancelledEntries.length === 0) {
     doc.setFontSize(10); doc.setTextColor(...GRAY_MID)
-    doc.text('No hay eventos ni arriendos cerrados en este período.', marginL, y + 10)
+    doc.text('No hay eventos ni arriendos cerrados o cancelados en este período.', marginL, y + 10)
   }
 
   drawFooter()

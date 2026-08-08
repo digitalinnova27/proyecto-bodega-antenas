@@ -25,10 +25,32 @@ const STATUS_COLORS = {
   Confirmado: 'success',
   Suspendido: 'error',
   Realizado: 'default',
-  Concluido: 'success'
+  Concluido: 'success',
+  Cancelado: 'error'
 }
 
 const ASSIGN_PAGE_SIZE = 10
+
+const todayStr = () => new Date().toISOString().slice(0, 10)
+
+// "2026-08-09" → "2026-W32" (semana ISO, lunes a domingo) — mismo cálculo
+// que se usa en Operations.jsx para el filtro "Todos".
+const isoWeekKey = (dateStr) => {
+  if (!dateStr) return ''
+  const d = new Date(dateStr + 'T00:00:00')
+  if (isNaN(d)) return ''
+  const target = new Date(d.valueOf())
+  const dayNr = (d.getDay() + 6) % 7
+  target.setDate(target.getDate() - dayNr + 3)
+  const firstThursday = new Date(target.getFullYear(), 0, 4)
+  const diff = target - firstThursday
+  const week = 1 + Math.round(diff / (7 * 24 * 3600 * 1000))
+  return `${target.getFullYear()}-W${String(week).padStart(2, '0')}`
+}
+
+const yearOf = (dateStr) => (dateStr ? String(dateStr).slice(0, 4) : '')
+
+const SUMMARY_STATUS_ORDER = ['Programado', 'Confirmado', 'En curso', 'Realizado', 'Concluido', 'Cancelado', 'Suspendido']
 
 const AssignPanel = React.memo(function AssignPanel({
   products, assignSkuSearch, setAssignSkuSearch,
@@ -65,7 +87,7 @@ const AssignPanel = React.memo(function AssignPanel({
         </Alert>
       )}
       {paginated.map(p => {
-        // maxAvail = solo unidades CON sticker vinculado — es lo único que
+        // maxAvail = solo unidades CON tag vinculado — es lo único que
         // se puede asignar a un evento (así no se crean eventos con
         // equipos "fantasma" que luego no se pueden rastrear por RFID).
         const maxAvail = availableForDraft(p)
@@ -88,11 +110,11 @@ const AssignPanel = React.memo(function AssignPanel({
                   <span style={{ color: '#f44336', fontWeight: 600 }}>Sin stock</span>
                 ) : (
                   <span style={{ color: maxAvail === 0 ? '#f44336' : '#3DDC84', fontWeight: 600 }}>
-                    {maxAvail} disponible{maxAvail !== 1 ? 's' : ''} con sticker
+                    {maxAvail} disponible{maxAvail !== 1 ? 's' : ''} con tag
                   </span>
                 )}
                 {!noStock && unlinkedCount > 0 && (
-                  <span style={{ color: '#f44336' }}> · {unlinkedCount} sin sticker (no asignable{unlinkedCount !== 1 ? 's' : ''})</span>
+                  <span style={{ color: '#f44336' }}> · {unlinkedCount} sin tag (no asignable{unlinkedCount !== 1 ? 's' : ''})</span>
                 )}
               </Typography>
             </Box>
@@ -120,11 +142,14 @@ export default function Events() {
   const { role } = useAuth()
   const {
     products, events, getAvailableQty, getAvailableQtyForEvent, getLinkedAvailableQty,
-    createEvent, updateEvent, deleteEvent, requestDeleteEvent, cancelDeleteEvent
+    createEvent, updateEvent, cancelEvent, requestDeleteEvent, cancelDeleteEvent
   } = useInventory()
 
   const [search, setSearch] = React.useState('')
   const [orderSearch, setOrderSearch] = React.useState('')
+  // Resumen Hoy/Semana/Año — filtro rápido por período, independiente del
+  // buscador por nombre/N° de orden (se pueden combinar).
+  const [summaryScope, setSummaryScope] = React.useState(null) // null|'hoy'|'semana'|'año'
   const [openCreate, setOpenCreate] = React.useState(false)
   const [openDetail, setOpenDetail] = React.useState(false)
   const [openEdit, setOpenEdit] = React.useState(false)
@@ -151,9 +176,9 @@ export default function Events() {
 
   const getProduct = id => products.find(p => p.id === id)
 
-  // Disponibilidad ASIGNABLE: solo unidades con sticker RFID vinculado.
-  // No se puede asignar una unidad sin sticker a un evento — si no tiene
-  // sticker no hay forma de rastrearla por RFID en Operaciones, y eso
+  // Disponibilidad ASIGNABLE: solo unidades con tag RFID vinculado.
+  // No se puede asignar una unidad sin tag a un evento — si no tiene
+  // tag no hay forma de rastrearla por RFID en Operaciones, y eso
   // permitiría crear eventos con equipos "asignados" que en realidad no
   // existen vinculados (información falsa).
   const availableForDraft = React.useCallback((product) => {
@@ -164,8 +189,8 @@ export default function Events() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.date, currentEvent, getLinkedAvailableQty])
 
-  // Disponibilidad FÍSICA total (incluye unidades sin sticker) — solo para
-  // mostrar el aviso informativo de "X sin sticker, no asignables".
+  // Disponibilidad FÍSICA total (incluye unidades sin tag) — solo para
+  // mostrar el aviso informativo de "X sin tag, no asignables".
   const physicalAvailableForDraft = React.useCallback((product) => {
     const forDate = form.date || new Date().toISOString().slice(0, 10)
     if (currentEvent) {
@@ -258,29 +283,36 @@ export default function Events() {
     setSnack({ open: true, msg: 'Equipos actualizados. Inventario sincronizado.', severity: 'success' })
   }
 
-  /* ELIMINAR EVENTO — flujo de aprobación.
-   * 'direct'  → admin elimina de inmediato (su botón "Deshacer" de siempre).
-   * 'request' → operador solo solicita; el evento queda marcado en rojo
-   *             hasta que un admin lo apruebe o lo rechace.
-   * 'approve' → admin aprueba una solicitud ya pendiente (elimina de verdad). */
+  /* CANCELAR EVENTO — flujo de aprobación, con motivo obligatorio.
+   * 'direct'  → admin cancela de inmediato (su botón "Cancelar evento" de siempre).
+   * 'request' → operador solo solicita, con su motivo; el evento queda
+   *             marcado en rojo hasta que un admin lo apruebe o lo rechace.
+   * 'approve' → admin aprueba una solicitud ya pendiente (cancela de verdad,
+   *             reutilizando el motivo que escribió el operador, editable).
+   * A diferencia del viejo "Deshacer" (que borraba el evento sin dejar
+   * rastro), ahora el evento queda con status "Cancelado" + el motivo,
+   * visible en el filtro "Todos" de Operaciones y en el Reporte mensual. */
   const [deleteMode, setDeleteMode] = React.useState('direct')
+  const [cancelReason, setCancelReason] = React.useState('')
   const openDeleteModal = (ev, e, mode = 'direct') => {
-    e.stopPropagation(); setEventToDelete(ev); setDeleteMode(mode); setOpenDeleteConfirm(true)
+    e.stopPropagation(); setEventToDelete(ev); setDeleteMode(mode)
+    setCancelReason(mode === 'approve' ? (ev.pendingDeleteReason || '') : '')
+    setOpenDeleteConfirm(true)
   }
   const handleDeleteConfirm = () => {
     if (deleteMode === 'request') {
-      requestDeleteEvent(eventToDelete.id, 'Operador')
-      setSnack({ open: true, msg: 'Solicitud de eliminación enviada. Un administrador debe aprobarla.', severity: 'info' })
+      requestDeleteEvent(eventToDelete.id, 'Operador', cancelReason.trim())
+      setSnack({ open: true, msg: 'Solicitud de cancelación enviada. Un administrador debe aprobarla.', severity: 'info' })
     } else {
-      deleteEvent(eventToDelete.id)
-      setSnack({ open: true, msg: 'Evento eliminado. Inventario restaurado a disponible.', severity: 'warning' })
+      cancelEvent(eventToDelete.id, cancelReason.trim(), 'Administrador')
+      setSnack({ open: true, msg: 'Evento cancelado. Inventario restaurado a disponible.', severity: 'warning' })
     }
-    setOpenDeleteConfirm(false); setEventToDelete(null); setOpenDetail(false)
+    setOpenDeleteConfirm(false); setEventToDelete(null); setOpenDetail(false); setCancelReason('')
   }
   const handleRejectDelete = (ev, e) => {
     e.stopPropagation()
     cancelDeleteEvent(ev.id)
-    setSnack({ open: true, msg: 'Solicitud de eliminación rechazada.', severity: 'success' })
+    setSnack({ open: true, msg: 'Solicitud de cancelación rechazada.', severity: 'success' })
   }
 
   /* PDF */
@@ -309,6 +341,29 @@ export default function Events() {
     window.open(`mailto:?subject=${encodeURIComponent(`Evento ${ev.orderNumber} - ${ev.name}`)}&body=${encodeURIComponent(buildShareText(ev))}`, '_blank')
   }
 
+  // ── Resumen Hoy / Semana / Año — cuenta eventos por período y por
+  // estado, para dar una vista rápida sin tener que revisar la lista
+  // completa. `today`/`thisWeek`/`thisYear` son las 3 pestañas del
+  // resumen; cada una trae también su desglose por estado. ──
+  const today = todayStr()
+  const thisWeekKey = isoWeekKey(today)
+  const thisYear = yearOf(today)
+  const summaryBuckets = React.useMemo(() => {
+    const buckets = {
+      hoy: events.filter(e => e.date === today),
+      semana: events.filter(e => isoWeekKey(e.date) === thisWeekKey),
+      año: events.filter(e => yearOf(e.date) === thisYear),
+    }
+    const withBreakdown = {}
+    for (const [key, list] of Object.entries(buckets)) {
+      const byStatus = {}
+      list.forEach(e => { byStatus[e.status] = (byStatus[e.status] || 0) + 1 })
+      withBreakdown[key] = { list, count: list.length, byStatus }
+    }
+    return withBreakdown
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, today, thisWeekKey, thisYear])
+
   // Próximos/en curso primero; los Concluidos (ya pasaron por todas las
   // fases de Operaciones) quedan al final, pero siguen visibles acá —
   // antes desaparecían por completo al cerrarse.
@@ -316,6 +371,12 @@ export default function Events() {
     .filter(e =>
       !search || e.name.toLowerCase().includes(search.toLowerCase()) || e.orderNumber?.toLowerCase().includes(search.toLowerCase())
     )
+    .filter(e => {
+      if (summaryScope === 'hoy') return e.date === today
+      if (summaryScope === 'semana') return isoWeekKey(e.date) === thisWeekKey
+      if (summaryScope === 'año') return yearOf(e.date) === thisYear
+      return true
+    })
     .sort((a, b) => {
       const aDone = a.status === 'Concluido' ? 1 : 0
       const bDone = b.status === 'Concluido' ? 1 : 0
@@ -381,6 +442,56 @@ export default function Events() {
     <Box>
       <Typography variant="h5" sx={{ mb: 2 }}>Eventos</Typography>
 
+      {/* ── Resumen Hoy / Semana / Año ──────────────────────────────────
+       * 3 pestañas con el conteo total y el desglose por estado de ese
+       * período. Tocar una además filtra la lista de abajo; tocarla de
+       * nuevo (o "Quitar filtro") vuelve a mostrar todo. */}
+      <Paper sx={{ p: 2, mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: summaryScope ? 1.5 : 0 }}>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {[
+              { key: 'hoy', label: 'Hoy' },
+              { key: 'semana', label: 'Semana' },
+              { key: 'año', label: 'Año' },
+            ].map(s => (
+              <Button
+                key={s.key}
+                size="small"
+                variant={summaryScope === s.key ? 'contained' : 'outlined'}
+                onClick={() => setSummaryScope(prev => prev === s.key ? null : s.key)}
+                sx={{ fontSize: 12 }}
+              >
+                {s.label} ({summaryBuckets[s.key].count})
+              </Button>
+            ))}
+          </Box>
+          {summaryScope && (
+            <Button size="small" onClick={() => setSummaryScope(null)} sx={{ fontSize: 11 }}>
+              Quitar filtro
+            </Button>
+          )}
+        </Box>
+        {summaryScope && (
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {summaryBuckets[summaryScope].count === 0 ? (
+              <Typography variant="caption" color="text.secondary">Sin eventos en este período.</Typography>
+            ) : (
+              SUMMARY_STATUS_ORDER
+                .filter(st => summaryBuckets[summaryScope].byStatus[st])
+                .map(st => (
+                  <Chip
+                    key={st}
+                    label={`${st}: ${summaryBuckets[summaryScope].byStatus[st]}`}
+                    size="small"
+                    color={STATUS_COLORS[st] || 'default'}
+                    variant="outlined"
+                  />
+                ))
+            )}
+          </Box>
+        )}
+      </Paper>
+
       <Paper sx={{ p: 2, mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
           <TextField size="small" placeholder="Buscar por nombre o N° de orden…"
@@ -430,13 +541,13 @@ export default function Events() {
                       </span></Tooltip>
                       <Button size="small" variant="outlined" onClick={() => openDetailModal(ev)}>Detalle</Button>
 
-                      {role === 'admin' && !ev.pendingDelete && ev.status !== 'Concluido' && (
+                      {role === 'admin' && !ev.pendingDelete && ev.status !== 'Concluido' && ev.status !== 'Cancelado' && (
                         <>
                           <Button size="small" variant="outlined" onClick={() => openAssignModal(ev)}>Equipos</Button>
-                          <Tooltip title="Deshacer evento y restaurar inventario">
+                          <Tooltip title="Cancelar evento y restaurar inventario">
                             <Button size="small" variant="outlined" color="error"
                               startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'direct')}>
-                              Deshacer
+                              Cancelar evento
                             </Button>
                           </Tooltip>
                         </>
@@ -447,7 +558,7 @@ export default function Events() {
                           <Tooltip title={`Solicitado por ${ev.pendingDeleteBy || 'Operador'}`}>
                             <Button size="small" variant="contained" color="error"
                               startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'approve')}>
-                              Aprobar y eliminar
+                              Aprobar y cancelar
                             </Button>
                           </Tooltip>
                           <Button size="small" variant="outlined" onClick={(e) => handleRejectDelete(ev, e)}>
@@ -456,11 +567,11 @@ export default function Events() {
                         </>
                       )}
 
-                      {role === 'operador' && !ev.pendingDelete && ev.status !== 'Concluido' && (
-                        <Tooltip title="Enviar solicitud de eliminación a un administrador">
+                      {role === 'operador' && !ev.pendingDelete && ev.status !== 'Concluido' && ev.status !== 'Cancelado' && (
+                        <Tooltip title="Enviar solicitud de cancelación a un administrador">
                           <Button size="small" variant="outlined" color="error"
                             startIcon={<DeleteIcon />} onClick={(e) => openDeleteModal(ev, e, 'request')}>
-                            Solicitar eliminación
+                            Solicitar cancelación
                           </Button>
                         </Tooltip>
                       )}
@@ -473,24 +584,32 @@ export default function Events() {
                         <Chip label={ev.orderNumber} size="small" color="primary" variant="outlined" sx={{ fontSize: 10 }} />
                         <Chip label={ev.status} size="small" color={STATUS_COLORS[ev.status] || 'default'} />
                         {ev.pendingDelete && (
-                          <Chip label="Pendiente de eliminación" size="small" color="error"
+                          <Chip label={`Pendiente de cancelación${ev.pendingDeleteReason ? ': ' + ev.pendingDeleteReason : ''}`} size="small" color="error"
                             sx={{ fontWeight: 600 }} />
                         )}
                       </Box>
                     }
                     secondary={
-                      <Box sx={{ display: 'flex', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <EventIcon sx={{ fontSize: 13 }} /><Typography variant="caption">{ev.date}</Typography>
-                        </Box>
-                        {ev.location && (
+                      <Box>
+                        <Box sx={{ display: 'flex', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                            <PlaceIcon sx={{ fontSize: 13 }} /><Typography variant="caption">{ev.location}</Typography>
+                            <EventIcon sx={{ fontSize: 13 }} /><Typography variant="caption">{ev.date}</Typography>
                           </Box>
+                          {ev.location && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                              <PlaceIcon sx={{ fontSize: 13 }} /><Typography variant="caption">{ev.location}</Typography>
+                            </Box>
+                          )}
+                          <Typography variant="caption" color="primary">
+                            {(ev.assignments || []).reduce((s, a) => s + a.qty, 0)} artículos
+                          </Typography>
+                        </Box>
+                        {ev.status === 'Cancelado' && (
+                          <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.5 }}>
+                            Motivo de cancelación: {ev.cancelReason || 'Sin motivo especificado'}
+                            {ev.cancelledBy ? ` — ${ev.cancelledBy}` : ''}
+                          </Typography>
                         )}
-                        <Typography variant="caption" color="primary">
-                          {(ev.assignments || []).reduce((s, a) => s + a.qty, 0)} artículos
-                        </Typography>
                       </Box>
                     }
                   />
@@ -538,38 +657,45 @@ export default function Events() {
         </DialogActions>
       </Dialog>
 
-      {/* MODAL CONFIRMAR ELIMINACIÓN */}
+      {/* MODAL CANCELAR EVENTO — pide motivo obligatorio, así queda visible
+          después en "Todos" (Operaciones) y en el Reporte de operaciones. */}
       <Dialog open={openDeleteConfirm} onClose={() => setOpenDeleteConfirm(false)} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ color: 'error.main', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <DeleteIcon /> {deleteMode === 'request' ? 'Solicitar eliminación' : 'Deshacer Evento'}
+          <DeleteIcon /> {deleteMode === 'request' ? 'Solicitar cancelación' : deleteMode === 'approve' ? 'Aprobar cancelación' : 'Cancelar evento'}
         </DialogTitle>
         <DialogContent>
           {deleteMode === 'request' ? (
             <>
               <Typography variant="body1" gutterBottom>
-                ¿Enviar solicitud de eliminación para <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})?
+                ¿Enviar solicitud de cancelación para <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})?
               </Typography>
-              <Alert severity="info" sx={{ mt: 1 }}>
-                El evento quedará marcado en rojo hasta que un administrador la apruebe o la rechace. No se elimina todavía.
+              <Alert severity="info" sx={{ mt: 1, mb: 2 }}>
+                El evento quedará marcado en rojo hasta que un administrador la apruebe o la rechace. No se cancela todavía.
               </Alert>
             </>
           ) : (
             <>
               <Typography variant="body1" gutterBottom>
-                {deleteMode === 'approve' ? '¿Aprobar la eliminación de ' : '¿Estás seguro de eliminar '}
-                <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})
-                {deleteMode === 'approve' ? '?' : '?'}
+                {deleteMode === 'approve' ? '¿Aprobar la cancelación de ' : '¿Estás seguro de cancelar '}
+                <strong>{eventToDelete?.name}</strong> ({eventToDelete?.orderNumber})?
               </Typography>
-              <Alert severity="warning" sx={{ mt: 1 }}>
-                Todos los equipos reservados volverán a estar <strong>Disponibles</strong> en el inventario.
+              <Alert severity="warning" sx={{ mt: 1, mb: 2 }}>
+                Todos los equipos reservados volverán a estar <strong>Disponibles</strong> en el inventario. El evento
+                queda visible como "Cancelado" en Operaciones y en el Reporte, con el motivo que escribas abajo.
               </Alert>
             </>
           )}
+          <TextField
+            label="Motivo de la cancelación" required autoFocus fullWidth multiline minRows={2}
+            value={cancelReason} onChange={e => setCancelReason(e.target.value)}
+            placeholder="Ej: el cliente canceló el arriendo del recinto"
+          />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenDeleteConfirm(false)}>Cancelar</Button>
-          <Button variant="contained" color="error" startIcon={<DeleteIcon />} onClick={handleDeleteConfirm}>
-            {deleteMode === 'request' ? 'Enviar solicitud' : 'Eliminar y restaurar inventario'}
+          <Button onClick={() => setOpenDeleteConfirm(false)}>Volver</Button>
+          <Button variant="contained" color="error" startIcon={<DeleteIcon />}
+            disabled={!cancelReason.trim()} onClick={handleDeleteConfirm}>
+            {deleteMode === 'request' ? 'Enviar solicitud' : deleteMode === 'approve' ? 'Aprobar y cancelar' : 'Cancelar y restaurar inventario'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -633,6 +759,12 @@ export default function Events() {
                   <Box><Typography variant="caption" color="text.secondary">ESTADO</Typography><Box sx={{ mt: 0.5 }}><Chip label={currentEvent.status} size="small" color={STATUS_COLORS[currentEvent.status] || 'default'} /></Box></Box>
                 </Box>
                 {currentEvent.notes && <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>{currentEvent.notes}</Typography>}
+                {currentEvent.status === 'Cancelado' && (
+                  <Alert severity="error" sx={{ mb: 2 }}>
+                    Motivo de cancelación: {currentEvent.cancelReason || 'Sin motivo especificado'}
+                    {currentEvent.cancelledBy ? ` — ${currentEvent.cancelledBy}` : ''}
+                  </Alert>
+                )}
                 <Divider sx={{ mb: 1.5 }} />
                 <Typography variant="subtitle2" gutterBottom>Equipos asignados</Typography>
                 {Object.keys(grouped).length === 0

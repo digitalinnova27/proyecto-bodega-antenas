@@ -849,6 +849,126 @@ function ForgotPasswordDialog({ open, onClose, initialUsername }) {
   )
 }
 
+/* ─── Panel: cuenta Administrador restringida en este dispositivo ──────────
+ * Se muestra en vez del formulario normal cuando se elige la tarjeta Admin
+ * en un equipo que NO es el dispositivo de confianza (ver AuthContext:
+ * adminDeviceTrusted, fijado una sola vez al crear la cuenta en first-run).
+ * Único camino de entrada: pedir un código de un solo uso al correo del
+ * administrador y canjearlo. Cada nuevo pedido invalida el anterior — así
+ * que cerrar sesión y querer volver a entrar siempre pide un código nuevo. */
+function AdminRestrictedPanel({ adminUser, onBack }) {
+  const { requestAdminOtp, loginAdminOtp } = useAuth()
+  const navigate = useNavigate()
+  const [phase, setPhase] = useState('intro') // 'intro' | 'code'
+  const [requesting, setRequesting] = useState(false)
+  const [requestMsg, setRequestMsg] = useState('')
+  const [requestError, setRequestError] = useState('')
+  const [code, setCode] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState('')
+
+  const handleRequest = async () => {
+    if (!adminUser) return
+    setRequesting(true)
+    setRequestError('')
+    const res = await requestAdminOtp(adminUser.username)
+    setRequesting(false)
+    if (!res.ok) { setRequestError(res.error || 'No se pudo enviar el código'); return }
+    setRequestMsg(res.message || 'Si el usuario existe y tiene un correo cargado, le enviamos un código de acceso.')
+    setPhase('code')
+    setCode('')
+    setVerifyError('')
+  }
+
+  const handleVerify = async (val) => {
+    const useCode = val ?? code
+    if (!useCode || useCode.length !== 6) { setVerifyError('Ingresá el código de 6 dígitos'); return }
+    setVerifying(true)
+    setVerifyError('')
+    const res = await loginAdminOtp(adminUser.username, useCode)
+    setVerifying(false)
+    if (!res.ok) { setVerifyError(res.error || 'Código inválido o vencido'); return }
+    navigate('/dashboard')
+  }
+
+  const inputStyle = {
+    padding: '11px 14px', borderRadius: 8,
+    border: `1.5px solid ${verifyError ? '#E24B4A' : 'rgba(255,255,255,0.2)'}`,
+    background: 'rgba(255,255,255,0.07)', color: '#fff',
+    fontSize: 22, letterSpacing: '0.3em', textAlign: 'center',
+    width: '100%', boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit'
+  }
+  const btnPrimary = {
+    marginTop: 16, width: '100%', padding: '13px', borderRadius: 8,
+    border: 'none', background: '#66FCF1', color: '#000',
+    fontWeight: 700, fontSize: 15, cursor: 'pointer', animation: 'none'
+  }
+  const btnSecondary = {
+    marginTop: 10, width: '100%', padding: '10px', borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.15)', background: 'transparent',
+    color: '#C5C6C7', fontSize: 14, cursor: 'pointer', animation: 'none'
+  }
+
+  return (
+    <div style={{ width: '100%', maxWidth: 320, textAlign: 'center', animation: 'none', opacity: 1, transform: 'none' }}>
+      <div style={{ fontSize: 38, marginBottom: 8 }}>🔒</div>
+      <h2 style={{ color: '#E24B4A', fontSize: 17, margin: '0 0 8px' }}>
+        Cuenta restringida en este dispositivo
+      </h2>
+      <p style={{ color: '#C5C6C7', fontSize: 12.5, lineHeight: 1.6, margin: '0 0 18px' }}>
+        Por seguridad, el Administrador solo entra directo desde su propio equipo.
+        Desde acá, la única forma de ingresar es con un código de un solo uso
+        enviado a su correo.
+      </p>
+
+      {!adminUser && (
+        <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>
+          No se encontró la cuenta de administrador.
+        </p>
+      )}
+
+      {adminUser && phase === 'intro' && (
+        <>
+          {requestError && <p style={{ color: '#E24B4A', fontSize: 12, marginBottom: 8 }}>{requestError}</p>}
+          <button onClick={handleRequest} disabled={requesting} style={{ ...btnPrimary, opacity: requesting ? 0.7 : 1, cursor: requesting ? 'not-allowed' : 'pointer' }}>
+            {requesting ? 'Enviando…' : '✉️ Enviar código a mi correo'}
+          </button>
+        </>
+      )}
+
+      {adminUser && phase === 'code' && (
+        <>
+          <p style={{ color: '#66FCF1', fontSize: 12, margin: '0 0 14px' }}>{requestMsg}</p>
+          <input
+            type="text" inputMode="numeric" maxLength={6} autoFocus
+            value={code}
+            onChange={e => {
+              const v = e.target.value.replace(/\D/g, '').slice(0, 6)
+              setCode(v)
+              setVerifyError('')
+              if (v.length === 6) handleVerify(v)
+            }}
+            placeholder="••••••"
+            style={inputStyle}
+          />
+          {verifyError && <p style={{ color: '#E24B4A', fontSize: 12, margin: '6px 0 0' }}>{verifyError}</p>}
+          <button onClick={() => handleVerify()} disabled={verifying || code.length !== 6}
+            style={{ ...btnPrimary, opacity: (verifying || code.length !== 6) ? 0.6 : 1, cursor: (verifying || code.length !== 6) ? 'not-allowed' : 'pointer' }}>
+            {verifying ? 'Verificando…' : 'Ingresar'}
+          </button>
+          <button onClick={handleRequest} disabled={requesting} style={btnSecondary}>
+            {requesting ? 'Enviando…' : '🔄 Pedir otro código'}
+          </button>
+        </>
+      )}
+
+      <button onClick={onBack} style={{ ...btnSecondary, color: 'rgba(255,255,255,0.35)', fontSize: 12, border: 'none' }}>
+        ← Volver
+      </button>
+    </div>
+  )
+}
+
 /* ─── Pantalla principal de Login ───────────────────────────────────────── */
 /* ── Auto-login de desarrollo ────────────────────────────────────────────
  * Solo para agilizar la revisión mientras se desarrolla: guarda usuario y
@@ -859,7 +979,7 @@ function ForgotPasswordDialog({ open, onClose, initialUsername }) {
 const DEV_AUTOLOGIN_KEY = 'inoise_dev_autologin'
 
 export default function Login() {
-  const { login, loginPin, loadUsers, hasAnyUsers, loginUsers } = useAuth()
+  const { login, loginPin, loadUsers, hasAnyUsers, loginUsers, adminDeviceTrusted } = useAuth()
   const navigate = useNavigate()
 
   // ── Dev auto-login: si hay credenciales guardadas, entra sin mostrar el login ──
@@ -1209,10 +1329,18 @@ export default function Login() {
             <div
               className={`card admin ${selectedRole === 'admin' ? 'active' : ''}`}
               onClick={() => loginStep === 'role' && handleLoginRoleSelect('admin')}
+              style={!adminDeviceTrusted ? {
+                filter: 'grayscale(0.85)', opacity: 0.55, position: 'relative'
+              } : {}}
             >
               <img src={adminImg} alt="Administrador" />
               <h2>Administrador</h2>
-              <p>Control total del sistema</p>
+              <p>{!adminDeviceTrusted ? 'Acceso restringido en este equipo' : 'Control total del sistema'}</p>
+              {!adminDeviceTrusted && (
+                <span style={{
+                  position: 'absolute', top: 8, right: 8, fontSize: 16
+                }}>🔒</span>
+              )}
             </div>
           )}
           {(loginStep === 'role' || selectedRole === 'operador') && (
@@ -1232,7 +1360,12 @@ export default function Login() {
           className={`credentials ${loginStep === 'credentials' ? 'show' : ''}`}
           style={(loginMode === 'pin' || (selectedRole === 'operador' && !selectedOperator)) ? { width: 'min(320px, 88vw)' } : {}}
         >
-          {selectedRole === 'operador' && !selectedOperator ? (
+          {selectedRole === 'admin' && !adminDeviceTrusted ? (
+            <AdminRestrictedPanel
+              adminUser={loginUsers.find(u => u.role === 'admin')}
+              onBack={handleBack}
+            />
+          ) : selectedRole === 'operador' && !selectedOperator ? (
             /* ── Grilla: elegir la persona antes de decidir contraseña o PIN ── */
             <div style={{ animation: 'none', opacity: 1, transform: 'none' }}>
               <p style={{ textAlign: 'center', color: '#C5C6C7', fontSize: 12, margin: '4px 0 14px' }}>

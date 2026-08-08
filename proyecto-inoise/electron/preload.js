@@ -55,6 +55,9 @@ contextBridge.exposeInMainWorld('api', {
   // de módulo (antes del primer render), antes de que cualquier fetch ocurra.
   getConfig:      () => ipcRenderer.sendSync('get-config'),
   saveConfig:     (cfg) => ipcRenderer.invoke('save-config', cfg),
+  // Identificador único y persistente de este equipo — usado para saber si
+  // es el dispositivo de confianza del administrador (ver Login.jsx).
+  getDeviceId:    () => ipcRenderer.sendSync('get-device-id'),
   verifyServer:   (url) => ipcRenderer.invoke('verify-server', url),
   // Auto-descubrimiento UDP: escucha broadcasts del servidor en la red local.
   // Resuelve { ok:true, url } si encuentra uno en 8s, { ok:false, error } si no.

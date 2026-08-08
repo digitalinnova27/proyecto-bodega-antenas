@@ -218,7 +218,7 @@ function ConversationPanel({ user, onClose }) {
           <Typography variant="caption" sx={{ color: '#888', px: 1, display: 'block', mb: 0.5 }}>
             Eventos activos
           </Typography>
-          {events.filter(e => e.status !== 'Cerrado').slice(0, 10).map(ev => (
+          {events.filter(e => !['Concluido', 'Cancelado'].includes(e.status)).slice(0, 10).map(ev => (
             <Box key={ev.id}
               onClick={() => sendRef('event_ref', ev)}
               sx={{
@@ -236,7 +236,7 @@ function ConversationPanel({ user, onClose }) {
           <Typography variant="caption" sx={{ color: '#888', px: 1, display: 'block', mb: 0.5 }}>
             Arriendos activos
           </Typography>
-          {rentals.filter(r => r.status !== 'Cerrado').slice(0, 10).map(r => (
+          {rentals.filter(r => r.status !== 'Concluido').slice(0, 10).map(r => (
             <Box key={r.id}
               onClick={() => sendRef('rental_ref', r)}
               sx={{

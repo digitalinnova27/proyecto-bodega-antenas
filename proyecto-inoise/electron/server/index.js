@@ -31,7 +31,8 @@ const {
   getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
   loadStaff, createStaff, updateStaff, deleteStaff,
   getSetting, setSetting,
-  createPasswordReset, verifyAndConsumePasswordReset, setUserPassword
+  createPasswordReset, verifyAndConsumePasswordReset, setUserPassword,
+  setTrustedDeviceId, isTrustedDevice, createAdminLoginOtp, verifyAdminLoginOtp
 } = require('../db')
 
 // ── Constantes ───────────────────────────────────────────────────────────────
@@ -195,7 +196,12 @@ app.get('/api/auth/status', (req, res) => {
   const safeList = activeList.map(({ id, username, nombre, apellido, cargo, role, hasPin, avatar }) =>
     ({ id, username, nombre, apellido, cargo, displayName: `${nombre} ${apellido}`.trim(), role, hasPin: Boolean(hasPin), avatar })
   )
-  res.json({ ok: true, hasUsers: list.length > 0, users: safeList, hasActiveUsers: activeList.length > 0 })
+  // ¿Este dispositivo es el del administrador? El renderer manda su
+  // deviceId persistente (ver electron/main.js) como query param. Si no es
+  // el dispositivo de confianza, Login.jsx muestra la tarjeta Admin
+  // restringida (solo entra con el PIN de un solo uso al correo).
+  const adminDeviceTrusted = safe(() => isTrustedDevice(req.query.deviceId || null)).data ?? true
+  res.json({ ok: true, hasUsers: list.length > 0, users: safeList, hasActiveUsers: activeList.length > 0, adminDeviceTrusted })
 })
 
 // Logout: cierra la sesión en BD y el cliente limpia su token
@@ -244,9 +250,14 @@ app.post('/api/users', async (req, res) => {
   // en la interfaz. Ahora se valida también en el servidor.
   const count = safe(() => countAdmins())
   const isFirstRun = count.ok && count.data === 0
-  const { data, password } = req.body || {}
+  const { data, password, deviceId } = req.body || {}
   if (isFirstRun) {
     const result = await safeAsync(() => createUser({ ...data, role: 'admin' }, password))
+    // Este es el momento "usuario 0": el equipo desde el que se crea la
+    // cuenta admin por primera vez queda registrado como su dispositivo de
+    // confianza. Desde cualquier OTRO equipo, la tarjeta Administrador
+    // quedará restringida (ver /api/auth/status y /api/auth/admin-otp/*).
+    if (result.ok && deviceId) safe(() => setTrustedDeviceId(result.data.id, deviceId))
     if (result.ok) io.emit('users:updated')
     return res.json(result)
   }
@@ -497,6 +508,54 @@ app.post('/api/auth/reset-password', async (req, res) => {
   const result = await safeAsync(() => setUserPassword(target.id, newPassword))
   if (!result.ok) return res.json({ ok: false, error: result.error })
   res.json({ ok: true })
+})
+
+// ── Login de administrador desde un dispositivo NO confiable ─────────────
+// Mismo espíritu que "olvidé mi contraseña", pero para iniciar sesión
+// directamente (no cambia ninguna contraseña): el admin pide un código, le
+// llega al correo, y lo usa una sola vez para entrar desde ese equipo.
+// Público (sin token) — es justamente el mecanismo para entrar cuando la
+// tarjeta Admin normal está restringida en este dispositivo.
+app.post('/api/auth/admin-otp/request', async (req, res) => {
+  const { username } = req.body || {}
+  const generic = { ok: true, message: 'Si el usuario existe y tiene un correo cargado, le enviamos un código de acceso.' }
+  if (!username) return res.json(generic)
+
+  const raw = getSetting('smtp_config')
+  if (!raw) return res.json({ ok: false, error: 'El envío de correo todavía no está configurado. Pedile al administrador que lo configure en Ajustes desde su propio equipo.' })
+
+  const result = safe(() => createAdminLoginOtp(username))
+  const otp = result.ok ? result.data : null
+  if (!otp || !otp.user?.email) return res.json(generic)
+
+  try {
+    const nombreCompleto = `${otp.user.nombre} ${otp.user.apellido}`.trim()
+    await _sendAppMail({
+      to: otp.user.email,
+      subject: 'Código de acceso de un solo uso — iNOISE',
+      text: `Hola ${nombreCompleto},\n\nSe pidió iniciar sesión como Administrador desde un dispositivo nuevo.\n\nTu código de acceso es: ${otp.code}\n\nVence en 10 minutos y sirve una sola vez. Si vos no pediste este código, ignorá este correo y avisale a tu equipo.\n\n— iNOISE`,
+      html: `<p>Hola <strong>${nombreCompleto}</strong>,</p><p>Se pidió iniciar sesión como Administrador desde un dispositivo nuevo.</p><p>Tu código de acceso es:</p><p style="font-size:28px;font-weight:bold;letter-spacing:4px;">${otp.code}</p><p>Vence en 10 minutos y sirve una sola vez. Si vos no pediste este código, ignorá este correo y avisale a tu equipo.</p><p>— iNOISE</p>`
+    })
+    return res.json(generic)
+  } catch (e) {
+    console.error('[SMTP] Error enviando código de acceso admin:', e.message)
+    return res.json({ ok: false, error: 'No se pudo enviar el correo: ' + e.message })
+  }
+})
+
+app.post('/api/auth/admin-otp/verify', (req, res) => {
+  const { username, code } = req.body || {}
+  if (!username || !code) return res.json({ ok: false, error: 'Faltan datos' })
+
+  const result = safe(() => verifyAdminLoginOtp(username, code))
+  const u = result.ok ? result.data : null
+  if (!u) return res.json({ ok: false, error: 'Código inválido o vencido' })
+
+  const token = jwt.sign(u, JWT_SECRET, { expiresIn: '12h' })
+  const displayName = `${u.nombre} ${u.apellido}`.trim()
+  const ip = req.ip || req.connection?.remoteAddress || null
+  const sessionId = safe(() => createSession(u.id, u.username, displayName, ip)).data || null
+  res.json({ ok: true, data: u, token, sessionId })
 })
 
 // ── Rutas de datos (inventario, eventos, etc.) ────────────────────────────────

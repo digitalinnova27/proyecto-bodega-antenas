@@ -102,5 +102,5 @@ export function useRfidSocket() {
 
     if (shared) return shared
 
-    return { isConnected, lastScan, unknownTags, clearLastScan, signalHistory, lastReadAt }
+    return { isConnected, lastScan, unknownTags, clearLastScan, signalHistory, lastReadAt, keyboardLastReadAt: null, keyboardScanCount: 0 }
 }

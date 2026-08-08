@@ -46,6 +46,11 @@ export function RfidSocketProvider({ children }) {
     const [unknownTags, setUnknownTags] = React.useState([])
     const [signalHistory, setSignalHistory] = React.useState([])
     const [lastReadAt, setLastReadAt] = React.useState(null)
+    // Estado del lector USB de escritorio en modo teclado (ver más abajo) —
+    // separado de lastReadAt/isConnected, que son específicos de las
+    // antenas de red y su propia conexión WebSocket al bridge.
+    const [keyboardLastReadAt, setKeyboardLastReadAt] = React.useState(null)
+    const [keyboardScanCount, setKeyboardScanCount] = React.useState(0)
     const wsRef = React.useRef(null)
     const timerRef = React.useRef(null)
 
@@ -127,12 +132,14 @@ export function RfidSocketProvider({ children }) {
                     const epc = buffer.toUpperCase()
                     const unitId = epcMapRef.current ? epcMapRef.current[epc] : undefined
                     setLastScan({ epc, sku: unitId, timestamp: Date.now(), source: 'keyboard' })
+                    setKeyboardLastReadAt(Date.now())
+                    setKeyboardScanCount(c => c + 1)
                 }
                 reset()
                 return
             }
 
-            if (e.key.length !== 1 || !WEDGE_CHAR_RE.test(e.key)) {
+            if (typeof e.key !== 'string' || e.key.length !== 1 || !WEDGE_CHAR_RE.test(e.key)) {
                 // Tecla que no es un dígito hex (flechas, Shift, Tab, etc.) — no
                 // rompe necesariamente una ráfaga en curso, pero tampoco cuenta.
                 return
@@ -162,7 +169,10 @@ export function RfidSocketProvider({ children }) {
 
     const clearLastScan = React.useCallback(() => setLastScan(null), [])
 
-    const value = { isConnected, lastScan, unknownTags, clearLastScan, signalHistory, lastReadAt }
+    const value = {
+        isConnected, lastScan, unknownTags, clearLastScan, signalHistory, lastReadAt,
+        keyboardLastReadAt, keyboardScanCount
+    }
 
     return (
         <RfidSocketContext.Provider value={value}>

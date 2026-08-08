@@ -5,6 +5,7 @@ import {
   List, ListItem, ListItemText, ListItemIcon, Tabs, Tab
 } from '@mui/material'
 import WifiIcon from '@mui/icons-material/Wifi'
+import UsbIcon from '@mui/icons-material/Usb'
 import CloseIcon from '@mui/icons-material/Close'
 import HistoryIcon from '@mui/icons-material/History'
 import NfcIcon from '@mui/icons-material/Nfc'
@@ -37,9 +38,25 @@ const flagDuplicateScans = (scans) => {
   }).reverse()
 }
 
+// Mismo umbral que usa el bridge del lado del servidor para las antenas de
+// red (server/rfid-bridge.js) — más de esto sin una lectura nueva pasa de
+// "Activa" a "En espera".
+const ACTIVE_TIMEOUT_MS = 15000
+
 export default function Antennas() {
-  const { isConnected: bridgeUp } = useRfidSocket()
+  const { isConnected: bridgeUp, keyboardLastReadAt, keyboardScanCount } = useRfidSocket()
   const { products, epcMap, events, rentals, opStates } = useInventory()
+
+  // El estado del lector USB (modo teclado) vive solo en memoria del
+  // navegador — no hay ningún servidor de por medio como con las antenas —
+  // así que para que el chip Activa/En espera se ponga "En espera" solo
+  // con el paso del tiempo (sin que llegue una lectura nueva) hace falta
+  // este pequeño timer que fuerza un re-render cada 2s.
+  const [, forceTick] = React.useState(0)
+  React.useEffect(() => {
+    const t = setInterval(() => forceTick(v => v + 1), 2000)
+    return () => clearInterval(t)
+  }, [])
 
   // Lista dinámica de antenas — no hay un número fijo. El bridge detecta
   // sola cualquier antena que mande un paquete UDP (identificada por su IP)
@@ -125,7 +142,7 @@ export default function Antennas() {
 
   const resolveScan = (epc) => {
     const uid = epcMap?.[epc]
-    if (!uid) return { label: 'Sticker no vinculado', sub: epc }
+    if (!uid) return { label: 'Tag no vinculado', sub: epc }
     const productId = String(uid).split('-')[0]
     const product = products.find(p => String(p.id) === productId)
     if (!product) return { label: 'Producto eliminado', sub: epc }
@@ -153,7 +170,7 @@ export default function Antennas() {
     const hasRssi = signalPct !== null
     // Una antena que ya se detectó queda fija en la lista para siempre —
     // solo alterna entre 'active' (leyendo ahora) e 'idle' (en espera del
-    // próximo sticker). Nunca se muestra como Offline.
+    // próximo tag). Nunca se muestra como Offline.
     const status = a.status === 'active' ? 'active' : 'idle'
     return {
       id: a.id,
@@ -165,7 +182,7 @@ export default function Antennas() {
       hasRssi,
       signalLabel: status === 'active'
         ? (hasRssi ? `${signalPct}% (${a.lastSignal} dBm)` : 'Conectada')
-        : 'En espera de sticker',
+        : 'En espera de tag',
       lastRead: fmtDate(a.lastSeenAt),
       totalScans: a.totalScans,
       uniqueTags: a.uniqueTags,
@@ -230,7 +247,7 @@ export default function Antennas() {
         {activeCount > 0
           ? `🟢 ${activeCount} de ${antennaList.length} antena${antennaList.length !== 1 ? 's' : ''} conectada${activeCount !== 1 ? 's' : ''} — recibiendo lecturas reales`
           : idleCount > 0
-            ? `🟡 ${idleCount} antena${idleCount !== 1 ? 's' : ''} conectada${idleCount !== 1 ? 's' : ''}, sin ningún sticker en el campo ahora mismo — normal si no se está escaneando en este momento`
+            ? `🟡 ${idleCount} antena${idleCount !== 1 ? 's' : ''} conectada${idleCount !== 1 ? 's' : ''}, sin ningún tag en el campo ahora mismo — normal si no se está escaneando en este momento`
             : bridgeUp
               ? '⚪ Bridge activo, esperando la primera lectura de alguna antena'
               : '⚫ Bridge RFID desconectado'}
@@ -263,7 +280,7 @@ export default function Antennas() {
                 <Typography variant="caption" color="text.secondary">
                   {isActive
                     ? `IP ${ant.ip} · recibiendo lecturas`
-                    : `IP ${ant.ip} · sin stickers en el campo · última lectura ${ant.lastRead}`}
+                    : `IP ${ant.ip} · sin tags en el campo · última lectura ${ant.lastRead}`}
                 </Typography>
               </Box>
             </Box>
@@ -324,6 +341,35 @@ export default function Antennas() {
         </Paper>
         )
       })}
+
+      {/* ── Lector USB de escritorio (modo teclado, ej. Vanch VD-67E) ──────
+          No hay servidor/bridge de por medio para este dispositivo — se
+          detecta por el ritmo de tecleo en el navegador (ver
+          RfidSocketContext.jsx). Por eso, igual que las antenas de red,
+          la tarjeta recién aparece después de la PRIMERA lectura real —
+          no hay forma de confirmar que está "conectado" antes de eso. */}
+      {keyboardLastReadAt && (() => {
+        const isActive = (Date.now() - keyboardLastReadAt) < ACTIVE_TIMEOUT_MS
+        const statusColor = isActive ? 'success.light' : 'warning.light'
+        return (
+          <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: statusColor }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <UsbIcon sx={{ color: isActive ? 'success.main' : 'warning.main', fontSize: 22 }} />
+                <Box>
+                  <Typography variant="body1" fontWeight={600}>Lector USB (modo teclado)</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {isActive
+                      ? `Leyendo ahora · ${keyboardScanCount} lectura${keyboardScanCount !== 1 ? 's' : ''} en esta sesión`
+                      : `Sin lecturas nuevas · última hace un momento · ${keyboardScanCount} lectura${keyboardScanCount !== 1 ? 's' : ''} en esta sesión`}
+                  </Typography>
+                </Box>
+              </Box>
+              <Chip label={isActive ? 'Activa' : 'En espera'} color={isActive ? 'success' : 'warning'} size="small" />
+            </Box>
+          </Paper>
+        )
+      })()}
 
       {/* ── Modal "Revisar lecturas" con secciones ───────────────────── */}
       <Dialog

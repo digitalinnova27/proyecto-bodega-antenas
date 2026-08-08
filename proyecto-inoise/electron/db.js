@@ -308,6 +308,22 @@ function runMigrations(db) {
     ensureColumn(db, 'users', 'active', 'INTEGER NOT NULL DEFAULT 1')
     // Teléfono (WhatsApp) — opcional, usado para enviar credenciales al crear la cuenta
     ensureColumn(db, 'users', 'telefono', 'TEXT')
+    // Dispositivo de confianza del administrador — se fija UNA sola vez, en
+    // el momento exacto en que se crea la cuenta admin (first-run, ver
+    // POST /api/users en server/index.js). Desde cualquier OTRO dispositivo,
+    // la tarjeta "Administrador" del login queda restringida: solo se puede
+    // entrar pidiendo un PIN de un solo uso al correo del admin (ver
+    // admin_login_otp más abajo). No aplica a operadores.
+    ensureColumn(db, 'users', 'trusted_device_id', 'TEXT')
+
+    // Detalle completo del cierre de un evento (artículos asignados, fases
+    // aprobadas, incidencias/pérdidas) — hasta ahora event_history solo
+    // guardaba columnas planas (conteos), así que closeEventToHistory
+    // armaba este detalle en el frontend pero se perdía por completo al
+    // guardar: nunca había columnas donde persistirlo. Guardado como JSON.
+    ensureColumn(db, 'event_history', 'items_json', 'TEXT')
+    ensureColumn(db, 'event_history', 'phases_approved_json', 'TEXT')
+    ensureColumn(db, 'event_history', 'loss_details_json', 'TEXT')
 
     // ── Recuperación de contraseña ("olvidé mi contraseña") ────────────
     // code_hash: sha256(código de 6 dígitos) — no hace falta pbkdf2 acá
@@ -316,6 +332,24 @@ function runMigrations(db) {
     // proteger contra fuerza bruta en el largo plazo).
     db.exec(`
     CREATE TABLE IF NOT EXISTS password_resets (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    TEXT NOT NULL,
+      code_hash  TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used       INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    `)
+
+    // ── Login de administrador desde un dispositivo NO confiable ───────
+    // Mismo patrón que password_resets: código de 6 dígitos hasheado, de
+    // un solo uso, vence a los 10 minutos. A diferencia de un reset de
+    // contraseña, este código sirve para INICIAR SESIÓN directamente (no
+    // cambia la contraseña). Se consume al primer uso — cada nuevo pedido
+    // invalida cualquier código anterior sin usar, así que cerrar sesión y
+    // querer volver a entrar siempre requiere pedir un código nuevo.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS admin_login_otp (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id    TEXT NOT NULL,
       code_hash  TEXT NOT NULL,
@@ -645,11 +679,12 @@ function saveEventHistory(list) {
     const db = getDb()
     const run = db.transaction((items) => {
         db.prepare('DELETE FROM event_history').run()
-        const ins = db.prepare(`INSERT INTO event_history (id, order_number, name, date, location, total_items, incidents_count, forced_close, closed_at, closed_by)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        const ins = db.prepare(`INSERT INTO event_history (id, order_number, name, date, location, total_items, incidents_count, forced_close, closed_at, closed_by, items_json, phases_approved_json, loss_details_json)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         for (const e of items) {
             ins.run(e.id, e.orderNumber ?? null, e.name ?? null, e.date ?? null, e.location ?? null,
-                e.totalItems ?? 0, e.incidentsCount ?? 0, e.forcedClose ? 1 : 0, e.closedAt ?? null, e.closedBy ?? null)
+                e.totalItems ?? 0, e.incidentsCount ?? 0, e.forcedClose ? 1 : 0, e.closedAt ?? null, e.closedBy ?? null,
+                JSON.stringify(e.items ?? []), JSON.stringify(e.phasesApproved ?? []), JSON.stringify(e.lossDetails ?? []))
         }
     })
     run(list)
@@ -657,10 +692,12 @@ function saveEventHistory(list) {
 
 function loadEventHistory() {
     const db = getDb()
+    const parseJson = (s, fallback) => { try { return s ? JSON.parse(s) : fallback } catch (e) { return fallback } }
     return db.prepare('SELECT * FROM event_history ORDER BY closed_at DESC').all().map(e => ({
         id: e.id, orderNumber: e.order_number, name: e.name, date: e.date, location: e.location,
         totalItems: e.total_items, incidentsCount: e.incidents_count, forcedClose: !!e.forced_close,
-        closedAt: e.closed_at, closedBy: e.closed_by
+        closedAt: e.closed_at, closedBy: e.closed_by,
+        items: parseJson(e.items_json, []), phasesApproved: parseJson(e.phases_approved_json, []), lossDetails: parseJson(e.loss_details_json, [])
     }))
 }
 
@@ -877,6 +914,74 @@ async function setUserPassword(userId, plainPassword) {
     db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash, userId)
 }
 
+// ── Dispositivo de confianza del administrador ────────────────────────────
+// Se llama UNA sola vez, justo al crear la cuenta admin (first-run). Ese
+// mismo equipo queda como "el PC del administrador" — cualquier otro
+// dispositivo deberá pasar por el flujo de PIN de un solo uso al correo.
+function setTrustedDeviceId(userId, deviceId) {
+    if (!deviceId) return
+    const db = getDb()
+    db.prepare('UPDATE users SET trusted_device_id=? WHERE id=?').run(deviceId, userId)
+}
+
+// true si el deviceId recibido es el dispositivo de confianza de ALGÚN
+// admin. Caso especial: si todavía no hay ningún admin (recién arrancando)
+// o si NINGÚN admin tiene un dispositivo de confianza registrado (por
+// ejemplo, una instalación existente de antes de que esta función
+// existiera), no se restringe a nadie — evita dejar afuera a un admin real
+// por una migración de datos vieja.
+function isTrustedDevice(deviceId) {
+    const db = getDb()
+    const admins = db.prepare("SELECT trusted_device_id FROM users WHERE role='admin' AND active<>0").all()
+    if (admins.length === 0) return true
+    if (admins.every(a => !a.trusted_device_id)) return true
+    if (!deviceId) return false
+    return admins.some(a => a.trusted_device_id === deviceId)
+}
+
+// ── Login de administrador desde un dispositivo no confiable (PIN por correo) ──
+// Genera un código de 6 dígitos para el admin indicado (por username),
+// invalida cualquier código previo sin usar de ese mismo admin, y lo
+// devuelve en texto plano junto con los datos mínimos para armar el correo.
+// Devuelve null si el username no corresponde a un admin activo.
+function createAdminLoginOtp(username) {
+    const db = getDb()
+    const u = db.prepare("SELECT * FROM users WHERE username=? AND role='admin'").get(username)
+    if (!u || u.active === 0) return null
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const codeHash = crypto.createHash('sha256').update(code).digest('hex')
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString()
+    db.transaction(() => {
+        db.prepare('UPDATE admin_login_otp SET used=1 WHERE user_id=? AND used=0').run(u.id)
+        db.prepare(`INSERT INTO admin_login_otp (user_id, code_hash, expires_at, used, created_at)
+                    VALUES (?, ?, ?, 0, ?)`)
+          .run(u.id, codeHash, expiresAt, now.toISOString())
+    })()
+    return { code, user: u }
+}
+
+// Verifica el código contra el último pedido sin usar y no vencido de ese
+// admin. Si es válido lo consume (un solo uso) y devuelve el usuario mapeado
+// listo para armar el token — mismo shape que authLogin/authLoginPin.
+function verifyAdminLoginOtp(username, code) {
+    const db = getDb()
+    const u = db.prepare("SELECT * FROM users WHERE username=? AND role='admin'").get(username)
+    if (!u || u.active === 0) return null
+    const codeHash = crypto.createHash('sha256').update(String(code)).digest('hex')
+    const row = db.prepare(`SELECT * FROM admin_login_otp
+                             WHERE user_id=? AND used=0 AND expires_at > ?
+                             ORDER BY created_at DESC LIMIT 1`)
+      .get(u.id, new Date().toISOString())
+    if (!row || row.code_hash !== codeHash) return null
+    db.prepare('UPDATE admin_login_otp SET used=1 WHERE id=?').run(row.id)
+    return {
+        id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
+        email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
+        username: u.username, hasPin: !!u.pin_hash, active: true, createdAt: u.created_at
+    }
+}
+
 // ── Configuración general (clave/valor) ──────────────────────────────────
 function getSetting(key) {
     const db = getDb()
@@ -1086,5 +1191,6 @@ module.exports = {
     getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
     loadStaff, createStaff, updateStaff, deleteStaff,
     getSetting, setSetting,
-    createPasswordReset, verifyAndConsumePasswordReset, setUserPassword
+    createPasswordReset, verifyAndConsumePasswordReset, setUserPassword,
+    setTrustedDeviceId, isTrustedDevice, createAdminLoginOtp, verifyAdminLoginOtp
 }
