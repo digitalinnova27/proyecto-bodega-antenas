@@ -1,4 +1,7 @@
 {
+  "1.2.2": [
+    "Eventos y Rental: el Operador ya puede crear eventos y arriendos con el mismo formulario que el Administrador (antes el botón 'Nuevo Evento'/'Nuevo Arriendo' solo aparecía para el rol Administrador)"
+  ],
   "1.2.1": [
     "Operaciones: se reordenaron las pestañas de Eventos y Rental a solo tres — 'En curso' (con contador, verde, se archiva solo al terminar), 'Próximos' (pasa a En curso automáticamente el día del evento) y 'Todos' (buscador por fecha/día/semana/mes, por nombre, y filtros de Cancelados/Con incidencia/Realizados, agrupado por fecha y desplegable)",
     "Nuevo: cancelar un evento ahora pide un motivo obligatorio y el evento queda visible en 'Todos' y en el Reporte de operaciones con la explicación de por qué se canceló (antes se borraba sin dejar rastro)",
