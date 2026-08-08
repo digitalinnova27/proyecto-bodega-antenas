@@ -509,9 +509,7 @@ export default function Events() {
             Buscar
           </Button>
         </Box>
-        {role === 'admin' && (
-          <Button variant="contained" startIcon={<AddIcon />} onClick={openCreateModal}>Nuevo Evento</Button>
-        )}
+        <Button variant="contained" startIcon={<AddIcon />} onClick={openCreateModal}>Nuevo Evento</Button>
       </Paper>
 
       <Paper sx={{ p: 2 }}>
