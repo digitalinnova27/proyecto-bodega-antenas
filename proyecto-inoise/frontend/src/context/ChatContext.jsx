@@ -23,13 +23,25 @@ export function ChatProvider({ children }) {
   // Notificación emergente
   const [notification, setNotification] = useState(null) // { msg, sender }
   const notifTimer = useRef(null)
+  // { [userId]: true }  — quién está escribiendo ahora mismo (en vivo, no se
+  // guarda en la base de datos, solo dura mientras la otra persona escribe)
+  const [typingUsers, setTypingUsers] = useState({})
+  const typingTimers = useRef({}) // [userId]: timeout — auto-limpia si no llega el "dejó de escribir"
 
   // ── Cargar no leídos al iniciar sesión ───────────────────────────────────────
+  // Sincroniza tanto el total como el desglose por remitente desde la base de
+  // datos (fuente de verdad) — así el contador es correcto desde el arranque,
+  // no solo con los mensajes que lleguen en vivo durante la sesión, y también
+  // sirve para "resincronizar" después de marcar algo como leído, evitando que
+  // el número quede pegado si el conteo local no coincidía con el real.
   const loadUnread = useCallback(async () => {
     if (!getToken()) return
     try {
       const res = await api.get('/api/chat/unread')
-      if (res?.ok) setTotalUnread(res.count)
+      if (res?.ok) {
+        setTotalUnread(res.count || 0)
+        setUnreadByUser(res.bySender || {})
+      }
     } catch {}
   }, [])
 
@@ -60,7 +72,13 @@ export function ChatProvider({ children }) {
         return { ...prev, [parsed.from_user]: [...conv, parsed] }
       })
 
-      // Si el chat está abierto con ese usuario, marcar como leído de inmediato
+      // Si el chat está abierto con ese usuario, marcar como leído de inmediato.
+      // IMPORTANTE: openWith se resetea a null en closeChat(), que ahora se
+      // invoca también al cerrar el panel completo (no solo una conversación
+      // individual) — ver handlePanelClose en ChatPanel.jsx. Antes openWith
+      // quedaba "pegado" al último contacto aunque el panel ya estuviera
+      // cerrado, así que los mensajes nuevos se marcaban leídos en silencio
+      // sin avisar ni sumar al contador.
       if (openWith === parsed.from_user) {
         api.patch(`/api/chat/conversation/read?with=${parsed.from_user}`).catch(() => {})
       } else {
@@ -78,6 +96,63 @@ export function ChatProvider({ children }) {
     return () => socket.off('chat:message', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openWith])
+
+  // ── Socket: "escribiendo..." ──────────────────────────────────────────────────
+  useEffect(() => {
+    const socket = getSocket()
+    if (!socket) return
+
+    const handler = ({ from, isTyping } = {}) => {
+      if (!from) return
+      if (typingTimers.current[from]) clearTimeout(typingTimers.current[from])
+
+      if (isTyping) {
+        setTypingUsers(prev => ({ ...prev, [from]: true }))
+        // Auto-limpia a los 4s por si el "dejó de escribir" no llega nunca
+        // (se cerró la app, se cayó la conexión, etc.)
+        typingTimers.current[from] = setTimeout(() => {
+          setTypingUsers(prev => ({ ...prev, [from]: false }))
+        }, 4000)
+      } else {
+        setTypingUsers(prev => ({ ...prev, [from]: false }))
+      }
+    }
+
+    socket.on('chat:typing', handler)
+    return () => socket.off('chat:typing', handler)
+  }, [])
+
+  // ── Socket: avisos de "leído" en tiempo real ────────────────────────────────────
+  // Cuando la otra persona abre la conversación y marca tus mensajes como
+  // leídos, el servidor te avisa acá — así se puede mostrar el doble check
+  // sin tener que recargar ni volver a pedir la conversación.
+  useEffect(() => {
+    const socket = getSocket()
+    if (!socket) return
+
+    const handler = ({ by } = {}) => {
+      if (!by) return
+      const now = new Date().toISOString()
+      setConversations(prev => {
+        const conv = prev[by]
+        if (!conv) return prev
+        return {
+          ...prev,
+          [by]: conv.map(m => (m.to_user === by && !m.read_at) ? { ...m, read_at: now } : m)
+        }
+      })
+    }
+
+    socket.on('chat:read', handler)
+    return () => socket.off('chat:read', handler)
+  }, [])
+
+  // ── Emitir "estoy escribiendo" / "dejé de escribir" ─────────────────────────────
+  const sendTyping = useCallback((toUser, isTyping) => {
+    const socket = getSocket()
+    if (!socket || !toUser) return
+    socket.emit('chat:typing', { to: toUser, isTyping })
+  }, [])
 
   // ── Notificación emergente ────────────────────────────────────────────────────
   const showNotification = useCallback((msg) => {
@@ -112,16 +187,16 @@ export function ChatProvider({ children }) {
   const openChat = useCallback(async (userId) => {
     setOpenWith(userId)
     await fetchConversation(userId)
-    // Marcar como leídos
+    // Marcar como leídos. En vez de restar localmente lo que unreadByUser[userId]
+    // tenía contado (que puede ser 0 si esos mensajes eran de antes de esta
+    // sesión y nunca pasaron por el socket), se resincroniza todo desde la
+    // base de datos — así el contador siempre queda exacto, sin quedar pegado.
     try {
       await api.patch(`/api/chat/conversation/read?with=${userId}`)
-      setUnreadByUser(prev => {
-        const n = prev[userId] || 0
-        setTotalUnread(t => Math.max(0, t - n))
-        return { ...prev, [userId]: 0 }
-      })
+      setUnreadByUser(prev => ({ ...prev, [userId]: 0 }))
+      await loadUnread()
     } catch {}
-  }, [fetchConversation])
+  }, [fetchConversation, loadUnread])
 
   const closeChat = useCallback(() => setOpenWith(null), [])
 
@@ -145,9 +220,11 @@ export function ChatProvider({ children }) {
       totalUnread,
       openWith,
       notification,
+      typingUsers,
       openChat,
       closeChat,
       sendMessage,
+      sendTyping,
       fetchConversation,
       dismissNotification
     }}>

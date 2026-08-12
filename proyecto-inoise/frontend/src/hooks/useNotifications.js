@@ -67,10 +67,27 @@ const relativeDay = (diff) => {
     return `en ${diff} días`
 }
 
+// Persistencia de "vistas" en localStorage — antes vivía solo en memoria del
+// componente, así que al cerrar y volver a abrir la app todas las
+// notificaciones volvían a aparecer como no vistas aunque ya se hubieran
+// revisado.
+const SEEN_STORAGE_KEY = 'inoise_seen_notifications'
+
+function loadSeenIds() {
+    try {
+        const raw = localStorage.getItem(SEEN_STORAGE_KEY)
+        return raw ? new Set(JSON.parse(raw)) : new Set()
+    } catch { return new Set() }
+}
+
+function persistSeenIds(set) {
+    try { localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify([...set])) } catch {}
+}
+
 export function useNotifications() {
     const { events, rentals } = useInventory()
     const { isConnected, signalHistory, lastReadAt } = useRfidSocket()
-    const [seenIds, setSeenIds] = React.useState(() => new Set())
+    const [seenIds, setSeenIds] = React.useState(loadSeenIds)
 
     // ── Estado persistente de la antena (no es una "notificación" descartable) ──
     // Se recalcula siempre con la lectura real del bridge: conexión + RSSI
@@ -170,11 +187,16 @@ export function useNotifications() {
     const notifications = allNotifications.filter(n => !seenIds.has(n.id))
     const unread = notifications.length
 
-    const markSeen = (id) => setSeenIds(prev => new Set(prev).add(id))
+    const markSeen = (id) => setSeenIds(prev => {
+        const next = new Set(prev).add(id)
+        persistSeenIds(next)
+        return next
+    })
 
     const markAllSeen = () => setSeenIds(prev => {
         const next = new Set(prev)
         allNotifications.forEach(n => next.add(n.id))
+        persistSeenIds(next)
         return next
     })
 

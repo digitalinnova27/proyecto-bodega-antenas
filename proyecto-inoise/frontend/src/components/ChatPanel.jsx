@@ -17,6 +17,8 @@ import EmojiEmotionsIcon from '@mui/icons-material/EmojiEmotions'
 import EventIcon from '@mui/icons-material/Event'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
 import SupportAgentIcon from '@mui/icons-material/SupportAgent'
+import DoneIcon from '@mui/icons-material/Done'
+import DoneAllIcon from '@mui/icons-material/DoneAll'
 
 import { useChat } from '../context/ChatContext'
 import { useAuth } from '../context/AuthContext'
@@ -100,9 +102,18 @@ function MessageBubble({ msg, isOwn }) {
             {msg.content}
           </Typography>
         )}
-        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.3)', fontSize: 10, display: 'block', textAlign: 'right', mt: 0.25 }}>
-          {ts}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.4, mt: 0.25 }}>
+          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.3)', fontSize: 10 }}>
+            {ts}
+          </Typography>
+          {/* Check de leído — solo en mensajes propios. Un check = enviado,
+              doble check celeste = leído por el destinatario. */}
+          {isOwn && (
+            msg.read_at
+              ? <DoneAllIcon sx={{ fontSize: 13, color: '#66FCF1' }} />
+              : <DoneIcon sx={{ fontSize: 13, color: 'rgba(255,255,255,0.3)' }} />
+          )}
+        </Box>
       </Box>
     </Box>
   )
@@ -110,10 +121,11 @@ function MessageBubble({ msg, isOwn }) {
 
 /* ── Panel de la conversación (derecha) ─────────────────────────────────── */
 function ConversationPanel({ user, onClose }) {
-  const { conversations, sendMessage, openWith } = useChat()
+  const { conversations, sendMessage, openWith, typingUsers, sendTyping } = useChat()
   const { currentUser } = useAuth()
   const { events, rentals } = useInventory()
   const msgs = conversations[user.id] || []
+  const isTyping = !!typingUsers[user.id]
 
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
@@ -121,11 +133,46 @@ function ConversationPanel({ user, onClose }) {
   const [showRefPicker, setShowRefPicker] = useState(false)
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
+  const typingStopTimer = useRef(null)
+  const wasTypingRef = useRef(false)
 
   // Scroll al fondo cuando llegan mensajes nuevos
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [msgs.length])
+
+  // Al cambiar de conversación (o desmontar), avisar que se dejó de escribir
+  // y limpiar cualquier timer pendiente de la conversación anterior.
+  useEffect(() => {
+    return () => {
+      if (typingStopTimer.current) clearTimeout(typingStopTimer.current)
+      if (wasTypingRef.current) sendTyping(user.id, false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.id])
+
+  const handleTextChange = (e) => {
+    const value = e.target.value
+    setText(value)
+
+    if (value.trim()) {
+      if (!wasTypingRef.current) {
+        wasTypingRef.current = true
+        sendTyping(user.id, true)
+      }
+      // Reinicia la cuenta regresiva de "dejó de escribir" en cada tecla
+      if (typingStopTimer.current) clearTimeout(typingStopTimer.current)
+      typingStopTimer.current = setTimeout(() => {
+        wasTypingRef.current = false
+        sendTyping(user.id, false)
+      }, 2000)
+    } else if (wasTypingRef.current) {
+      // Campo vacío (borró todo) → avisa de inmediato, no hace falta esperar
+      if (typingStopTimer.current) clearTimeout(typingStopTimer.current)
+      wasTypingRef.current = false
+      sendTyping(user.id, false)
+    }
+  }
 
   const handleSend = async () => {
     const trimmed = text.trim()
@@ -133,6 +180,11 @@ function ConversationPanel({ user, onClose }) {
     setSending(true)
     setText('')
     setShowEmoji(false)
+    if (typingStopTimer.current) clearTimeout(typingStopTimer.current)
+    if (wasTypingRef.current) {
+      wasTypingRef.current = false
+      sendTyping(user.id, false)
+    }
     await sendMessage(user.id, trimmed, 'text')
     setSending(false)
     inputRef.current?.focus()
@@ -180,8 +232,10 @@ function ConversationPanel({ user, onClose }) {
           <Typography variant="body2" fontWeight={600} sx={{ color: '#E8E8E8', lineHeight: 1.2 }}>
             {displayName}
           </Typography>
-          <Typography variant="caption" sx={{ color: '#888', fontSize: 11 }}>
-            {user.cargo || user.role}
+          <Typography variant="caption" sx={{
+            color: isTyping ? '#66FCF1' : '#888', fontSize: 11, fontStyle: isTyping ? 'italic' : 'normal'
+          }}>
+            {isTyping ? 'escribiendo…' : (user.cargo || user.role)}
           </Typography>
         </Box>
         <IconButton size="small" onClick={onClose} sx={{ color: 'rgba(255,255,255,0.4)' }}>
@@ -315,7 +369,7 @@ function ConversationPanel({ user, onClose }) {
           fullWidth
           placeholder="Escribe un mensaje..."
           value={text}
-          onChange={e => setText(e.target.value)}
+          onChange={handleTextChange}
           onKeyDown={handleKeyDown}
           sx={{
             '& .MuiOutlinedInput-root': {
@@ -538,6 +592,13 @@ export default function ChatPanel({ open, onClose }) {
   const selectAssistant = () => { setAssistantSelected(true); closeChat() }
   const selectUser = (userId) => { setAssistantSelected(false); openChat(userId) }
 
+  // Cerrar el panel completo (la "X" del encabezado o clic afuera) debe
+  // liberar también openWith — si no, la conversación queda marcada como
+  // "abierta" en ChatContext aunque el panel ya no se vea, y el próximo
+  // mensaje de esa persona se marca leído en silencio sin avisar ni sumar
+  // al contador.
+  const handlePanelClose = () => { closeChat(); onClose() }
+
   const AVATAR_COLORS = ['#1D9E75','#378ADD','#EF9F27','#E24B4A','#7C3AED','#F59E0B','#EC4899','#6366F1']
 
   if (!open) return null
@@ -546,7 +607,7 @@ export default function ChatPanel({ open, onClose }) {
     <>
       {/* Overlay para cerrar al hacer clic fuera */}
       <Box
-        onClick={onClose}
+        onClick={handlePanelClose}
         sx={{
           position: 'fixed', inset: 0, zIndex: 1299,
           bgcolor: 'rgba(0,0,0,0.4)'
@@ -585,7 +646,7 @@ export default function ChatPanel({ open, onClose }) {
             <Typography variant="subtitle2" sx={{ color: '#66FCF1', fontWeight: 700, fontSize: 13 }}>
               💬 Chat equipo
             </Typography>
-            <IconButton size="small" onClick={onClose} sx={{ color: 'rgba(255,255,255,0.4)' }}>
+            <IconButton size="small" onClick={handlePanelClose} sx={{ color: 'rgba(255,255,255,0.4)' }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
           </Box>

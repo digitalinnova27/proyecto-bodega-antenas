@@ -1128,6 +1128,21 @@ function countUnread(userId) {
     `).get(userId).n
 }
 
+// Desglose de no leídos por remitente — para que el badge de cada contacto
+// en el panel de chat sea correcto desde que se abre la app, no solo con
+// los mensajes que llegan en vivo durante la sesión.
+function countUnreadBySender(userId) {
+    const db = getDb()
+    const rows = db.prepare(`
+        SELECT from_user, COUNT(*) as n FROM messages
+        WHERE to_user = ? AND read_at IS NULL
+        GROUP BY from_user
+    `).all(userId)
+    const bySender = {}
+    rows.forEach(r => { bySender[r.from_user] = r.n })
+    return bySender
+}
+
 function markConversationRead(userId, withUser) {
     const db = getDb()
     db.prepare(`
@@ -1188,7 +1203,7 @@ module.exports = {
     loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
     setUserPin, removeUserPin, authLoginPin, setUserActive,
     createSession, closeSession, closeAllOpenSessions, loadUserSessions,
-    getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
+    getConversation, createMessage, markMessageRead, countUnread, countUnreadBySender, markConversationRead,
     loadStaff, createStaff, updateStaff, deleteStaff,
     getSetting, setSetting,
     createPasswordReset, verifyAndConsumePasswordReset, setUserPassword,

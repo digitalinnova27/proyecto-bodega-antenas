@@ -1,4 +1,11 @@
 {
+  "1.2.3": [
+    "Chat interno: corregido que el aviso de mensaje nuevo no apareciera al escribir en un sentido (Operador → Administrador) — cerrar el panel completo ahora libera correctamente la conversación",
+    "Chat interno: el contador de mensajes no leídos (ícono de chat y campana) ya no se queda pegado al leer mensajes — se resincroniza siempre con la base de datos",
+    "Campana de notificaciones: lo que ya marcaste como visto ahora se recuerda aunque cierres y vuelvas a abrir la aplicación",
+    "Chat interno: nuevo indicador de 'escribiendo…' en tiempo real en el encabezado de la conversación",
+    "Chat interno: nuevo check de 'leído' (doble check celeste) en los mensajes propios, que se actualiza en vivo apenas la otra persona los revisa"
+  ],
   "1.2.2": [
     "Eventos y Rental: el Operador ya puede crear eventos y arriendos con el mismo formulario que el Administrador (antes el botón 'Nuevo Evento'/'Nuevo Arriendo' solo aparecía para el rol Administrador)"
   ],

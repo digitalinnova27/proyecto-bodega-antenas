@@ -28,7 +28,7 @@ const {
   loadUsers, createUser, updateUser, deleteUser, authLogin, countAdmins,
   setUserPin, removeUserPin, authLoginPin, setUserActive,
   createSession, closeSession, closeAllOpenSessions, loadUserSessions,
-  getConversation, createMessage, markMessageRead, countUnread, markConversationRead,
+  getConversation, createMessage, markMessageRead, countUnread, countUnreadBySender, markConversationRead,
   loadStaff, createStaff, updateStaff, deleteStaff,
   getSetting, setSetting,
   createPasswordReset, verifyAndConsumePasswordReset, setUserPassword,
@@ -628,11 +628,29 @@ app.get('/api/chat/conversation', requireAuth, (req, res) => {
   res.json(result)
 })
 
-/** GET /api/chat/unread — cantidad total de mensajes sin leer */
+/** GET /api/chat/unread — cantidad total de mensajes sin leer, y desglosada por remitente */
 app.get('/api/chat/unread', requireAuth, (req, res) => {
   const result = safe(() => countUnread(req.user.id))
-  res.json({ ok: true, count: result.ok ? result.data : 0 })
+  const bySenderResult = safe(() => countUnreadBySender(req.user.id))
+  res.json({
+    ok: true,
+    count: result.ok ? result.data : 0,
+    bySender: bySenderResult.ok ? bySenderResult.data : {}
+  })
 })
+
+// Busca el socket activo de un usuario por su id (o null si no está conectado).
+// Usado para entregar mensajes, avisos de "leído" y de "escribiendo..." en
+// tiempo real, sin esperar a que el destinatario recargue o vuelva a pedir datos.
+function findSocketByUserId(userId) {
+  for (const [, data] of onlineUsers) {
+    if (data.userId === userId) {
+      return [...io.sockets.sockets.values()]
+        .find(s => onlineUsers.get(s.id)?.userId === userId) || null
+    }
+  }
+  return null
+}
 
 /** POST /api/chat/messages — enviar un mensaje */
 app.post('/api/chat/messages', requireAuth, (req, res) => {
@@ -647,15 +665,8 @@ app.post('/api/chat/messages', requireAuth, (req, res) => {
   const outMsg = { ...msg, metadata: msg.metadata ? JSON.parse(msg.metadata) : null }
 
   // Entregar el mensaje en tiempo real al destinatario (si está conectado)
-  for (const [, data] of onlineUsers) {
-    if (data.userId === toUser) {
-      // Buscar el socket del destinatario
-      const targetSocket = [...io.sockets.sockets.values()]
-        .find(s => onlineUsers.get(s.id)?.userId === toUser)
-      if (targetSocket) targetSocket.emit('chat:message', outMsg)
-      break
-    }
-  }
+  const targetSocket = findSocketByUserId(toUser)
+  if (targetSocket) targetSocket.emit('chat:message', outMsg)
 
   res.json({ ok: true, data: outMsg })
 })
@@ -665,6 +676,12 @@ app.patch('/api/chat/conversation/read', requireAuth, (req, res) => {
   const { with: withUser } = req.query
   if (!withUser) return res.json({ ok: false, error: 'Falta parámetro "with"' })
   const result = safe(() => markConversationRead(req.user.id, withUser))
+  if (result.ok) {
+    // Avisar en tiempo real a quien mandó los mensajes que ya se leyeron —
+    // así le puede mostrar el doble check en su lado sin tener que recargar.
+    const senderSocket = findSocketByUserId(withUser)
+    if (senderSocket) senderSocket.emit('chat:read', { by: req.user.id })
+  }
   res.json(result)
 })
 
@@ -743,6 +760,16 @@ io.on('connection', (socket) => {
   socket.on('user:deauthenticate', () => {
     onlineUsers.delete(socket.id)
     io.emit('online:users', getOnlineList())
+  })
+
+  // ── Chat: "escribiendo..." ──
+  // No se guarda en la base de datos — es un estado de un instante, se
+  // reenvía en vivo solo a la persona con la que se está chateando.
+  socket.on('chat:typing', ({ to, isTyping } = {}) => {
+    const sender = onlineUsers.get(socket.id)
+    if (!sender || !to) return
+    const targetSocket = findSocketByUserId(to)
+    if (targetSocket) targetSocket.emit('chat:typing', { from: sender.userId, isTyping: !!isTyping })
   })
 
   // ── Locks de edición ──
