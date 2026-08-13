@@ -117,6 +117,13 @@
   align-items: center;
   justify-content: center;
 
+  /* Evita que el navegador muestre el cursor de texto (I-beam) al pasar
+     el mouse sobre el título/subtítulo — sin esto, Chrome ignora el
+     cursor:pointer del contenedor apenas el puntero queda sobre texto
+     seleccionable y se ve como un cursor "pegado" al final de la palabra. */
+  user-select: none;
+  -webkit-user-select: none;
+
   transition:
     transform 0.35s cubic-bezier(.22,1,.36,1),
     opacity 0.3s ease;
@@ -131,11 +138,13 @@
 
 .card h2 {
   margin: 10px 0 6px;
+  cursor: pointer;
 }
 
 .card p {
   font-size: 14px;
   opacity: .8;
+  cursor: pointer;
 }
 
 /* Hover */

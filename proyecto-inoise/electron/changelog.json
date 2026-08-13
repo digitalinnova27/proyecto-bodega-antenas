@@ -1,4 +1,7 @@
 {
+  "1.2.5": [
+    "Login: corregido el cursor de texto que quedaba marcado sobre 'Gestión operativa' y otros textos de las tarjetas de perfil — ahora el mouse siempre muestra la manito (pointer), nunca el cursor de escritura"
+  ],
   "1.2.4": [
     "Rental: nuevo botón 'Forzar fase' (admin) para cerrar un arriendo sin haber terminado el escaneo de todos los artículos — antes esta opción solo existía para eventos",
     "Historial de Rentas: ahora es desplegable y muestra qué fases se completaron normalmente y cuáles se forzaron, igual que ya se veía en Historial de Eventos",

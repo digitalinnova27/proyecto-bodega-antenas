@@ -1,6 +1,6 @@
 {
   "name": "rfid-dashboard-final",
-  "version": "1.2.2",
+  "version": "1.2.5",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
