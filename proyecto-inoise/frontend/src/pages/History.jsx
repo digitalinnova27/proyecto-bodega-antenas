@@ -207,28 +207,99 @@ function EventsHistoryTable({ rows, query, expandOrderNumber }) {
 }
 
 /* ─── Historial de Rentas ─── */
-// Esta tabla no tiene detalle expandible (ya muestra todos los datos
-// relevantes en la fila) — al llegar desde "Ver detalle" en Operaciones,
-// solo se resalta la fila y se hace scroll hasta ella.
-function RentalRow({ h, highlight }) {
+// Ahora sí es expandible (antes no lo era) — al igual que en eventos, se
+// muestra qué fases se completaron de verdad y cuáles se forzaron sin
+// terminar el escaneo, como información visible para quien revisa el
+// historial (antes esa información no se guardaba para arriendos).
+function RentalRow({ h, autoExpand }) {
+  const [open, setOpen] = React.useState(!!autoExpand)
   const rowRef = React.useRef(null)
   React.useEffect(() => {
-    if (highlight && rowRef.current) {
+    if (autoExpand && rowRef.current) {
       rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlight])
+  }, [autoExpand])
   return (
-    <TableRow ref={rowRef} hover sx={{ bgcolor: highlight ? 'action.selected' : undefined }}>
-      <TableCell>{fmtDateTime(h.closedAt)}</TableCell>
-      <TableCell>{h.orderNumber}</TableCell>
-      <TableCell>{h.name}</TableCell>
-      <TableCell>{h.clientName || '—'}</TableCell>
-      <TableCell>{h.date}</TableCell>
-      <TableCell>{h.endDate || '—'}</TableCell>
-      <TableCell align="right">{h.totalItems}</TableCell>
-      <TableCell>{h.closedBy}</TableCell>
-    </TableRow>
+    <React.Fragment>
+      <TableRow
+        ref={rowRef}
+        hover onClick={() => setOpen(o => !o)}
+        sx={{ cursor: 'pointer', '& > *': { borderBottom: 'unset' }, bgcolor: autoExpand ? 'action.selected' : undefined }}
+      >
+        <TableCell sx={{ width: 40 }}>
+          <IconButton size="small">
+            {open ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
+          </IconButton>
+        </TableCell>
+        <TableCell>{fmtDateTime(h.closedAt)}</TableCell>
+        <TableCell>{h.orderNumber}</TableCell>
+        <TableCell>{h.name}</TableCell>
+        <TableCell>{h.clientName || '—'}</TableCell>
+        <TableCell>{h.date}</TableCell>
+        <TableCell>{h.endDate || '—'}</TableCell>
+        <TableCell align="right">{h.totalItems}</TableCell>
+        <TableCell>{h.closedBy}</TableCell>
+        <TableCell>
+          {h.forcedClose
+            ? <Chip label="Forzado" size="small" color="warning" />
+            : <Chip label="Normal" size="small" color="success" variant="outlined" />}
+        </TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={10} sx={{ p: 0, borderBottom: open ? undefined : 'none' }}>
+          <Collapse in={open} timeout="auto" unmountOnExit>
+            <Box sx={{ p: 2, bgcolor: 'background.default' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                FASES APROBADAS
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5, mb: 2, flexWrap: 'wrap' }}>
+                {(h.phasesApproved || []).length === 0 && (
+                  <Typography variant="body2" color="text.secondary">Sin información de fases (arriendo cerrado antes de esta función, o cerrado en una versión anterior del sistema).</Typography>
+                )}
+                {(h.phasesApproved || []).map(p => (
+                  <Chip
+                    key={p.key}
+                    label={`${p.key.toUpperCase()} · ${p.label}${p.forced ? ' (forzada)' : ''}`}
+                    size="small"
+                    color={p.done ? (p.forced ? 'warning' : 'success') : 'default'}
+                    variant={p.done ? 'filled' : 'outlined'}
+                  />
+                ))}
+              </Box>
+
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                ARTÍCULOS ASIGNADOS
+              </Typography>
+              {(h.items || []).length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  Este arriendo se cerró sin artículos registrados (datos incompletos de una versión anterior del sistema).
+                </Typography>
+              ) : (
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Producto</TableCell>
+                      <TableCell>SKU</TableCell>
+                      <TableCell align="right">Cantidad</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {h.items.map((it, i) => (
+                      <TableRow key={i}>
+                        <TableCell>{it.name}</TableCell>
+                        <TableCell>{it.sku}</TableCell>
+                        <TableCell align="right">{it.qty}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </React.Fragment>
   )
 }
 
@@ -254,6 +325,7 @@ function RentalsHistoryTable({ rows, query, expandOrderNumber }) {
     <Table size="small">
       <TableHead>
         <TableRow>
+          <TableCell sx={{ width: 40 }} />
           <TableCell>Fecha de cierre</TableCell>
           <TableCell>N° orden</TableCell>
           <TableCell>Arriendo</TableCell>
@@ -262,11 +334,12 @@ function RentalsHistoryTable({ rows, query, expandOrderNumber }) {
           <TableCell>Término</TableCell>
           <TableCell align="right">Artículos</TableCell>
           <TableCell>Cerrado por</TableCell>
+          <TableCell>Cierre</TableCell>
         </TableRow>
       </TableHead>
       <TableBody>
         {filtered.map(h => (
-          <RentalRow key={h.id} h={h} highlight={!!expandOrderNumber && h.orderNumber === expandOrderNumber} />
+          <RentalRow key={h.id} h={h} autoExpand={!!expandOrderNumber && h.orderNumber === expandOrderNumber} />
         ))}
       </TableBody>
     </Table>

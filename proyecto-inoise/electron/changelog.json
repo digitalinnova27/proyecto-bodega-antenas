@@ -1,4 +1,9 @@
 {
+  "1.2.4": [
+    "Rental: nuevo botón 'Forzar fase' (admin) para cerrar un arriendo sin haber terminado el escaneo de todos los artículos — antes esta opción solo existía para eventos",
+    "Historial de Rentas: ahora es desplegable y muestra qué fases se completaron normalmente y cuáles se forzaron, igual que ya se veía en Historial de Eventos",
+    "Reporte de operaciones (PDF): la tabla de arriendos ahora también muestra qué fases fueron aprobadas y cuáles forzadas"
+  ],
   "1.2.3": [
     "Chat interno: corregido que el aviso de mensaje nuevo no apareciera al escribir en un sentido (Operador → Administrador) — cerrar el panel completo ahora libera correctamente la conversación",
     "Chat interno: el contador de mensajes no leídos (ícono de chat y campana) ya no se queda pegado al leer mensajes — se resincroniza siempre con la base de datos",

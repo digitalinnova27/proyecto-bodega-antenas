@@ -1399,6 +1399,10 @@ function RentalCard({ rental }) {
   // "Iniciar" antes de poder escanear esa fase, en vez de saltar directo
   // a los botones de fase.
   const [activePhase, setActivePhase] = React.useState(null)
+  // Qué fases se cerraron forzadas por un admin (sin escaneo real al 100%),
+  // para dejarlo como información en Historial y Reportes — igual que ya
+  // existía para eventos, pero antes los arriendos no tenían esta opción.
+  const [forcedPhases, setForcedPhases] = React.useState({ f1: false, f4: false })
 
   const totalItems = (rental.assignments || []).reduce((s, a) => s + a.qty, 0)
   const progress = rental.status === 'Concluido'
@@ -1421,7 +1425,11 @@ function RentalCard({ rental }) {
 
   /* ── Cerrar arriendo: mover de Operaciones a Historial de Rentas ── */
   const finalizeRental = () => {
-    closeRentalToHistory(rental, totalItems, roleLabel)
+    const phasesApproved = RENTAL_PHASES.map(ph => ({
+      key: ph.key, label: ph.label, done: phaseDone(ph.key), forced: !!forcedPhases[ph.key]
+    }))
+    const forcedClose = forcedPhases.f1 || forcedPhases.f4
+    closeRentalToHistory(rental, totalItems, roleLabel, { forcedClose, phasesApproved })
     setOpenModal(false)
     setSnack({
       open: true, severity: 'success', msg: 'Arriendo guardado en el Historial de Rentas.',
@@ -1511,6 +1519,8 @@ function RentalCard({ rental }) {
         scannedItems={scannedItems} setScannedItems={setScannedItems}
         onClose={() => setOpenModal(false)}
         onFinalizeRental={finalizeRental}
+        role={role}
+        onForcePhase={(ph) => setForcedPhases(prev => ({ ...prev, [ph]: true }))}
       />
 
       <Snackbar
@@ -1535,9 +1545,10 @@ function RentalCard({ rental }) {
 }
 
 /* ─── RentalPhaseModal ────────────────────────────────────────────────────── */
-function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedItems, setScannedItems, onClose, onFinalizeRental }) {
+function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedItems, setScannedItems, onClose, onFinalizeRental, role, onForcePhase }) {
   const { markUnitBackFromRental } = useInventory()
   const phaseObj = RENTAL_PHASES.find(p => p.key === phase)
+  const [forceDialogOpen, setForceDialogOpen] = React.useState(false)
 
   // Cupos preasignados al crear el arriendo (por producto, no por tag físico
   // todavía) — es el pool del que F1 elige qué unidad concreta sale.
@@ -1608,6 +1619,14 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
     if (phase === 'f4') markUnitBackFromRental(item.slotId || item.id)
   }
 
+  /* ── Forzar fase (admin): marca todo lo pendiente como escaneado y deja
+   * registro de que fue forzado, sin exigir el escaneo real de cada tag. ── */
+  const handleForceConfirm = (reason) => {
+    pendingItems.forEach(item => markScanned(item))
+    onForcePhase(phase, reason)
+    setForceDialogOpen(false)
+  }
+
   // ── Conexión RFID real — escucha la antena igual que el modal de eventos ──
   const { isConnected, scanAlert, setScanAlert } = useRfidScanMatcher({
     open,
@@ -1651,6 +1670,14 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
           <Typography variant="caption" color="text.secondary">
             Pasa cada tag por la antena o el lector — se registra solo. Si ninguno está disponible, puedes marcar manualmente cada artículo abajo.
           </Typography>
+          {pct < 100 && role === 'admin' && (
+            <Tooltip title="Forzar cierre de esta fase sin escanear todo (admin)">
+              <Button variant="outlined" size="small" color="error" startIcon={<LockIcon />}
+                onClick={() => setForceDialogOpen(true)}>
+                Forzar fase
+              </Button>
+            </Tooltip>
+          )}
         </Box>
         <Box sx={{ maxHeight: 320, overflowY: 'auto' }}>
           <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>Artículos del arriendo</Typography>
@@ -1704,6 +1731,12 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
         summary={{ orderNumber: rental.orderNumber, name: rental.name, totalItems }}
         onDismiss={() => setShowCloseModal(false)}
         onSave={() => { setShowCloseModal(false); onFinalizeRental() }}
+      />
+      <ForceDialogExternal
+        open={forceDialogOpen}
+        target={{ phase }}
+        onClose={() => setForceDialogOpen(false)}
+        onConfirm={handleForceConfirm}
       />
     </Dialog>
   )

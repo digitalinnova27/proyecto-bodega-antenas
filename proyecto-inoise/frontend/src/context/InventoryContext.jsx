@@ -722,7 +722,7 @@ export function InventoryProvider({ children }) {
    * sin tener que mezclar dos estructuras de datos distintas (rentals +
    * rentalHistory). El detalle completo sigue guardándose en rentalHistory
    * para el Reporte de operaciones, igual que antes. */
-  const closeRentalToHistory = (rental, totalItems, closedBy) => {
+  const closeRentalToHistory = (rental, totalItems, closedBy, phaseInfo) => {
     if (!rental) return
     const items = (rental.assignments || []).map(a => {
       const prod = products.find(p => p.id === a.productId)
@@ -744,7 +744,12 @@ export function InventoryProvider({ children }) {
       totalItems: totalItems ?? (rental.assignments || []).reduce((s, a) => s + a.qty, 0),
       closedAt: new Date().toISOString(),
       closedBy: closedBy || 'Administrador',
-      items
+      items,
+      // Igual que en closeEventToHistory: deja registro de qué fases se
+      // completaron de verdad (escaneo real) y cuáles se forzaron sin
+      // terminar, para que quede como información en Historial y Reportes.
+      forcedClose: !!phaseInfo?.forcedClose,
+      phasesApproved: phaseInfo?.phasesApproved || []
     }
     setRentalHistory(prev => [entry, ...prev])
     setRentals(prev => prev.map(r => r.id === rental.id ? { ...r, status: 'Concluido' } : r))

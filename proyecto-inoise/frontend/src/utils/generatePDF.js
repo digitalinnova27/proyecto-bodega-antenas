@@ -608,7 +608,10 @@ export async function generateMonthlyReportPDF(month, eventEntries, rentalEntrie
 
     const rows = []
     for (const r of rentalEntries) {
-      rows.push({ __isGroupHeader: true, label: `${r.orderNumber || ''} ${r.name} · Cliente: ${r.clientName || '—'}` })
+      const phasesStr = (r.phasesApproved || [])
+        .map(p => p.done ? (p.forced ? `${p.key.toUpperCase()}*` : p.key.toUpperCase()) : null)
+        .filter(Boolean).join(' ') || '—'
+      rows.push({ __isGroupHeader: true, label: `${r.orderNumber || ''} ${r.name} · Cliente: ${r.clientName || '—'} · Fases aprobadas: ${phasesStr}` })
       for (const it of (r.items || [])) {
         rows.push({ cells: [it.name, it.sku, it.qty, r.totalItems, r.closedBy] })
       }
