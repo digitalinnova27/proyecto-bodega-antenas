@@ -1,4 +1,13 @@
 {
+  "1.2.6": [
+    "Seguridad: la clave interna que firma las sesiones ya no es una fija incluida en el programa — ahora cada instalación genera la suya propia la primera vez que arranca. Por este cambio, en el primer arranque de esta versión va a pedir iniciar sesión de nuevo en cada equipo",
+    "Seguridad: la lista de usuarios ya no incluye datos internos de la contraseña de nadie al consultarla desde la aplicación",
+    "Seguridad: crear, editar o eliminar Personal ahora está restringido al administrador también del lado del servidor (antes solo se ocultaba el botón en la pantalla, igual que ya se había corregido para Usuarios)",
+    "Seguridad: cambiar o borrar el PIN de acceso rápido de otra persona ahora requiere ser administrador o ser la propia cuenta",
+    "Seguridad: se agregó un límite de intentos en inicio de sesión, PIN, recuperación de contraseña y el código de acceso del administrador, para dificultar adivinar una contraseña o código por fuerza bruta",
+    "Corrección: en Registrar RFID, una racha de lecturas podía contar un sticker dos veces bajo ciertas condiciones de uso prolongado — ya no ocurre",
+    "Seguridad: ahora se exige la misma contraseña segura (8+ caracteres, mayúscula, minúscula, número y símbolo) al crear o editar un usuario, no solo al recuperarla"
+  ],
   "1.2.5": [
     "Login: corregido el cursor de texto que quedaba marcado sobre 'Gestión operativa' y otros textos de las tarjetas de perfil — ahora el mouse siempre muestra la manito (pointer), nunca el cursor de escritura"
   ],
