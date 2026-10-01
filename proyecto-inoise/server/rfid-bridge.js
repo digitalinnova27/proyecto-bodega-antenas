@@ -250,8 +250,16 @@ udpServer.on('message', (buf, rinfo) => {
         if (lastSeen[epc] && (now - lastSeen[epc]) < DEDUP_MS) return
         lastSeen[epc] = now
 
-        // Limpiar cache de lastSeen cada 60s para no crecer infinito
-        if (Object.keys(lastSeen).length > 500) lastSeen = {}
+        // Limpiar solo las entradas ya vencidas (más viejas que DEDUP_MS) una
+        // vez que el cache crece bastante. Antes esto vaciaba TODO el objeto
+        // de una — lo que provocaba que, justo después del vaciado, un tag
+        // leído momentos antes (y todavía "vigente" dentro de DEDUP_MS)
+        // volviera a contarse como una lectura nueva, duplicando el conteo.
+        if (Object.keys(lastSeen).length > 500) {
+            for (const key of Object.keys(lastSeen)) {
+                if ((now - lastSeen[key]) >= DEDUP_MS) delete lastSeen[key]
+            }
+        }
 
         // Intentar extraer RSSI (viene como número negativo antes del EPC)
         let rssi = null

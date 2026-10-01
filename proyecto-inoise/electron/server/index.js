@@ -7,9 +7,9 @@
  *  - Sirve el build de React como archivos estáticos (clientes en navegador)
  *  - Transmite cambios en tiempo real via Socket.io a todos los clientes
  *
- * Puerto: 3001 (el rfid-bridge ya ocupa el 3002)
- * Acceso local:   http://localhost:3001
- * Acceso en red:  http://<IP-local>:3001
+ * Puerto: 3005 (el rfid-bridge usa 3001/3002 aparte, ver server/rfid-bridge.js)
+ * Acceso local:   http://localhost:3005
+ * Acceso en red:  http://<IP-local>:3005
  */
 
 const express  = require('express')
@@ -18,7 +18,10 @@ const { Server } = require('socket.io')
 const jwt      = require('jsonwebtoken')
 const path     = require('path')
 const os       = require('os')
+const fs       = require('fs')
+const crypto   = require('crypto')
 const nodemailer = require('nodemailer')
+const rateLimit = require('express-rate-limit')
 
 const {
   loadAll,
@@ -40,7 +43,43 @@ const {
 // Puerto 3002 lo usa el rfid-bridge para su HTTP API.
 // Nuestro servidor Express + Socket.io usa el 3005.
 const PORT       = 3005
-const JWT_SECRET = process.env.INOISE_SECRET || 'inoise-bodega-2026'
+
+/* ── Secreto de firma JWT ──────────────────────────────────────────────────
+ * Antes había un valor hardcodeado ('inoise-bodega-2026') como fallback de
+ * INOISE_SECRET. Como esta app no tiene un mecanismo de .env por instalación
+ * (se distribuye como instalador de Windows), esa variable de entorno nunca
+ * se configura en la práctica — TODAS las instalaciones firmaban y
+ * verificaban tokens con el mismo secreto público (visible en el código
+ * fuente), permitiéndole a cualquiera con el instalador forjar un token de
+ * administrador offline.
+ *
+ * Ahora se genera un secreto aleatorio de 256 bits una sola vez por equipo y
+ * se guarda junto a inoise-config.json en userData (mismo patrón que
+ * getOrCreateDeviceId() en electron/main.js) — sobrevive reinicios y
+ * actualizaciones, pero es distinto en cada instalación. Si INOISE_SECRET
+ * está seteada explícitamente (ej. en el futuro backend en la nube) tiene
+ * prioridad, para no romper ese caso. */
+function _getOrCreateJwtSecret() {
+    if (process.env.INOISE_SECRET) return process.env.INOISE_SECRET
+    let secretDir = __dirname
+    try {
+        if (process.versions && process.versions.electron) {
+            secretDir = require('electron').app.getPath('userData')
+        }
+    } catch { /* no estamos en un contexto de Electron utilizable */ }
+    const secretPath = path.join(secretDir, 'inoise-jwt-secret.txt')
+    try {
+        const existing = fs.readFileSync(secretPath, 'utf8').trim()
+        if (existing) return existing
+    } catch { /* todavía no existe, se genera abajo */ }
+    const generated = crypto.randomBytes(32).toString('hex')
+    try { fs.writeFileSync(secretPath, generated, 'utf8') } catch (e) {
+        console.error('[iNOISE] No se pudo persistir el secreto JWT, se usará solo en memoria:', e.message)
+    }
+    return generated
+}
+
+const JWT_SECRET = _getOrCreateJwtSecret()
 
 // ── Usuarios online (en memoria) ──────────────────────────────────────────────
 // Clave: socket.id  Valor: { userId, username, displayName, sessionId }
@@ -95,6 +134,28 @@ app.use((req, res, next) => {
 })
 app.use(express.json({ limit: '20mb' }))
 
+/* ── Rate limiting en rutas sensibles de auth ────────────────────────────
+ * Antes login (contraseña y PIN), recuperación de contraseña y el OTP de
+ * admin no tenían ningún freno de intentos. Un PIN de 4 dígitos (10.000
+ * combinaciones) o un código de 6 dígitos (1.000.000, aunque vence en
+ * 10-15 min) son adivinables por fuerza bruta sin esto. Los límites son
+ * generosos para no molestar el uso normal (alguien que se equivoca de
+ * contraseña un par de veces), pero cortan un ataque automatizado. */
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Demasiados intentos. Probá de nuevo en unos minutos.' }
+})
+const pinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Demasiados intentos. Probá de nuevo en unos minutos.' }
+})
+
 // Servir el build de React para clientes en navegador.
 // En producción los archivos están en app.asar.unpacked (express.static usa
 // fs.createReadStream que no funciona dentro del asar). En dev, path normal.
@@ -117,6 +178,16 @@ const safeAsync = async (fn) => {
   catch (e) { return { ok: false, error: e.message } }
 }
 
+/** Misma regla usada hoy solo en /api/auth/reset-password: 8+ caracteres,
+ *  mayúscula, minúscula, número y símbolo. Se reusa acá para que también
+ *  se exija al crear o editar un usuario desde /api/users — antes esa ruta
+ *  no validaba nada del lado del servidor y confiaba en que la UI lo hiciera. */
+function _isStrongPassword(pw) {
+  return typeof pw === 'string' && pw.length >= 8 &&
+    /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw)
+}
+const WEAK_PASSWORD_MSG = 'La contraseña debe tener 8+ caracteres, mayúscula, minúscula, número y signo especial'
+
 /**
  * Middleware JWT.
  * Rutas de auth (login) no lo necesitan; todo lo demás sí.
@@ -135,11 +206,25 @@ const requireAuth = (req, res, next) => {
 }
 
 /**
- * Tras guardar una entidad, emite 'data:sync' a TODOS los clientes
- * para que actualicen su estado local sin necesidad de hacer re-fetch.
+ * Tras guardar una entidad, emite 'data:sync' a los clientes YA
+ * AUTENTICADOS (los que completaron 'user:authenticate', ver onlineUsers
+ * más abajo) para que actualicen su estado local sin necesidad de hacer
+ * re-fetch.
+ *
+ * Antes esto era io.emit(...) a TODOS los sockets conectados, autenticados
+ * o no. La pantalla de login necesita el socket abierto sin login (para
+ * enterarse en vivo de 'users:updated' si otro PC crea/edita un usuario),
+ * pero eso no significa que deba recibir inventario/eventos/arriendos
+ * reales — con CORS abierto y sin nada más gateando la conexión, cualquier
+ * dispositivo en la red que abriera un socket sin loguearse recibía igual
+ * todos los datos de negocio en tiempo real.
  */
 const broadcast = (entity, data) => {
-  io.emit('data:sync', { entity, data })
+  const payload = { entity, data }
+  for (const socketId of onlineUsers.keys()) {
+    const s = io.sockets.sockets.get(socketId)
+    if (s) s.emit('data:sync', payload)
+  }
 }
 
 // ── Health check (público — usado por PCs cliente para verificar conexión) ────
@@ -149,7 +234,7 @@ app.get('/api/health', (_req, res) => {
 
 // ── Rutas de autenticación ────────────────────────────────────────────────────
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { username, password } = req.body || {}
   const result = await safeAsync(() => authLogin(username, password))
   if (!result.ok || !result.data) {
@@ -166,7 +251,7 @@ app.post('/api/auth/login', async (req, res) => {
   res.json({ ok: true, data: u, token, sessionId })
 })
 
-app.post('/api/auth/login-pin', (req, res) => {
+app.post('/api/auth/login-pin', pinLimiter, (req, res) => {
   const { userId, pin } = req.body || {}
   const result = safe(() => authLoginPin(userId, pin))
   if (!result.ok || !result.data) {
@@ -251,6 +336,9 @@ app.post('/api/users', async (req, res) => {
   const count = safe(() => countAdmins())
   const isFirstRun = count.ok && count.data === 0
   const { data, password, deviceId } = req.body || {}
+  if (!_isStrongPassword(password)) {
+    return res.json({ ok: false, error: WEAK_PASSWORD_MSG })
+  }
   if (isFirstRun) {
     const result = await safeAsync(() => createUser({ ...data, role: 'admin' }, password))
     // Este es el momento "usuario 0": el equipo desde el que se crea la
@@ -283,6 +371,9 @@ app.put('/api/users/:id', requireAuth, async (req, res) => {
   }
   const id = req.params.id
   const { fields, newPassword } = req.body || {}
+  if (newPassword && !_isStrongPassword(newPassword)) {
+    return res.json({ ok: false, error: WEAK_PASSWORD_MSG })
+  }
   const result = await safeAsync(() => updateUser(id, fields, newPassword || null))
   if (result.ok) io.emit('users:updated')
   res.json(result)
@@ -340,7 +431,13 @@ app.patch('/api/users/:id/active', requireAuth, (req, res) => {
   res.json(result)
 })
 
+// Fijar/borrar el PIN de un usuario: solo el propio dueño de la cuenta o un
+// admin — antes cualquier operador autenticado podía cambiarle o borrarle
+// el PIN a cualquier OTRO usuario con solo conocer su id.
 app.post('/api/users/:id/pin', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
+    return res.status(403).json({ ok: false, error: 'Sin permiso' })
+  }
   const { pin } = req.body || {}
   const result = safe(() => setUserPin(req.params.id, pin))
   // Avisar a otras pantallas conectadas (ej. Login de otro PC) para que
@@ -350,6 +447,9 @@ app.post('/api/users/:id/pin', requireAuth, (req, res) => {
 })
 
 app.delete('/api/users/:id/pin', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
+    return res.status(403).json({ ok: false, error: 'Sin permiso' })
+  }
   const result = safe(() => removeUserPin(req.params.id))
   if (result.ok) io.emit('users:updated')
   res.json(result)
@@ -455,7 +555,7 @@ app.post('/api/users/:id/send-credentials', requireAuth, async (req, res) => {
 // cargado — la respuesta es siempre la misma frase genérica. La única
 // excepción real es cuando el correo emisor todavía no está configurado en
 // Ajustes, porque eso no depende de qué usuario pidió el código.
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
   const { username } = req.body || {}
   const generic = { ok: true, message: 'Si el usuario existe y tiene un correo cargado, le enviamos un código de verificación.' }
   if (!username) return res.json(generic)
@@ -485,15 +585,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 })
 
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
   const { username, code, newPassword } = req.body || {}
   if (!username || !code || !newPassword) {
     return res.json({ ok: false, error: 'Faltan datos' })
   }
   // Mismas reglas que en la creación/edición de usuario desde Ajustes.
-  if (newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) ||
-      !/[0-9]/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
-    return res.json({ ok: false, error: 'La contraseña debe tener 8+ caracteres, mayúscula, minúscula, número y signo especial' })
+  if (!_isStrongPassword(newPassword)) {
+    return res.json({ ok: false, error: WEAK_PASSWORD_MSG })
   }
 
   const usersResult = safe(() => loadUsers())
@@ -516,7 +615,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // llega al correo, y lo usa una sola vez para entrar desde ese equipo.
 // Público (sin token) — es justamente el mecanismo para entrar cuando la
 // tarjeta Admin normal está restringida en este dispositivo.
-app.post('/api/auth/admin-otp/request', async (req, res) => {
+app.post('/api/auth/admin-otp/request', authLimiter, async (req, res) => {
   const { username } = req.body || {}
   const generic = { ok: true, message: 'Si el usuario existe y tiene un correo cargado, le enviamos un código de acceso.' }
   if (!username) return res.json(generic)
@@ -543,7 +642,7 @@ app.post('/api/auth/admin-otp/request', async (req, res) => {
   }
 })
 
-app.post('/api/auth/admin-otp/verify', (req, res) => {
+app.post('/api/auth/admin-otp/verify', authLimiter, (req, res) => {
   const { username, code } = req.body || {}
   if (!username || !code) return res.json({ ok: false, error: 'Faltan datos' })
 
@@ -702,18 +801,32 @@ app.get('/api/staff', requireAuth, (_req, res) => {
   res.json(safe(() => loadStaff()))
 })
 
+// Crear/editar/borrar personal es acción exclusiva del admin — la UI ya
+// oculta la sección Personal a los operadores (Sidebar.jsx adminOnly), pero
+// estas rutas no lo verificaban del lado del servidor, así que cualquier
+// operador podía escribir en /api/staff llamándolo directo. Igual que ya
+// se corrigió antes para /api/users/*.
 app.post('/api/staff', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
   const { nombre, apellido, rut, telefono, cargo } = req.body
   if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido requeridos' })
   res.json(safe(() => createStaff({ nombre, apellido, rut, telefono, cargo })))
 })
 
 app.put('/api/staff/:id', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
   const { nombre, apellido, rut, telefono, cargo, activo } = req.body
   res.json(safe(() => { updateStaff(req.params.id, { nombre, apellido, rut, telefono, cargo, activo }); return true }))
 })
 
 app.delete('/api/staff/:id', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
   res.json(safe(() => { deleteStaff(req.params.id); return true }))
 })
 

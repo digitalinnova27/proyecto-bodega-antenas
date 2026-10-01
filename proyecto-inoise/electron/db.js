@@ -804,12 +804,16 @@ async function _verifyPassword(password, stored) {
     }
 }
 
+// NUNCA incluir password_hash acá — este objeto se manda tal cual por HTTP
+// en GET /api/users a cualquier usuario autenticado (no solo admin). Antes
+// incluía passwordHash y cualquier operador podía bajarse el hash de
+// contraseña de todos los usuarios, incluido el admin, y crackearlo offline.
 function _mapUser(u) {
     return {
         id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
         email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
         telefono: u.telefono ?? '',
-        username: u.username, passwordHash: u.password_hash,
+        username: u.username,
         hasPin: !!u.pin_hash,
         active: u.active !== 0,   // 0 = deshabilitado, 1 o NULL → activo
         createdAt: u.created_at
@@ -831,7 +835,8 @@ async function createUser(data, plainPassword) {
       .run(id, data.role, data.nombre, data.apellido,
            data.email || null, data.cargo || null, data.avatar || null,
            data.username, hash, data.telefono || null, now)
-    return { id, ...data, passwordHash: hash, createdAt: now }
+    // No devolver el hash recién calculado — mismo motivo que _mapUser arriba.
+    return { id, ...data, createdAt: now }
 }
 
 async function updateUser(id, fields, plainPassword) {

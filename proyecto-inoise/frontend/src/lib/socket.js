@@ -2,8 +2,9 @@
  * frontend/src/lib/socket.js
  *
  * Singleton de Socket.io-client.
- * Conecta al servidor embebido en Electron (puerto 3001) para recibir
+ * Conecta al servidor embebido en Electron (puerto 3005) para recibir
  * actualizaciones en tiempo real cuando otro operador/cliente modifica datos.
+ * (3001/3002 son puertos aparte, del rfid-bridge — ver server/rfid-bridge.js)
  *
  * Uso:
  *   import { getSocket } from '../lib/socket'

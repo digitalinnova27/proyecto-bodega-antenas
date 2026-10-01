@@ -1,12 +1,14 @@
 /**
  * frontend/src/lib/api.js
  *
- * Cliente HTTP centralizado para comunicarse con el servidor Express (puerto 3001).
+ * Cliente HTTP centralizado para comunicarse con el servidor Express (puerto 3005).
  * Adjunta automáticamente el JWT en cada request.
  *
- * En desarrollo (Vite en 5173): el proxy de vite.config.js redirige /api → 3001.
- * En producción (build servido desde Express en 3001): misma origin, sin proxy.
- * En navegadores externos (http://192.168.x.x:3001): misma origin, sin proxy.
+ * En desarrollo (Vite en 5173): el proxy de vite.config.js redirige /api → 3005.
+ * En producción (build servido desde Express en 3005): misma origin, sin proxy.
+ * En navegadores externos (http://192.168.x.x:3005): misma origin, sin proxy.
+ *
+ * (3001/3002 son puertos aparte, del rfid-bridge — ver server/rfid-bridge.js)
  */
 
 // En modo servidor (o dev): URLs relativas → el proxy de Vite o Express mismo.
