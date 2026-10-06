@@ -54,6 +54,13 @@ export function InventoryProvider({ children }) {
    * app sigue funcionando en memoria como antes. */
   const [isHydrated, setIsHydrated] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  // Último error de guardado en el servidor (red caída, servidor no
+  // disponible, etc.) — antes esto solo quedaba en console.error y el
+  // usuario nunca se enteraba de que su cambio no se había guardado. Se
+  // expone acá para que App.jsx lo muestre en un Snackbar global, visible
+  // desde cualquier pantalla (el cambio puede venir de cualquier página que
+  // toque products/events/rentals/etc.).
+  const [saveError, setSaveError] = useState(null)
 
   // Ref para evitar que las actualizaciones recibidas por Socket.io
   // disparen a su vez los efectos de guardado (loop infinito).
@@ -860,11 +867,20 @@ export function InventoryProvider({ children }) {
     // completamente silencioso: el cambio se veía bien en pantalla (estado
     // local ya actualizado) pero nunca llegaba a guardarse en la base de
     // datos, y recién se notaba al recargar la app y ver que "desapareció".
-    // Ahora al menos queda un registro en consola con la entidad y el
-    // motivo, para poder diagnosticar este tipo de caso.
+    // Ahora, además de quedar en consola, se expone via saveError para que
+    // App.jsx lo muestre en un Snackbar visible — el operador de bodega no
+    // mira la consola del navegador.
     api.put(path, value)
-      .then(res => { if (res && res.ok === false) console.error(`[guardado] ${entity} respondió con error:`, res.error) })
-      .catch(err => console.error(`[guardado] Falló el guardado de "${entity}" en el servidor:`, err))
+      .then(res => {
+        if (res && res.ok === false) {
+          console.error(`[guardado] ${entity} respondió con error:`, res.error)
+          setSaveError({ entity, message: res.error || 'El servidor rechazó el cambio' })
+        }
+      })
+      .catch(err => {
+        console.error(`[guardado] Falló el guardado de "${entity}" en el servidor:`, err)
+        setSaveError({ entity, message: 'Sin conexión con el servidor — tu cambio no se guardó' })
+      })
   }
 
   React.useEffect(() => {
@@ -929,7 +945,8 @@ export function InventoryProvider({ children }) {
       eventHistory, rentalHistory, purchaseHistory,
       closeEventToHistory, closeRentalToHistory,
       auditLog, addAuditEntry,
-      refreshData: () => loadData(true), isRefreshing
+      refreshData: () => loadData(true), isRefreshing,
+      saveError, clearSaveError: () => setSaveError(null)
     }}>
       {children}
     </InventoryContext.Provider>

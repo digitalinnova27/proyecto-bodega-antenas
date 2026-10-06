@@ -444,6 +444,29 @@ function DeleteConfirmModal({ open, user, onConfirm, onClose }) {
   )
 }
 
+/* ─── Modal: Confirmar activar/desactivar ──────────────────────────────── */
+function ToggleActiveConfirmModal({ open, user, loading, onConfirm, onClose }) {
+  const willDisable = user?.active !== false
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>{willDisable ? 'Deshabilitar usuario' : 'Habilitar usuario'}</DialogTitle>
+      <DialogContent>
+        <Alert severity={willDisable ? 'warning' : 'info'} sx={{ mb: 1 }}>
+          {willDisable
+            ? <>Se deshabilitará a <strong>{user?.nombre} {user?.apellido}</strong> ({user?.username}). No va a poder iniciar sesión hasta que lo vuelvas a habilitar.</>
+            : <>Se habilitará a <strong>{user?.nombre} {user?.apellido}</strong> ({user?.username}). Va a poder iniciar sesión de nuevo.</>}
+        </Alert>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={loading}>Cancelar</Button>
+        <Button variant="contained" color={willDisable ? 'error' : 'success'} onClick={onConfirm} disabled={loading}>
+          {loading ? <CircularProgress size={18} /> : (willDisable ? 'Deshabilitar' : 'Habilitar')}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
 /* ─── Sección de gestión de usuarios (solo admin) ───────────────────────── */
 function UserManagement() {
   const { currentUser, users, updateUser, deleteUser, createUser, verifyAdminPassword, setUserActive } = useAuth()
@@ -458,6 +481,11 @@ function UserManagement() {
 
   const [editUser, setEditUser] = React.useState(null)
   const [deleteTarget, setDeleteTarget] = React.useState(null)
+  // Antes el switch de activar/desactivar disparaba el cambio apenas se
+  // tocaba, sin preguntar — a diferencia del borrado, que sí pide
+  // confirmación. Deshabilitar a alguien a mitad de turno los desloguea
+  // al instante, así que amerita el mismo "¿seguro?" que el borrado.
+  const [toggleTarget, setToggleTarget] = React.useState(null)
   const [createOpen, setCreateOpen] = React.useState(false)
 
   const handleUnlock = async () => {
@@ -511,6 +539,7 @@ function UserManagement() {
     setToggleError('')
     const res = await setUserActive(u.id, !u.active)
     setTogglingId(null)
+    setToggleTarget(null)
     if (!res.ok) setToggleError(res.error || 'Error al cambiar estado')
   }
 
@@ -633,7 +662,7 @@ function UserManagement() {
                             size="small"
                             checked={isActive}
                             disabled={!canToggle(u) || togglingId === u.id}
-                            onChange={() => handleToggleActive(u)}
+                            onChange={() => setToggleTarget(u)}
                             color="success"
                           />
                         </span>
@@ -692,6 +721,15 @@ function UserManagement() {
         user={deleteTarget}
         onConfirm={handleDeleteConfirm}
         onClose={() => setDeleteTarget(null)}
+      />
+
+      {/* Modal activar/desactivar */}
+      <ToggleActiveConfirmModal
+        open={Boolean(toggleTarget)}
+        user={toggleTarget}
+        loading={togglingId === toggleTarget?.id}
+        onConfirm={() => handleToggleActive(toggleTarget)}
+        onClose={() => setToggleTarget(null)}
       />
     </Paper>
   )
@@ -1060,11 +1098,16 @@ export default function Settings() {
     <Box>
       <Typography variant="h5" sx={{ mb: 2 }}>Configuración</Typography>
 
-      {/* General — disponible para todos */}
+      {/* General — disponible para todos.
+          Estos dos switches no están conectados a ninguna preferencia real
+          (no hay backend detrás todavía) — antes se podían tocar y parecía
+          que hacían algo, sin guardar ni aplicar nada. Se dejan deshabilitados
+          y marcados como "Próximamente" hasta que se implemente de verdad,
+          en vez de simular una función que no existe. */}
       <Paper sx={{ p: 2, mb: 2 }}>
         <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 1.5 }}>General</Typography>
-        <FormControlLabel control={<Switch defaultChecked />} label="Notificaciones por correo" />
-        <FormControlLabel control={<Switch defaultChecked />} label="Alertas en panel" />
+        <FormControlLabel control={<Switch checked disabled />} label="Notificaciones por correo (próximamente)" />
+        <FormControlLabel control={<Switch checked disabled />} label="Alertas en panel (próximamente)" />
       </Paper>
 
       {/* Conexión en red — muestra la URL para que otros dispositivos se conecten */}

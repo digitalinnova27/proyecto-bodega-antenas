@@ -372,7 +372,11 @@ export default function RfidRegistrar() {
     }
 
     const handleCrearYVincular = async () => {
-        if (!newForm.name || !newForm.sku || !newForm.category || !newForm.qty) return
+        // "!newForm.qty" no detecta qty === "0" (string no vacío → truthy).
+        // Con cantidad 0, addProduct crea el producto sin unidades, y el EPC
+        // termina vinculado a un unitId que nunca existió (`${id}-1` armado a
+        // mano como fallback) — queda un tag "vinculado" a una unidad fantasma.
+        if (!newForm.name || !newForm.sku || !newForm.category || !newForm.qty || Number(newForm.qty) < 1) return
         setSaving(true)
         const created = addProduct({ name: newForm.name, sku: newForm.sku, category: newForm.category, qty: newForm.qty, rfid: newForm.sku, description: newForm.description }, currentUser)
         const unitId = created?.units?.[0]?.id || `${created?.id}-1`
@@ -811,7 +815,7 @@ export default function RfidRegistrar() {
                                 <Box sx={{ display: 'flex', gap: 1 }}>
                                     <Button fullWidth variant="contained" color="warning"
                                         startIcon={saving ? <CircularProgress size={16} /> : <AddCircleIcon />}
-                                        disabled={!newForm.name || !newForm.sku || !newForm.category || saving}
+                                        disabled={!newForm.name || !newForm.sku || !newForm.category || !newForm.qty || Number(newForm.qty) < 1 || saving}
                                         onClick={handleCrearYVincular}>
                                         Crear y vincular
                                     </Button>

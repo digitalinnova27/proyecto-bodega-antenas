@@ -155,12 +155,13 @@ export function PinPad({ value = '', onChange, onSubmit, disabled = false, error
 }
 
 /* ─── Validaciones ──────────────────────────────────────────────────────── */
-function validatePassword(pw) {
-  if (!pw || pw.length < 8) return 'Mínimo 8 caracteres'
-  if (!/[A-Z]/.test(pw))    return 'Debe incluir al menos una mayúscula'
-  if (!/[0-9]/.test(pw))    return 'Debe incluir al menos un número'
-  return null
-}
+// La regla de contraseña del alta inicial (primer admin) usaba un criterio
+// más débil (solo mayúscula + número) que el resto de la app — el backend
+// ya exige 8+/mayúscula/minúscula/número/signo especial en TODOS los
+// endpoints que crean o cambian contraseñas (ver electron/server/index.js
+// _isStrongPassword), así que una contraseña que pasaba acá podía terminar
+// siendo rechazada por el servidor. Se unifica usando validateNewPassword
+// (misma regla que ya se usa en "olvidé mi contraseña" y en Ajustes).
 
 function validateUsername(u) {
   if (!u || u.length < 3) return 'Mínimo 3 caracteres'
@@ -231,7 +232,7 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
     if (!form.avatar)           e.avatar = 'Elige un avatar'
     const uErr = validateUsername(form.username)
     if (uErr) e.username = uErr
-    const pErr = validatePassword(form.password)
+    const pErr = validateNewPassword(form.password)
     if (pErr) e.password = pErr
     if (form.password !== form.confirm) e.confirm = 'Las contraseñas no coinciden'
     return e
@@ -1008,6 +1009,14 @@ export default function Login() {
   // 'loading' | 'setup' | 'firstRun' | 'login'
   const [phase, setPhase] = useState('loading')
   const [adminExists, setAdminExists] = useState(false)
+  // "← Cambiar configuración de equipo" / "este equipo no es el servidor
+  // principal" dispara handleResetConfig, que desconfigura el modo
+  // servidor/cliente de ESTA PC — antes se ejecutaba de un clic, sin
+  // confirmar, y además es alcanzable ANTES de iniciar sesión (cualquiera
+  // que abra la app podía desconfigurar el PC servidor sin querer).
+  // Ahora exige un segundo clic explícito, igual que ya exige el paso
+  // "confirmServer" al elegir "Servidor principal" en SetupScreen.
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false)
 
   // First-run
   const [createStep, setCreateStep] = useState('role')   // 'role' | 'form'
@@ -1234,6 +1243,34 @@ export default function Login() {
     window.location.reload()
   }
 
+  // Link "← Cambiar configuración de equipo" / "este equipo no es el
+  // servidor principal", con confirmación de un segundo paso (ver comentario
+  // en confirmResetOpen más arriba). `linkStyle` deja que cada uno de los 3
+  // lugares donde se usa mantenga su propio tamaño/color de texto.
+  const renderResetConfigLink = (label, linkStyle) => (
+    confirmResetOpen ? (
+      <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
+        <span style={{ color: '#E24B4A', fontSize: linkStyle.fontSize }}>¿Seguro? Esto desconfigura este equipo —</span>
+        <button
+          onClick={handleResetConfig}
+          style={{ ...linkStyle, background: 'none', border: 'none', cursor: 'pointer', color: '#E24B4A', fontWeight: 700 }}
+        >
+          Sí, continuar
+        </button>
+        <button
+          onClick={() => setConfirmResetOpen(false)}
+          style={{ ...linkStyle, background: 'none', border: 'none', cursor: 'pointer' }}
+        >
+          Cancelar
+        </button>
+      </span>
+    ) : (
+      <button onClick={() => setConfirmResetOpen(true)} style={{ ...linkStyle, background: 'none', border: 'none', cursor: 'pointer' }}>
+        {label}
+      </button>
+    )
+  )
+
   // ─── First run ─────────────────────────────────────────────────────────
   // Solo llega acá en modo servidor sin usuarios. Solo muestra Admin.
   if (phase === 'firstRun') {
@@ -1256,17 +1293,12 @@ export default function Login() {
                 </div>
               </div>
               {/* Escape para quien eligió "Servidor" por error */}
-              <button
-                onClick={handleResetConfig}
-                style={{
-                  marginTop: 28, background: 'none', border: 'none',
+              <div style={{ marginTop: 28 }}>
+                {renderResetConfigLink('← Este equipo no es el servidor principal', {
                   color: 'rgba(255,255,255,0.35)', fontSize: 12,
-                  cursor: 'pointer', textDecoration: 'underline',
-                  animation: 'none', opacity: 1
-                }}
-              >
-                ← Este equipo no es el servidor principal
-              </button>
+                  textDecoration: 'underline', animation: 'none', opacity: 1
+                })}
+              </div>
             </>
           )}
 
@@ -1716,19 +1748,10 @@ export default function Login() {
                   ← Ingresar como Operador
                 </button>
               ) : null}
-              {isClientMode && (
-                <button
-                  onClick={handleResetConfig}
-                  style={{
-                    background: 'none', border: 'none', padding: 0,
-                    color: 'rgba(255,255,255,0.2)', fontSize: 10,
-                    cursor: 'pointer', textDecoration: 'underline',
-                    animation: 'none', opacity: 1
-                  }}
-                >
-                  ← Cambiar configuración de equipo
-                </button>
-              )}
+              {isClientMode && renderResetConfigLink('← Cambiar configuración de equipo', {
+                padding: 0, color: 'rgba(255,255,255,0.2)', fontSize: 10,
+                textDecoration: 'underline', animation: 'none', opacity: 1
+              })}
             </div>
           )}
         </div>
@@ -1742,18 +1765,12 @@ export default function Login() {
 
       {/* Enlace de escape en pantalla de selección de rol (cualquier modo) */}
       {loginStep === 'role' && (
-        <button
-          onClick={handleResetConfig}
-          style={{
-            position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)',
-            background: 'none', border: 'none',
+        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
+          {renderResetConfigLink('← Cambiar configuración de equipo', {
             color: 'rgba(255,255,255,0.22)', fontSize: 11,
-            cursor: 'pointer', textDecoration: 'underline',
-            animation: 'none', opacity: 1
-          }}
-        >
-          ← Cambiar configuración de equipo
-        </button>
+            textDecoration: 'underline', animation: 'none', opacity: 1
+          })}
+        </div>
       )}
 
       <ForgotPasswordDialog

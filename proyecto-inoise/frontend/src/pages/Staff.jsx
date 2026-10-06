@@ -16,7 +16,15 @@ function formatRut(value) {
 }
 
 export default function Staff() {
-  const { currentUser } = useAuth()
+  const { currentUser, role } = useAuth()
+  // Esta página nunca chequeaba el rol — Sidebar.jsx oculta el link a
+  // /staff para operadores, pero alguien que tipeara la URL igual veía el
+  // CRUD completo de Personal (el backend ya bloquea los POST/PUT/DELETE
+  // reales desde el hardening anterior, pero la UI no debería ni mostrar
+  // los botones). Ahora el acceso de escritura queda gateado igual que en
+  // Users.jsx/Settings.jsx — los operadores siguen viendo la tabla
+  // (necesaria para asignar personal a eventos), solo sin los controles.
+  const isAdmin = role === 'admin'
   const { addAuditEntry } = useInventory()
   const [staff, setStaff]       = useState([])
   const [loading, setLoading]   = useState(true)
@@ -26,6 +34,8 @@ export default function Staff() {
   const [saving, setSaving]     = useState(false)
   const [error, setError]       = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [search, setSearch]     = useState('')
 
   const load = useCallback(async () => {
@@ -108,20 +118,32 @@ export default function Staff() {
   }
 
   async function handleDelete(id) {
+    // Antes, si el DELETE fallaba (red caída, 403, etc.), el modal se
+    // cerraba igual y el único rastro era un console.error — el usuario
+    // no tenía forma de saber que la persona en realidad NO se eliminó.
+    // Ahora el modal queda abierto mostrando el error, y solo se cierra
+    // cuando la eliminación realmente se confirma en el servidor.
     const person = staff.find(p => p.id === id)
+    setDeleting(true)
+    setDeleteError('')
     try {
       const res = await api.delete(`/api/staff/${id}`)
       if (!res || !res.ok) {
         console.error('[Staff] eliminar falló:', res?.error)
-        setDeleteConfirm(null)
+        setDeleteError(res?.error || 'No se pudo eliminar. Intentá de nuevo.')
+        setDeleting(false)
         return
       }
       if (person) {
         addAuditEntry?.('Personal eliminado', `${person.nombre} ${person.apellido}`, 'personal', currentUser)
       }
       await load()
-    } catch (e) { console.error('[Staff] eliminar excepción:', e) }
-    setDeleteConfirm(null)
+      setDeleteConfirm(null)
+    } catch (e) {
+      console.error('[Staff] eliminar excepción:', e)
+      setDeleteError('Error de conexión. Intentá de nuevo.')
+    }
+    setDeleting(false)
   }
 
   const filtered = staff.filter(p => {
@@ -144,13 +166,15 @@ export default function Staff() {
             {staff.length} persona{staff.length !== 1 ? 's' : ''} registrada{staff.length !== 1 ? 's' : ''}
           </p>
         </div>
-        <button onClick={openNew} style={{
-          background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8,
-          padding: '10px 20px', fontWeight: 600, cursor: 'pointer', fontSize: 14,
-          display: 'flex', alignItems: 'center', gap: 8
-        }}>
-          + Agregar persona
-        </button>
+        {isAdmin && (
+          <button onClick={openNew} style={{
+            background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8,
+            padding: '10px 20px', fontWeight: 600, cursor: 'pointer', fontSize: 14,
+            display: 'flex', alignItems: 'center', gap: 8
+          }}>
+            + Agregar persona
+          </button>
+        )}
       </div>
 
       {/* Buscador */}
@@ -180,7 +204,7 @@ export default function Staff() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#0f172a' }}>
-                {['Nombre', 'RUT', 'Teléfono', 'Cargo', 'Acciones'].map(h => (
+                {['Nombre', 'RUT', 'Teléfono', 'Cargo', ...(isAdmin ? ['Acciones'] : [])].map(h => (
                   <th key={h} style={{
                     padding: '12px 16px', textAlign: 'left', color: '#94a3b8',
                     fontSize: 12, fontWeight: 600, letterSpacing: '0.05em',
@@ -221,18 +245,20 @@ export default function Staff() {
                       }}>{p.cargo}</span>
                     ) : '—'}
                   </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button onClick={() => openEdit(p)} style={{
-                        background: '#334155', color: '#cbd5e1', border: 'none',
-                        borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12
-                      }}>Editar</button>
-                      <button onClick={() => setDeleteConfirm(p)} style={{
-                        background: '#450a0a', color: '#fca5a5', border: 'none',
-                        borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12
-                      }}>Eliminar</button>
-                    </div>
-                  </td>
+                  {isAdmin && (
+                    <td style={{ padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button onClick={() => openEdit(p)} style={{
+                          background: '#334155', color: '#cbd5e1', border: 'none',
+                          borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12
+                        }}>Editar</button>
+                        <button onClick={() => { setDeleteError(''); setDeleteConfirm(p) }} style={{
+                          background: '#450a0a', color: '#fca5a5', border: 'none',
+                          borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12
+                        }}>Eliminar</button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -328,15 +354,20 @@ export default function Staff() {
                 {deleteConfirm.nombre} {deleteConfirm.apellido}
               </strong> permanentemente.
             </p>
+            {deleteError && (
+              <p style={{ color: '#f87171', fontSize: 13, margin: '0 0 16px' }}>{deleteError}</p>
+            )}
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setDeleteConfirm(null)} style={{
+              <button onClick={() => { setDeleteConfirm(null); setDeleteError('') }} disabled={deleting} style={{
                 flex: 1, padding: '10px', borderRadius: 8, border: '1px solid #334155',
-                background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: 14
+                background: 'transparent', color: '#94a3b8', cursor: deleting ? 'default' : 'pointer', fontSize: 14,
+                opacity: deleting ? 0.6 : 1
               }}>Cancelar</button>
-              <button onClick={() => handleDelete(deleteConfirm.id)} style={{
+              <button onClick={() => handleDelete(deleteConfirm.id)} disabled={deleting} style={{
                 flex: 1, padding: '10px', borderRadius: 8, border: 'none',
-                background: '#dc2626', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 600
-              }}>Eliminar</button>
+                background: '#dc2626', color: '#fff', cursor: deleting ? 'default' : 'pointer', fontSize: 14, fontWeight: 600,
+                opacity: deleting ? 0.7 : 1
+              }}>{deleting ? 'Eliminando…' : 'Eliminar'}</button>
             </div>
           </div>
         </div>

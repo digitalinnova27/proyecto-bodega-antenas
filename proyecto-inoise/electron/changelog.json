@@ -1,4 +1,18 @@
 {
+  "1.2.7": [
+    "Aviso visible cuando un guardado falla por red o servidor caído — antes el cambio se veía aplicado en pantalla aunque en realidad no se hubiera guardado",
+    "Login: 'Cambiar configuración de equipo' ahora pide confirmar antes de desconfigurar el PC",
+    "Personal: la sección ya no se muestra a usuarios sin permiso de administrador",
+    "Personal: si falla eliminar a alguien, ahora se avisa en pantalla (antes quedaba en silencio)",
+    "Ajustes: activar/desactivar un usuario ahora pide confirmación, igual que eliminar",
+    "Ajustes: los switches de notificaciones (que todavía no hacen nada) se marcaron como 'Próximamente' en vez de simular una función que no existe",
+    "Corregido: en Arriendos, el aviso después de generar un PDF mostraba mal el número de orden",
+    "Operaciones/Eventos: el registro de auditoría de cierres forzados y cancelaciones ahora guarda el nombre real de quién lo hizo, no un rol genérico",
+    "Arriendos: el motivo al forzar una fase ya no se pierde — queda visible en el Historial",
+    "Eventos: el formulario de edición ya no permite guardar con el nombre o la fecha vacíos",
+    "Productos: 'Desvincular todos/seleccionados' y 'Liberar' tags/unidades ahora piden confirmación antes de ejecutar",
+    "Registrar RFID: ya no se puede vincular un tag a un producto creado con cantidad 0"
+  ],
   "1.2.6": [
     "Seguridad: la clave interna que firma las sesiones ya no es una fija incluida en el programa — ahora cada instalación genera la suya propia la primera vez que arranca. Por este cambio, en el primer arranque de esta versión va a pedir iniciar sesión de nuevo en cada equipo",
     "Seguridad: la lista de usuarios ya no incluye datos internos de la contraseña de nadie al consultarla desde la aplicación",

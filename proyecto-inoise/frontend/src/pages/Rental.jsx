@@ -130,7 +130,7 @@ export default function Rental() {
         setPdfLoading(true)
         try {
             await generateRentalPDF(rental, products)
-            setSnack({ open: true, msg: `PDF generado: \${rental.orderNumber}`, severity: 'success' })
+            setSnack({ open: true, msg: `PDF generado: ${rental.orderNumber}`, severity: 'success' })
         } catch (err) {
             setSnack({ open: true, msg: 'Error al generar el PDF', severity: 'error' })
         } finally { setPdfLoading(false) }

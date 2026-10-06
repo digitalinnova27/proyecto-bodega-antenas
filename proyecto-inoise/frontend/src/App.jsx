@@ -21,6 +21,8 @@ import RefreshIcon from '@mui/icons-material/Refresh'
 import ChatIcon from '@mui/icons-material/Chat'
 import Badge from '@mui/material/Badge'
 import Popover from '@mui/material/Popover'
+import Snackbar from '@mui/material/Snackbar'
+import Alert from '@mui/material/Alert'
 
 import Sidebar from './components/Sidebar'
 import ChatPanel from './components/ChatPanel'
@@ -84,7 +86,7 @@ export default function App() {
   const [chatOpen, setChatOpen] = React.useState(false)
 
   const { notifications, unread, markSeen, markAllSeen, antennaStatus } = useNotifications()
-  const { refreshData, isRefreshing } = useInventory()
+  const { refreshData, isRefreshing, saveError, clearSaveError } = useInventory()
   const { totalUnread } = useChat()
 
   const [updateInfo, setUpdateInfo] = useState(null)
@@ -466,6 +468,24 @@ export default function App() {
       info={updateInfo}
       onClose={() => setUpdateModalOpen(false)}
     />
+
+    {/* Aviso global cuando un guardado falla (red caída, servidor no
+        disponible). Antes esto era invisible — el cambio se veía aplicado
+        en pantalla pero nunca llegaba a la base de datos. Se muestra desde
+        acá (no desde cada página) porque el guardado ocurre en
+        InventoryContext y puede venir de cualquier pantalla. */}
+    {role && (
+      <Snackbar
+        open={!!saveError}
+        autoHideDuration={8000}
+        onClose={clearSaveError}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="error" variant="filled" onClose={clearSaveError} sx={{ maxWidth: 480 }}>
+          No se pudo guardar el último cambio ({saveError?.entity}). {saveError?.message}
+        </Alert>
+      </Snackbar>
+    )}
 
     </RfidSocketProvider>
   )

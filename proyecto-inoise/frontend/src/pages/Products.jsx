@@ -61,6 +61,15 @@ export default function Products() {
   const [openModal, setOpenModal] = React.useState(false)
   const [modalProduct, setModalProduct] = React.useState(null)
   const [toUnlink, setToUnlink] = React.useState([])
+  // Confirmación genérica para las acciones irreversibles de esta página
+  // (liberar tag huérfano, liberar todos, desvincular seleccionados/todos,
+  // liberar unidad atascada) — antes todas disparaban de inmediato al
+  // hacer clic, sin preguntar. Forma: { title, message, confirmLabel, onConfirm }
+  const [confirmAction, setConfirmAction] = React.useState(null)
+  const runConfirmedAction = () => {
+    confirmAction?.onConfirm()
+    setConfirmAction(null)
+  }
 
   // Mapa inverso unitId → epc
   const unitToEpc = React.useMemo(() => {
@@ -180,7 +189,12 @@ export default function Products() {
             <Typography variant="subtitle2" color="warning.main">
               Tags sin producto válido ({orphanEpcs.length})
             </Typography>
-            <Button size="small" variant="outlined" color="warning" onClick={handleFreeAllOrphans}>
+            <Button size="small" variant="outlined" color="warning" onClick={() => setConfirmAction({
+              title: 'Liberar todos los tags huérfanos',
+              message: `Se liberarán ${orphanEpcs.length} tag(s) sin producto válido. Vas a poder volver a usarlos en cualquier producto.`,
+              confirmLabel: 'Liberar todos',
+              onConfirm: handleFreeAllOrphans
+            })}>
               Liberar todos
             </Button>
           </Box>
@@ -196,7 +210,12 @@ export default function Products() {
                   secondaryAction={
                     <Button size="small" variant="outlined" color="warning"
                       startIcon={<LinkOffIcon sx={{ fontSize: 14 }} />}
-                      onClick={() => handleFreeOrphan(o.epc)}>
+                      onClick={() => setConfirmAction({
+                        title: 'Liberar tag',
+                        message: `Se liberará el tag ${o.epc}. Vas a poder volver a usarlo en cualquier producto.`,
+                        confirmLabel: 'Liberar',
+                        onConfirm: () => handleFreeOrphan(o.epc)
+                      })}>
                       Liberar
                     </Button>
                   }>
@@ -366,7 +385,12 @@ export default function Products() {
                                     </Typography>
                                     {role === 'admin' && (
                                       <Button size="small" variant="text" color="warning" sx={{ fontSize: 10, py: 0, minWidth: 0 }}
-                                        onClick={() => forceReleaseUnit(modalProduct.id, u.id, roleLabel)}>
+                                        onClick={() => setConfirmAction({
+                                          title: 'Liberar unidad',
+                                          message: `Se liberará ${unitLabel(u.id)} de "${modalProduct.name}" y pasará a Disponible. Usá esto solo si de verdad no está en ningún evento/arriendo activo.`,
+                                          confirmLabel: 'Liberar',
+                                          onConfirm: () => forceReleaseUnit(modalProduct.id, u.id, roleLabel)
+                                        })}>
                                         Liberar
                                       </Button>
                                     )}
@@ -394,14 +418,38 @@ export default function Products() {
           <Button onClick={() => setOpenModal(false)}>Cancelar</Button>
           {toUnlink.length > 0 && (
             <Button variant="outlined" color="error" startIcon={<LinkOffIcon />}
-              onClick={handleUnlinkSelected}>
+              onClick={() => setConfirmAction({
+                title: 'Desvincular seleccionados',
+                message: `Se desvincularán ${toUnlink.length} unidad${toUnlink.length > 1 ? 'es' : ''}. Los tags físicos conservan su EPC grabado y se pueden volver a vincular después.`,
+                confirmLabel: 'Desvincular',
+                onConfirm: handleUnlinkSelected
+              })}>
               Desvincular seleccionados ({toUnlink.length})
             </Button>
           )}
           <Button variant="contained" color="error" startIcon={<LinkOffIcon />}
-            onClick={handleUnlinkAll}
+            onClick={() => setConfirmAction({
+              title: 'Desvincular todos',
+              message: `Se desvincularán TODAS las unidades vinculadas de "${modalProduct?.name}" (${modalProduct ? getLinkedCount(modalProduct) : 0}). Los tags físicos conservan su EPC grabado y se pueden volver a vincular después.`,
+              confirmLabel: 'Desvincular todos',
+              onConfirm: handleUnlinkAll
+            })}
             disabled={!modalProduct || getLinkedCount(modalProduct) === 0}>
             Desvincular todos
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Confirmación genérica para las acciones irreversibles de esta página */}
+      <Dialog open={Boolean(confirmAction)} onClose={() => setConfirmAction(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>{confirmAction?.title}</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning">{confirmAction?.message}</Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmAction(null)}>Cancelar</Button>
+          <Button variant="contained" color="error" onClick={runConfirmedAction}>
+            {confirmAction?.confirmLabel || 'Confirmar'}
           </Button>
         </DialogActions>
       </Dialog>

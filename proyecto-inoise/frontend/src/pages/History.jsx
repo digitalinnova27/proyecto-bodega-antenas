@@ -2,7 +2,7 @@ import React from 'react'
 import { useLocation } from 'react-router-dom'
 import {
   Box, Typography, Paper, Table, TableHead, TableRow, TableCell, TableBody,
-  Tabs, Tab, Chip, IconButton, Collapse, TextField, InputAdornment, Stack
+  Tabs, Tab, Chip, IconButton, Collapse, TextField, InputAdornment, Stack, Tooltip
 } from '@mui/material'
 import EventIcon from '@mui/icons-material/Event'
 import HandshakeIcon from '@mui/icons-material/Handshake'
@@ -87,15 +87,25 @@ function EventRow({ h, autoExpand }) {
                 {(h.phasesApproved || []).length === 0 && (
                   <Typography variant="body2" color="text.secondary">Sin información de fases (datos incompletos de una versión anterior del sistema).</Typography>
                 )}
-                {(h.phasesApproved || []).map(p => (
-                  <Chip
-                    key={p.key}
-                    label={`${p.key.toUpperCase()} · ${p.label}${p.forced ? ' (forzada)' : ''}`}
-                    size="small"
-                    color={p.done ? (p.forced ? 'warning' : 'success') : 'default'}
-                    variant={p.done ? 'filled' : 'outlined'}
-                  />
-                ))}
+                {(h.phasesApproved || []).map(p => {
+                  const chip = (
+                    <Chip
+                      key={p.key}
+                      label={`${p.key.toUpperCase()} · ${p.label}${p.forced ? ' (forzada)' : ''}`}
+                      size="small"
+                      color={p.done ? (p.forced ? 'warning' : 'success') : 'default'}
+                      variant={p.done ? 'filled' : 'outlined'}
+                    />
+                  )
+                  // Si la fase fue forzada y se registró el motivo, mostrarlo
+                  // en un tooltip — antes ese motivo se escribía al forzar y
+                  // nunca llegaba a verse en ningún lado.
+                  return p.forced && p.forcedReason ? (
+                    <Tooltip key={p.key} title={`${p.forcedBy ? `Forzado por ${p.forcedBy}: ` : ''}${p.forcedReason}`}>
+                      {chip}
+                    </Tooltip>
+                  ) : chip
+                })}
               </Box>
 
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
@@ -257,15 +267,25 @@ function RentalRow({ h, autoExpand }) {
                 {(h.phasesApproved || []).length === 0 && (
                   <Typography variant="body2" color="text.secondary">Sin información de fases (arriendo cerrado antes de esta función, o cerrado en una versión anterior del sistema).</Typography>
                 )}
-                {(h.phasesApproved || []).map(p => (
-                  <Chip
-                    key={p.key}
-                    label={`${p.key.toUpperCase()} · ${p.label}${p.forced ? ' (forzada)' : ''}`}
-                    size="small"
-                    color={p.done ? (p.forced ? 'warning' : 'success') : 'default'}
-                    variant={p.done ? 'filled' : 'outlined'}
-                  />
-                ))}
+                {(h.phasesApproved || []).map(p => {
+                  const chip = (
+                    <Chip
+                      key={p.key}
+                      label={`${p.key.toUpperCase()} · ${p.label}${p.forced ? ' (forzada)' : ''}`}
+                      size="small"
+                      color={p.done ? (p.forced ? 'warning' : 'success') : 'default'}
+                      variant={p.done ? 'filled' : 'outlined'}
+                    />
+                  )
+                  // Si la fase fue forzada y se registró el motivo, mostrarlo
+                  // en un tooltip — antes ese motivo se escribía al forzar y
+                  // nunca llegaba a verse en ningún lado.
+                  return p.forced && p.forcedReason ? (
+                    <Tooltip key={p.key} title={`${p.forcedBy ? `Forzado por ${p.forcedBy}: ` : ''}${p.forcedReason}`}>
+                      {chip}
+                    </Tooltip>
+                  ) : chip
+                })}
               </Box>
 
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>

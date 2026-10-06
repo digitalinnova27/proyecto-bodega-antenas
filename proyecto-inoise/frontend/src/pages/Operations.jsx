@@ -327,7 +327,10 @@ export default function Operations() {
     const { eventId, phase } = forceTargetRef.current || {}
     const logEntry = {
       at: new Date().toISOString(),
-      user: 'Administrador',
+      // Antes esto guardaba el string fijo 'Administrador' — el registro de
+      // auditoría de la acción de mayor consecuencia de toda la app
+      // (forzar cierre) nunca dejaba constancia de QUIÉN lo hizo realmente.
+      user: roleLabel,
       phase: phase === 'all' ? 'Ciclo completo' : PHASES.find(p => p.key === phase)?.label,
       reason,
     }
@@ -762,6 +765,7 @@ export default function Operations() {
         target={forceTarget}
         onClose={stableCloseForce}
         onConfirm={handleForceClose}
+        responsibleLabel={roleLabel}
       />
       <ForceLogDialog
         open={openForceLog}
@@ -1426,9 +1430,15 @@ function RentalCard({ rental }) {
   /* ── Cerrar arriendo: mover de Operaciones a Historial de Rentas ── */
   const finalizeRental = () => {
     const phasesApproved = RENTAL_PHASES.map(ph => ({
-      key: ph.key, label: ph.label, done: phaseDone(ph.key), forced: !!forcedPhases[ph.key]
+      key: ph.key, label: ph.label, done: phaseDone(ph.key), forced: !!forcedPhases[ph.key],
+      // Antes el motivo del forzado se escribía y se descartaba — ahora
+      // viaja hasta el Historial junto con quién y cuándo (si la fase no
+      // fue forzada, forcedPhases[ph.key] es falsy y esto queda en null).
+      forcedReason: forcedPhases[ph.key]?.reason || null,
+      forcedBy: forcedPhases[ph.key]?.by || null,
+      forcedAt: forcedPhases[ph.key]?.at || null
     }))
-    const forcedClose = forcedPhases.f1 || forcedPhases.f4
+    const forcedClose = !!(forcedPhases.f1 || forcedPhases.f4)
     closeRentalToHistory(rental, totalItems, roleLabel, { forcedClose, phasesApproved })
     setOpenModal(false)
     setSnack({
@@ -1520,7 +1530,14 @@ function RentalCard({ rental }) {
         onClose={() => setOpenModal(false)}
         onFinalizeRental={finalizeRental}
         role={role}
-        onForcePhase={(ph) => setForcedPhases(prev => ({ ...prev, [ph]: true }))}
+        responsibleLabel={roleLabel}
+        // Antes acá se descartaba "reason": el admin escribía el motivo
+        // obligatorio en el diálogo de forzado y nunca quedaba guardado en
+        // ningún lado, ni siquiera en este estado local — ahora al menos
+        // se retiene junto con quién y cuándo forzó la fase.
+        onForcePhase={(ph, reason) => setForcedPhases(prev => ({
+          ...prev, [ph]: { reason, by: roleLabel, at: new Date().toISOString() }
+        }))}
       />
 
       <Snackbar
@@ -1545,7 +1562,7 @@ function RentalCard({ rental }) {
 }
 
 /* ─── RentalPhaseModal ────────────────────────────────────────────────────── */
-function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedItems, setScannedItems, onClose, onFinalizeRental, role, onForcePhase }) {
+function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedItems, setScannedItems, onClose, onFinalizeRental, role, onForcePhase, responsibleLabel }) {
   const { markUnitBackFromRental } = useInventory()
   const phaseObj = RENTAL_PHASES.find(p => p.key === phase)
   const [forceDialogOpen, setForceDialogOpen] = React.useState(false)
@@ -1737,6 +1754,7 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
         target={{ phase }}
         onClose={() => setForceDialogOpen(false)}
         onConfirm={handleForceConfirm}
+        responsibleLabel={responsibleLabel}
       />
     </Dialog>
   )
@@ -1981,7 +1999,7 @@ const OpModalExternal = React.memo(function OpModalExternal({
  * ForceDialogExternal — componente EXTERNO al padre para evitar lag en input
  * El estado local del textarea vive aquí, no sube al padre hasta confirmar.
  * ═══════════════════════════════════════════════════════════════════════════ */
-const ForceDialogExternal = React.memo(function ForceDialogExternal({ open, target, onClose, onConfirm }) {
+const ForceDialogExternal = React.memo(function ForceDialogExternal({ open, target, onClose, onConfirm, responsibleLabel }) {
   const [reason, setReason] = React.useState('')
 
   // Limpiar al cerrar
@@ -2021,7 +2039,7 @@ const ForceDialogExternal = React.memo(function ForceDialogExternal({ open, targ
             Fecha y hora: <strong>{new Date().toLocaleString('es-CL')}</strong>
           </Box>
           <Box sx={{ fontSize: 12, color: 'text.secondary' }}>
-            Responsable: <strong>Administrador</strong>
+            Responsable: <strong>{responsibleLabel || 'Administrador'}</strong>
           </Box>
         </Box>
       </DialogContent>

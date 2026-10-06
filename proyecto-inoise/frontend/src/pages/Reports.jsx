@@ -73,6 +73,12 @@ export default function Reports() {
     setGenerating(true)
     try {
       await generateMonthlyReportPDF(month, eventEntries, rentalEntries, cancelledEntries)
+    } catch (e) {
+      // Antes un error acá (ej. jsPDF interno) no mostraba nada — el botón
+      // se reactivaba solo y el usuario no se enteraba de que el PDF no se
+      // generó.
+      console.error('[Reports] Error al generar PDF:', e)
+      setSnack({ open: true, msg: 'No se pudo generar el PDF. Intentá de nuevo.', severity: 'error' })
     } finally {
       setGenerating(false)
     }

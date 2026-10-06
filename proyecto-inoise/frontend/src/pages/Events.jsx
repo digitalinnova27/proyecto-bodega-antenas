@@ -139,7 +139,12 @@ const AssignPanel = React.memo(function AssignPanel({
 })
 
 export default function Events() {
-  const { role } = useAuth()
+  const { role, currentUser: authUser } = useAuth()
+  // Antes cancelEvent/requestDeleteEvent recibían el string fijo
+  // 'Administrador'/'Operador' en vez de quién realmente hizo la acción —
+  // el Historial y la Auditoría quedaban sin poder decir QUIÉN canceló un
+  // evento. Mismo fix que ya se aplicó en Operations.jsx.
+  const roleLabel = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
   const {
     products, events, getAvailableQty, getAvailableQtyForEvent, getLinkedAvailableQty,
     createEvent, updateEvent, cancelEvent, requestDeleteEvent, cancelDeleteEvent
@@ -301,10 +306,10 @@ export default function Events() {
   }
   const handleDeleteConfirm = () => {
     if (deleteMode === 'request') {
-      requestDeleteEvent(eventToDelete.id, 'Operador', cancelReason.trim())
+      requestDeleteEvent(eventToDelete.id, roleLabel, cancelReason.trim())
       setSnack({ open: true, msg: 'Solicitud de cancelación enviada. Un administrador debe aprobarla.', severity: 'info' })
     } else {
-      cancelEvent(eventToDelete.id, cancelReason.trim(), 'Administrador')
+      cancelEvent(eventToDelete.id, cancelReason.trim(), roleLabel)
       setSnack({ open: true, msg: 'Evento cancelado. Inventario restaurado a disponible.', severity: 'warning' })
     }
     setOpenDeleteConfirm(false); setEventToDelete(null); setOpenDetail(false); setCancelReason('')
@@ -822,7 +827,10 @@ export default function Events() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenEdit(false)}>Cancelar</Button>
-          <Button variant="contained" onClick={handleSaveEdit}>Guardar cambios</Button>
+          {/* A diferencia del modal de creación, este botón no validaba nada
+              — se podía vaciar el nombre o la fecha y guardar igual, dejando
+              un evento con datos requeridos en blanco. */}
+          <Button variant="contained" onClick={handleSaveEdit} disabled={!form.name || !form.date}>Guardar cambios</Button>
         </DialogActions>
       </Dialog>
 
