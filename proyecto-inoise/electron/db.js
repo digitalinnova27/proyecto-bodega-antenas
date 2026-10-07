@@ -192,6 +192,54 @@ function runMigrations(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_incidents_event_phase ON op_state_incidents(event_id, phase_key);
 
+    /* ── Mismo progreso de fases, ahora también para arriendos ──────
+     * No se reutiliza op_states/op_state_* para rentals: esa tabla tiene
+     * "event_id INTEGER PRIMARY KEY REFERENCES events(id)", una foreign key
+     * real contra events — meter ahí un id de arriendo violaría esa
+     * relación (quedaría una fila "event_id" que no corresponde a ningún
+     * evento real, y el ON DELETE CASCADE nunca la limpiaría al borrar el
+     * arriendo). Se replica el mismo set de 4 tablas apuntando a rentals,
+     * igual que el resto del esquema ya separa event_assignments de
+     * rental_assignments en vez de una sola tabla genérica. */
+    CREATE TABLE IF NOT EXISTS rental_op_states (
+      rental_id   INTEGER PRIMARY KEY REFERENCES rentals(id) ON DELETE CASCADE,
+      total_items INTEGER NOT NULL DEFAULT 0,
+      active_phase TEXT,
+      scan_mode   TEXT,
+      forced_by_json TEXT,
+      force_log_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS rental_op_state_phases (
+      rental_id INTEGER NOT NULL REFERENCES rental_op_states(rental_id) ON DELETE CASCADE,
+      phase_key TEXT NOT NULL,
+      done      INTEGER NOT NULL DEFAULT 0,
+      forced_close INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (rental_id, phase_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS rental_op_state_scanned_units (
+      rental_id   INTEGER NOT NULL,
+      phase_key   TEXT NOT NULL,
+      unit_id     TEXT NOT NULL,
+      scanned_at  TEXT,
+      PRIMARY KEY (rental_id, phase_key, unit_id),
+      FOREIGN KEY (rental_id, phase_key) REFERENCES rental_op_state_phases(rental_id, phase_key) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS rental_op_state_incidents (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      rental_id   INTEGER NOT NULL,
+      phase_key   TEXT NOT NULL,
+      unit_id     TEXT,
+      name        TEXT,
+      rfid        TEXT,
+      state       TEXT,
+      reason      TEXT,
+      reported_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_rental_incidents_rental_phase ON rental_op_state_incidents(rental_id, phase_key);
+
     /* ── Vínculos RFID ↔ unidad ───────────────────────────────────── */
     CREATE TABLE IF NOT EXISTS epc_map (
       epc     TEXT PRIMARY KEY,
@@ -603,6 +651,47 @@ function loadRentals() {
  * } } */
 const PHASE_KEYS = ['f1', 'f2', 'f3', 'f4']
 
+// Guarda el set de tablas de UNA entidad (event_id o rental_id según los
+// nombres de tabla que se le pasen) — misma lógica para events y rentals,
+// solo cambia a qué tablas escribe.
+function _saveOpStatesInto(db, idColumn, tables, idToOp) {
+    const insState = db.prepare(`INSERT INTO ${tables.states} (${idColumn}, total_items, active_phase, scan_mode, forced_by_json, force_log_json)
+                                  VALUES (?, ?, ?, ?, ?, ?)`)
+    const insPhase = db.prepare(`INSERT INTO ${tables.phases} (${idColumn}, phase_key, done, forced_close) VALUES (?, ?, ?, ?)`)
+    const insScanned = db.prepare(`INSERT INTO ${tables.scanned} (${idColumn}, phase_key, unit_id, scanned_at) VALUES (?, ?, ?, ?)`)
+    const insIncident = db.prepare(`INSERT INTO ${tables.incidents} (${idColumn}, phase_key, unit_id, name, rfid, state, reason, reported_at)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    for (const [id, op] of idToOp) {
+        insState.run(
+            id,
+            op.totalItems || 0,
+            op.activePhase ?? null,
+            op.scanMode ?? null,
+            op.forcedBy ? JSON.stringify(op.forcedBy) : null,
+            op.forceLog ? JSON.stringify(op.forceLog) : null
+        )
+        for (const phaseKey of PHASE_KEYS) {
+            const phase = (op.phases || {})[phaseKey]
+            if (!phase) continue
+            insPhase.run(id, phaseKey, phase.done ? 1 : 0, phase.forcedClose ? 1 : 0)
+            for (const s of phase.scanned || []) {
+                insScanned.run(id, phaseKey, s.id, s.scannedAt ?? null)
+            }
+            for (const inc of phase.incidents || []) {
+                insIncident.run(id, phaseKey, inc.id ?? null, inc.name ?? null, inc.rfid ?? null, inc.state ?? null, inc.reason ?? null, inc.reportedAt ?? null)
+            }
+        }
+    }
+}
+
+const EVENT_OP_TABLES = { states: 'op_states', phases: 'op_state_phases', scanned: 'op_state_scanned_units', incidents: 'op_state_incidents' }
+const RENTAL_OP_TABLES = { states: 'rental_op_states', phases: 'rental_op_state_phases', scanned: 'rental_op_state_scanned_units', incidents: 'rental_op_state_incidents' }
+
+/* opStates llega desde React como UN SOLO mapa { [id]: op }, mezclando
+ * eventos y arriendos (comparten el mismo espacio de ids porque ambos se
+ * crean con Date.now()). Acá se reparte cada entrada a su tabla real según
+ * a cuál de las dos tablas (events/rentals) pertenezca ese id — así el
+ * frontend no necesita saber nada de esta separación. */
 function saveOpStates(opStates) {
     const db = getDb()
     const run = db.transaction((map) => {
@@ -610,73 +699,56 @@ function saveOpStates(opStates) {
         db.prepare('DELETE FROM op_state_scanned_units').run()
         db.prepare('DELETE FROM op_state_phases').run()
         db.prepare('DELETE FROM op_states').run()
+        db.prepare('DELETE FROM rental_op_state_incidents').run()
+        db.prepare('DELETE FROM rental_op_state_scanned_units').run()
+        db.prepare('DELETE FROM rental_op_state_phases').run()
+        db.prepare('DELETE FROM rental_op_states').run()
 
-        const insState = db.prepare(`INSERT INTO op_states (event_id, total_items, active_phase, scan_mode, forced_by_json, force_log_json)
-                                      VALUES (?, ?, ?, ?, ?, ?)`)
-        const insPhase = db.prepare(`INSERT INTO op_state_phases (event_id, phase_key, done, forced_close) VALUES (?, ?, ?, ?)`)
-        const insScanned = db.prepare(`INSERT INTO op_state_scanned_units (event_id, phase_key, unit_id, scanned_at) VALUES (?, ?, ?, ?)`)
-        const insIncident = db.prepare(`INSERT INTO op_state_incidents (event_id, phase_key, unit_id, name, rfid, state, reason, reported_at)
-                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        const eventIds = new Set(db.prepare('SELECT id FROM events').all().map(r => r.id))
+        const rentalIds = new Set(db.prepare('SELECT id FROM rentals').all().map(r => r.id))
 
-        for (const eventIdStr of Object.keys(map || {})) {
-            const eventId = Number(eventIdStr)
-            const op = map[eventIdStr]
+        const eventEntries = []
+        const rentalEntries = []
+        for (const idStr of Object.keys(map || {})) {
+            const id = Number(idStr)
+            const op = map[idStr]
             if (!op) continue
-            insState.run(
-                eventId,
-                op.totalItems || 0,
-                op.activePhase ?? null,
-                op.scanMode ?? null,
-                op.forcedBy ? JSON.stringify(op.forcedBy) : null,
-                op.forceLog ? JSON.stringify(op.forceLog) : null
-            )
-            for (const phaseKey of PHASE_KEYS) {
-                const phase = (op.phases || {})[phaseKey]
-                if (!phase) continue
-                insPhase.run(eventId, phaseKey, phase.done ? 1 : 0, phase.forcedClose ? 1 : 0)
-                for (const s of phase.scanned || []) {
-                    insScanned.run(eventId, phaseKey, s.id, s.scannedAt ?? null)
-                }
-                for (const inc of phase.incidents || []) {
-                    insIncident.run(eventId, phaseKey, inc.id ?? null, inc.name ?? null, inc.rfid ?? null, inc.state ?? null, inc.reason ?? null, inc.reportedAt ?? null)
-                }
-            }
+            if (eventIds.has(id)) eventEntries.push([id, op])
+            else if (rentalIds.has(id)) rentalEntries.push([id, op])
+            // Si el id no corresponde a ningún evento ni arriendo vivo
+            // (ej. se borró mientras tanto), se descarta en silencio —
+            // igual que antes se descartaba cualquier id "huérfano".
         }
+        _saveOpStatesInto(db, 'event_id', EVENT_OP_TABLES, eventEntries)
+        _saveOpStatesInto(db, 'rental_id', RENTAL_OP_TABLES, rentalEntries)
     })
     withForeignKeysOff(db, () => run(opStates))
 }
 
-function loadOpStates() {
-    const db = getDb()
-    const states = db.prepare('SELECT * FROM op_states').all()
-    const phases = db.prepare('SELECT * FROM op_state_phases').all()
-    const scanned = db.prepare('SELECT * FROM op_state_scanned_units').all()
-    const incidents = db.prepare('SELECT * FROM op_state_incidents').all()
-    // Para reconstituir name/rfid/sku/productId de cada unidad escaneada
-    // (la tabla de scanned_units solo guarda el unit_id).
-    const units = db.prepare('SELECT * FROM units').all()
-    const products = db.prepare('SELECT * FROM products').all()
-    const unitInfo = (unitId) => {
-        const u = units.find(x => x.id === unitId)
-        if (!u) return { rfid: null, name: null, sku: null, productId: null }
-        const p = products.find(x => x.id === u.product_id)
-        return { rfid: u.rfid, name: p?.name ?? null, sku: p?.sku ?? null, productId: u.product_id }
-    }
+// Para reconstituir name/rfid/sku/productId de cada unidad escaneada
+// (la tabla de scanned_units solo guarda el unit_id) — comparte unitInfo
+// entre events y rentals porque "units" es la misma tabla física para ambos.
+function _loadOpStatesFrom(db, idColumn, tables, unitInfo) {
+    const states = db.prepare(`SELECT * FROM ${tables.states}`).all()
+    const phases = db.prepare(`SELECT * FROM ${tables.phases}`).all()
+    const scanned = db.prepare(`SELECT * FROM ${tables.scanned}`).all()
+    const incidents = db.prepare(`SELECT * FROM ${tables.incidents}`).all()
 
     const result = {}
     for (const st of states) {
-        const eventPhases = phases.filter(p => p.event_id === st.event_id)
+        const id = st[idColumn]
+        const entityPhases = phases.filter(p => p[idColumn] === id)
         const phasesObj = {}
         for (const phaseKey of PHASE_KEYS) {
-            const ph = eventPhases.find(p => p.phase_key === phaseKey)
+            const ph = entityPhases.find(p => p.phase_key === phaseKey)
             phasesObj[phaseKey] = {
                 done: !!ph?.done,
                 forcedClose: !!ph?.forced_close,
                 scanned: scanned
-                    .filter(s => s.event_id === st.event_id && s.phase_key === phaseKey)
+                    .filter(s => s[idColumn] === id && s.phase_key === phaseKey)
                     .map(s => ({ id: s.unit_id, scannedAt: s.scanned_at, ...unitInfo(s.unit_id) })),
                 incidents: incidents
-                    .filter(i => i.event_id === st.event_id && i.phase_key === phaseKey)
+                    .filter(i => i[idColumn] === id && i.phase_key === phaseKey)
                     .map(i => ({
                         id: i.unit_id, name: i.name, rfid: i.rfid, state: i.state,
                         reason: i.reason, reportedAt: i.reported_at,
@@ -684,7 +756,7 @@ function loadOpStates() {
                     }))
             }
         }
-        result[st.event_id] = {
+        result[id] = {
             totalItems: st.total_items,
             activePhase: st.active_phase,
             scanMode: st.scan_mode,
@@ -694,6 +766,22 @@ function loadOpStates() {
         }
     }
     return result
+}
+
+function loadOpStates() {
+    const db = getDb()
+    const units = db.prepare('SELECT * FROM units').all()
+    const products = db.prepare('SELECT * FROM products').all()
+    const unitInfo = (unitId) => {
+        const u = units.find(x => x.id === unitId)
+        if (!u) return { rfid: null, name: null, sku: null, productId: null }
+        const p = products.find(x => x.id === u.product_id)
+        return { rfid: u.rfid, name: p?.name ?? null, sku: p?.sku ?? null, productId: u.product_id }
+    }
+    return {
+        ..._loadOpStatesFrom(db, 'event_id', EVENT_OP_TABLES, unitInfo),
+        ..._loadOpStatesFrom(db, 'rental_id', RENTAL_OP_TABLES, unitInfo)
+    }
 }
 
 /* ── Vínculos RFID ↔ unidad (epcMap) ── */

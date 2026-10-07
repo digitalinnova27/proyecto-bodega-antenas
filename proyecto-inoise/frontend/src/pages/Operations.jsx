@@ -185,7 +185,11 @@ export default function Operations() {
 
   const updateOp = (eventId, updater) => {
     setOpStates(prev => {
-      const ev = events.find(e => e.id === eventId)
+      // También busca en rentals: registerIncident (más abajo) es genérico
+      // y se reusa tal cual para incidencias de arriendos — sin este
+      // fallback, un arriendo cuyo opState todavía no existiera arrancaría
+      // con totalItems=0 al reportar la primera incidencia.
+      const ev = events.find(e => e.id === eventId) || rentals.find(r => r.id === eventId)
       const current = prev[eventId] || initOpState((ev?.assignments || []).reduce((s, a) => s + a.qty, 0))
       return { ...prev, [eventId]: updater(current) }
     })
@@ -720,9 +724,8 @@ export default function Operations() {
               getName={r => r.name}
               getDate={r => r.date}
               getStatus={r => r.status}
-              hasIncidents={() => false}
-              hideIncidentChip
-              renderCard={r => <RentalCard rental={r} />}
+              hasIncidents={r => ((opStates[r.id]?.lostItems) || []).length > 0}
+              renderCard={r => <RentalCard rental={r} onIncidentOpen={(item) => { setIncidentItem(item); setOpenIncident(true) }} />}
               emptyLabel="No hay arriendos registrados."
               accentColor="#EF9F27"
             />
@@ -735,7 +738,7 @@ export default function Operations() {
                 </Typography>
               </Paper>
             ) : (
-              (rentalFilter === 'upcoming' ? upcomingRentals : activeRentals).map(r => <RentalCard key={r.id} rental={r} />)
+              (rentalFilter === 'upcoming' ? upcomingRentals : activeRentals).map(r => <RentalCard key={r.id} rental={r} onIncidentOpen={(item) => { setIncidentItem(item); setOpenIncident(true) }} />)
             )
           )}
         </Box>
@@ -1388,57 +1391,61 @@ function CloseOperationModal({ open, kind, summary, onDismiss, onSave }) {
 }
 
 /* ─── RentalCard ──────────────────────────────────────────────────────────── */
-function RentalCard({ rental }) {
+function RentalCard({ rental, onIncidentOpen }) {
   const navigate = useNavigate()
-  const { products, closeRentalToHistory } = useInventory()
+  const { products, closeRentalToHistory, opStates, setOpStates } = useInventory()
   const { role, currentUser: authUser } = useAuth()
   const roleLabel = authUser ? `${authUser.nombre} ${authUser.apellido}` : (role === 'admin' ? 'Administrador' : 'Operador')
   const [openModal, setOpenModal] = React.useState(false)
   const [phase, setPhase] = React.useState(null)
   const [snack, setSnack] = React.useState({ open: false, msg: '', severity: 'success', action: null })
-  // scannedItems guarda los IDs de unidad ya escaneados por fase (no solo un contador)
-  // para poder hacer matching real contra el tag leído por la antena.
-  const [scannedItems, setScannedItems] = React.useState({ f1: [], f4: [] })
-  // activePhase: misma idea de "gating" que en eventos — hay que pulsar
-  // "Iniciar" antes de poder escanear esa fase, en vez de saltar directo
-  // a los botones de fase.
-  const [activePhase, setActivePhase] = React.useState(null)
-  // Qué fases se cerraron forzadas por un admin (sin escaneo real al 100%),
-  // para dejarlo como información en Historial y Reportes — igual que ya
-  // existía para eventos, pero antes los arriendos no tenían esta opción.
-  const [forcedPhases, setForcedPhases] = React.useState({ f1: false, f4: false })
 
   const totalItems = (rental.assignments || []).reduce((s, a) => s + a.qty, 0)
+  // El progreso de escaneo vive en opStates (InventoryContext), compartido
+  // con Eventos, igual id que rental.id — antes vivía en useState local acá
+  // mismo y se perdía cada vez que este componente se desmontaba (por
+  // ejemplo al cambiar de pestaña En curso/Próximos/Todos en Operaciones).
+  const op = opStates[rental.id] || initOpState(totalItems)
+  const lostCount = (op.lostItems || []).length
+
+  const updateOp = (updater) => {
+    setOpStates(prev => {
+      const current = prev[rental.id] || initOpState(totalItems)
+      return { ...prev, [rental.id]: updater(current) }
+    })
+  }
+
   const progress = rental.status === 'Concluido'
     ? { f1: 100, f4: 100 }
     : {
-      f1: totalItems ? Math.min(Math.round((scannedItems.f1.length / totalItems) * 100), 100) : 0,
-      f4: totalItems ? Math.min(Math.round((scannedItems.f4.length / totalItems) * 100), 100) : 0,
+      f1: totalItems ? Math.min(Math.round(((op.phases.f1.scanned.length + lostCount) / totalItems) * 100), 100) : 0,
+      f4: totalItems ? Math.min(Math.round(((op.phases.f4.scanned.length + lostCount) / totalItems) * 100), 100) : 0,
     }
-  const phaseDone = (key) => totalItems > 0 && scannedItems[key].length >= totalItems
-  // rental.status === 'Concluido' cubre el caso de un arriendo ya cerrado en
-  // una sesión anterior: su progreso de escaneo (scannedItems) vive solo en
-  // este componente y no se persiste, así que al volver a montarse (por
-  // ejemplo al cambiar de pestaña En curso/Próximos/Todos) partiría de
-  // cero — sin este chequeo, un arriendo ya archivado en el Historial
-  // volvería a mostrar el botón "Iniciar" como si nada se hubiera hecho.
+  const phaseDone = (key) => op.phases[key]?.done
   const isDone = rental.status === 'Concluido' || (phaseDone('f1') && phaseDone('f4'))
   const nextPhase = RENTAL_PHASES.find(ph => !phaseDone(ph.key))?.key
 
-  const openPhase = (ph) => { setPhase(ph); setOpenModal(true) }
+  const openPhase = (ph) => {
+    if (op.activePhase !== ph) updateOp(o => ({ ...o, activePhase: ph, scanMode: 'auto' }))
+    setPhase(ph); setOpenModal(true)
+  }
 
   /* ── Cerrar arriendo: mover de Operaciones a Historial de Rentas ── */
   const finalizeRental = () => {
-    const phasesApproved = RENTAL_PHASES.map(ph => ({
-      key: ph.key, label: ph.label, done: phaseDone(ph.key), forced: !!forcedPhases[ph.key],
-      // Antes el motivo del forzado se escribía y se descartaba — ahora
-      // viaja hasta el Historial junto con quién y cuándo (si la fase no
-      // fue forzada, forcedPhases[ph.key] es falsy y esto queda en null).
-      forcedReason: forcedPhases[ph.key]?.reason || null,
-      forcedBy: forcedPhases[ph.key]?.by || null,
-      forcedAt: forcedPhases[ph.key]?.at || null
-    }))
-    const forcedClose = !!(forcedPhases.f1 || forcedPhases.f4)
+    const phasesApproved = RENTAL_PHASES.map(ph => {
+      const phState = op.phases[ph.key]
+      // El motivo de un forzado vive en op.forceLog (array compartido con
+      // el mismo mecanismo que ya usan los eventos) — se busca la última
+      // entrada para esta fase.
+      const forceEntry = [...(op.forceLog || [])].reverse().find(l => l.phase === ph.label)
+      return {
+        key: ph.key, label: ph.label, done: !!phState?.done, forced: !!phState?.forcedClose,
+        forcedReason: forceEntry?.reason || null,
+        forcedBy: forceEntry?.user || null,
+        forcedAt: forceEntry?.at || null
+      }
+    })
+    const forcedClose = !!(op.phases.f1?.forcedClose || op.phases.f4?.forcedClose)
     closeRentalToHistory(rental, totalItems, roleLabel, { forcedClose, phasesApproved })
     setOpenModal(false)
     setSnack({
@@ -1472,14 +1479,11 @@ function RentalCard({ rental }) {
           <Button
             size="small"
             variant="contained"
-            startIcon={activePhase === nextPhase ? <QrCodeScannerIcon /> : <PlayArrowIcon />}
-            onClick={() => {
-              if (activePhase !== nextPhase) setActivePhase(nextPhase)
-              openPhase(nextPhase)
-            }}
+            startIcon={op.activePhase === nextPhase ? <QrCodeScannerIcon /> : <PlayArrowIcon />}
+            onClick={() => openPhase(nextPhase)}
             sx={{ fontSize: 12, bgcolor: '#EF9F27', color: '#000', '&:hover': { bgcolor: '#d98a1f' } }}
           >
-            {activePhase === nextPhase ? 'En curso' : 'Iniciar'}
+            {op.activePhase === nextPhase ? 'En curso' : 'Iniciar'}
           </Button>
         )}
       </Box>
@@ -1488,7 +1492,7 @@ function RentalCard({ rental }) {
       <Box sx={{ display: 'flex', borderRadius: 1, overflow: 'hidden', border: '1px solid', borderColor: 'divider', mb: 1.5 }}>
         {RENTAL_PHASES.map((ph, i) => {
           const done = phaseDone(ph.key) || isDone
-          const isActive = activePhase === ph.key
+          const isActive = op.activePhase === ph.key
           const bg = done ? ph.bgColor : isActive ? ph.bgColor + 'aa' : 'transparent'
           return (
             <Box key={ph.key} sx={{
@@ -1526,18 +1530,12 @@ function RentalCard({ rental }) {
       <RentalPhaseModal
         open={openModal} phase={phase} rental={rental}
         products={products} totalItems={totalItems}
-        scannedItems={scannedItems} setScannedItems={setScannedItems}
+        op={op} onUpdateOp={updateOp}
         onClose={() => setOpenModal(false)}
         onFinalizeRental={finalizeRental}
         role={role}
         responsibleLabel={roleLabel}
-        // Antes acá se descartaba "reason": el admin escribía el motivo
-        // obligatorio en el diálogo de forzado y nunca quedaba guardado en
-        // ningún lado, ni siquiera en este estado local — ahora al menos
-        // se retiene junto con quién y cuándo forzó la fase.
-        onForcePhase={(ph, reason) => setForcedPhases(prev => ({
-          ...prev, [ph]: { reason, by: roleLabel, at: new Date().toISOString() }
-        }))}
+        onIncidentOpen={onIncidentOpen}
       />
 
       <Snackbar
@@ -1562,10 +1560,11 @@ function RentalCard({ rental }) {
 }
 
 /* ─── RentalPhaseModal ────────────────────────────────────────────────────── */
-function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedItems, setScannedItems, onClose, onFinalizeRental, role, onForcePhase, responsibleLabel }) {
+function RentalPhaseModal({ open, phase, rental, products, totalItems, op, onUpdateOp, onClose, onFinalizeRental, role, responsibleLabel, onIncidentOpen }) {
   const { markUnitBackFromRental } = useInventory()
   const phaseObj = RENTAL_PHASES.find(p => p.key === phase)
   const [forceDialogOpen, setForceDialogOpen] = React.useState(false)
+  const phState = phase ? op.phases[phase] : null
 
   // Cupos preasignados al crear el arriendo (por producto, no por tag físico
   // todavía) — es el pool del que F1 elige qué unidad concreta sale.
@@ -1592,16 +1591,18 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
   // de Disponible a Rental al crear el arriendo) — se necesita en F4 para
   // poder liberar ESA, ya que el tag real (id) puede ser un gemelo que
   // nunca quedó marcado en estado Rental.
-  const f1RealItems = (scannedItems.f1 || []).map(s => ({
+  const f1RealItems = (op.phases.f1.scanned || []).map(s => ({
     id: s.realId || s.id, slotId: s.id, rfid: s.realRfid || s.rfid, name: s.name, sku: s.sku, productId: s.productId,
   }))
   const items = phase === 'f1' ? preassignedItems : f1RealItems
 
-  const scannedList = (phase && scannedItems?.[phase]) || []
-  const scannedIds = scannedList.map(s => s.id)
+  const scannedIds = (phState?.scanned || []).map(s => s.id)
   const scannedCount = scannedIds.length
-  const pct = totalItems > 0 ? Math.min(Math.round((scannedCount / totalItems) * 100), 100) : 0
-  const pendingItems = items.filter(it => !scannedIds.includes(it.id))
+  // lostItems vive a nivel de ARRIENDO (igual que en eventos), así un
+  // artículo perdido en F1 queda excluido de "pendiente" también en F4.
+  const incidentIds = (op.lostItems || []).map(i => i.id)
+  const pct = totalItems > 0 ? Math.min(Math.round(((scannedCount + incidentIds.length) / totalItems) * 100), 100) : 0
+  const pendingItems = items.filter(it => !scannedIds.includes(it.id) && !incidentIds.includes(it.id))
 
   // ── Modal "Elementos pasados": aparece una vez al llegar a 100% ──
   const [showTicket, setShowTicket] = React.useState(false)
@@ -1622,12 +1623,21 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
     if (phase === 'f4') setShowCloseModal(true)
   }
 
-  /* ── Marca un artículo como escaneado en esta fase y actualiza inventario ── */
+  /* ── Marca un artículo como escaneado en esta fase y actualiza inventario ──
+   * Ahora persiste en opStates (InventoryContext) en vez de un useState
+   * local — antes el progreso se perdía al desmontar este componente
+   * (cambiar de pestaña En curso/Próximos/Todos a mitad de un escaneo). */
   const markScanned = (item) => {
-    setScannedItems(prev => {
-      const list = prev[phase] || []
-      if (list.some(s => s.id === item.id)) return prev
-      return { ...prev, [phase]: [...list, item] }
+    onUpdateOp(o => {
+      const ph = o.phases[phase]
+      if (ph.scanned.find(s => s.id === item.id)) return o
+      const newScanned = [...ph.scanned, { ...item, scannedAt: new Date().toISOString() }]
+      const done = newScanned.length + (o.lostItems || []).length >= totalItems
+      return {
+        ...o,
+        activePhase: (done && !ph.done) ? null : o.activePhase,
+        phases: { ...o.phases, [phase]: { ...ph, scanned: newScanned, done } }
+      }
     })
     // F1 "Salida de bodega": la unidad ya pasó a Rental al crear el arriendo.
     // F4 "Entrada a bodega": vuelve de Rental a Disponible — se libera el
@@ -1636,11 +1646,19 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
     if (phase === 'f4') markUnitBackFromRental(item.slotId || item.id)
   }
 
-  /* ── Forzar fase (admin): marca todo lo pendiente como escaneado y deja
-   * registro de que fue forzado, sin exigir el escaneo real de cada tag. ── */
+  /* ── Forzar fase (admin): deja la fase marcada como cerrada/forzada SIN
+   * marcar los pendientes como escaneados — igual que en eventos, para
+   * que el artículo que quedó sin pasar se pueda reportar con "Incidencia"
+   * después (antes esto marcaba todo como escaneado, sin dejar rastro de
+   * qué fue real y qué no, y sin poder reportar nada). */
   const handleForceConfirm = (reason) => {
-    pendingItems.forEach(item => markScanned(item))
-    onForcePhase(phase, reason)
+    const logEntry = { at: new Date().toISOString(), user: responsibleLabel, phase: phaseObj.label, reason }
+    onUpdateOp(o => ({
+      ...o,
+      activePhase: null,
+      forceLog: [...(o.forceLog || []), logEntry],
+      phases: { ...o.phases, [phase]: { ...o.phases[phase], done: true, forcedClose: true } }
+    }))
     setForceDialogOpen(false)
   }
 
@@ -1648,7 +1666,7 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
   const { isConnected, scanAlert, setScanAlert } = useRfidScanMatcher({
     open,
     allItems: items,
-    isAlreadyHandled: (item) => scannedIds.includes(item.id),
+    isAlreadyHandled: (item) => scannedIds.includes(item.id) || incidentIds.includes(item.id),
     onValidScan: markScanned,
     notBelongMsg: phase === 'f1'
       ? 'Este tag no pertenece a este arriendo'
@@ -1677,12 +1695,23 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
         <ScanAlertBanner alert={scanAlert} onClose={() => setScanAlert(null)} />
         <Box sx={{ mb: 2 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-            <Typography variant="body2" color="text.secondary">{scannedCount} de {totalItems} artículos escaneados</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {scannedCount} de {totalItems} artículos escaneados
+              {incidentIds.length > 0 && ` · ${incidentIds.length} con incidencia`}
+            </Typography>
             <Typography variant="body2" fontWeight={600} sx={{ color: phaseObj.color }}>{pct}%</Typography>
           </Box>
           <LinearProgress variant="determinate" value={pct}
             sx={{ height: 12, borderRadius: 6, '& .MuiLinearProgress-bar': { bgcolor: phaseObj.color } }} />
         </Box>
+        {(op.lostItems || []).length > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Typography variant="caption" fontWeight={600}>Artículos con incidencia:</Typography>
+            {(op.lostItems || []).map((inc, i) => (
+              <Box key={i} sx={{ fontSize: 12 }}>• {inc.name} ({inc.rfid}) → <strong>{inc.state}</strong>: {inc.reason}</Box>
+            ))}
+          </Alert>
+        )}
         <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
           <Typography variant="caption" color="text.secondary">
             Pasa cada tag por la antena o el lector — se registra solo. Si ninguno está disponible, puedes marcar manualmente cada artículo abajo.
@@ -1701,28 +1730,41 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
           <List dense disablePadding>
             {items.map((item) => {
               const scanned = scannedIds.includes(item.id)
+              const incident = (op.lostItems || []).find(i => i.id === item.id)
               return (
                 <ListItem key={item.id}
-                  secondaryAction={!scanned && (
-                    <Button size="small" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
-                      onClick={() => markScanned(item)}>
-                      Marcar
-                    </Button>
+                  secondaryAction={!scanned && !incident && (
+                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      <Button size="small" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
+                        onClick={() => markScanned(item)}>
+                        Marcar
+                      </Button>
+                      {/* Igual que en eventos: queda visible aunque la fase ya
+                          esté forzada/cerrada, para poder reportar el motivo
+                          del artículo que no volvió/salió. */}
+                      <Button size="small" color="warning" variant="outlined" sx={{ fontSize: 10, py: 0.2 }}
+                        onClick={() => onIncidentOpen({ ...item, eventId: rental.id, phaseKey: phase })}>
+                        Incidencia
+                      </Button>
+                    </Box>
                   )}
                   sx={{
                     py: 0.5, px: 1, mb: 0.3, borderRadius: 1,
-                    bgcolor: scanned ? 'rgba(239,159,39,0.08)' : 'background.paper',
-                    border: '1px solid', borderColor: scanned ? '#EF9F27' : 'divider'
+                    bgcolor: scanned ? 'rgba(239,159,39,0.08)' : incident ? 'rgba(186,117,23,0.1)' : 'background.paper',
+                    border: '1px solid', borderColor: scanned ? '#EF9F27' : incident ? '#BA7517' : 'divider'
                   }}>
                   <ListItemIcon sx={{ minWidth: 28 }}>
                     {scanned
                       ? <CheckCircleIcon sx={{ fontSize: 16, color: '#EF9F27' }} />
-                      : <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
+                      : incident ? <WarningAmberIcon sx={{ fontSize: 16, color: '#BA7517' }} />
+                        : <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
                     }
                   </ListItemIcon>
                   <ListItemText
                     primary={<Typography variant="caption" fontWeight={scanned ? 600 : 400}>{item.name}</Typography>}
-                    secondary={<Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: 10 }}>{item.sku}</Typography>}
+                    secondary={<Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: 10 }}>
+                      {item.sku}{incident && ` · ${incident.state}: ${incident.reason}`}
+                    </Typography>}
                   />
                 </ListItem>
               )
@@ -1739,13 +1781,13 @@ function RentalPhaseModal({ open, phase, rental, products, totalItems, scannedIt
         onClose={closeTicket}
         title="Elementos pasados"
         subtitle={`${rental.name} — ${phaseObj.label}`}
-        items={(scannedItems[phase] || []).map(s => ({ sku: s.sku, name: s.name, tag: s.realRfid || s.rfid }))}
+        items={(phState?.scanned || []).map(s => ({ sku: s.sku, name: s.name, tag: s.realRfid || s.rfid }))}
         color={phaseObj.color}
       />
       <CloseOperationModal
         open={showCloseModal}
         kind="rental"
-        summary={{ orderNumber: rental.orderNumber, name: rental.name, totalItems }}
+        summary={{ orderNumber: rental.orderNumber, name: rental.name, totalItems, incidentsCount: (op.lostItems || []).length }}
         onDismiss={() => setShowCloseModal(false)}
         onSave={() => { setShowCloseModal(false); onFinalizeRental() }}
       />

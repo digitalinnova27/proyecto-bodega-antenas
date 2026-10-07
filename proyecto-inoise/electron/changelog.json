@@ -1,4 +1,9 @@
 {
+  "1.2.9": [
+    "Rental: el progreso de escaneo (F1/F4) ya no se pierde al cambiar de pestaña en Operaciones — ahora se guarda igual que en Eventos",
+    "Rental: nuevo botón 'Incidencia' en cada artículo durante el escaneo, para reportar un equipo perdido o en mantenimiento (antes solo existía para Eventos)",
+    "Rental: 'Forzar fase' ahora deja el artículo pendiente visible para poder reportar la incidencia después, en vez de marcarlo como escaneado sin dejar rastro"
+  ],
   "1.2.8": [
     "Rental: ahora se puede editar un arriendo ya creado (antes solo se podía anular y crear uno nuevo)",
     "Rental: anular ahora pide motivo obligatorio, y el operador puede solicitar la cancelación para que un administrador la apruebe o la rechace — mismo flujo que ya tenían los Eventos",
