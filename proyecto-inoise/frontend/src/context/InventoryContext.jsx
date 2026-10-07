@@ -490,6 +490,7 @@ export function InventoryProvider({ children }) {
       endDate: formData.endDate || '',
       clientName: formData.clientName || '',
       staffName: formData.staffName || '',
+      staffIds: formData.staffIds || [],
       notes: formData.notes || '',
       status: 'Programado',
       assignments: enrichedAssignments,
@@ -514,6 +515,82 @@ export function InventoryProvider({ children }) {
       )
     })))
     addAuditEntry('Arriendo eliminado', `${rental?.orderNumber} · ${rental?.name}`, 'arriendo')
+  }
+
+  /* ── Actualizar arriendo ──
+   * Mismo patrón que updateEvent: libera las unidades que tenía antes y
+   * vuelve a elegir sobre el inventario ya liberado. Antes esta función no
+   * existía — Rental.jsx no tenía ninguna forma de editar un arriendo
+   * creado, solo borrar y crear uno nuevo. */
+  const updateRental = (rentalId, formData, assignments) => {
+    const oldRental = rentals.find(r => r.id === rentalId)
+    const oldUnitIds = (oldRental?.assignments || []).flatMap(a => a.unitIds || [])
+    const cleanAssignments = assignments.filter(a => a.qty > 0)
+
+    const released = applyUnitStates(
+      products.map(p => ({ ...p, units: p.units.map(u => ({ ...u })) })),
+      oldUnitIds.filter(id => {
+        const unit = products.flatMap(p => p.units).find(u => u.id === id)
+        return unit && unit.state === 'Rental'
+      }),
+      'Disponible'
+    )
+
+    const enrichedAssignments = cleanAssignments.map(a => ({
+      ...a,
+      unitIds: pickAvailableUnitIds(released, a.productId, a.qty)
+    }))
+    const allPickedIds = enrichedAssignments.flatMap(a => a.unitIds)
+    const finalProducts = applyUnitStates(released, allPickedIds, 'Rental')
+
+    setProducts(finalProducts)
+    setRentals(prev => prev.map(r =>
+      r.id === rentalId ? { ...r, ...formData, assignments: enrichedAssignments } : r
+    ))
+    addAuditEntry('Arriendo modificado', `${oldRental?.orderNumber} · ${formData.name || oldRental?.name}`, 'arriendo')
+  }
+
+  /* ── Flujo de aprobación de eliminación + cancelación con motivo ──
+   * Mismo patrón que requestDeleteEvent/cancelDeleteEvent/cancelEvent —
+   * antes los arriendos solo tenían deleteRental (borra sin dejar rastro,
+   * sin motivo, sin que un operador pudiera pedirlo y un admin aprobarlo). */
+  const requestDeleteRental = (rentalId, requestedBy, reason) => {
+    setRentals(prev => prev.map(r =>
+      r.id === rentalId
+        ? { ...r, pendingDelete: true, pendingDeleteBy: requestedBy || 'Operador', pendingDeleteAt: new Date().toISOString(), pendingDeleteReason: reason || '' }
+        : r
+    ))
+  }
+
+  const cancelDeleteRental = (rentalId) => {
+    setRentals(prev => prev.map(r =>
+      r.id === rentalId
+        ? { ...r, pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null, pendingDeleteReason: null }
+        : r
+    ))
+  }
+
+  const cancelRental = (rentalId, reason, cancelledBy) => {
+    const rental = rentals.find(r => r.id === rentalId)
+    if (!rental) return
+    const unitIds = (rental.assignments || []).flatMap(a => a.unitIds || [])
+    setProducts(prev => prev.map(product => ({
+      ...product,
+      units: product.units.map(u =>
+        unitIds.includes(u.id) && u.state === 'Rental'
+          ? { ...u, state: 'Disponible' }
+          : u
+      )
+    })))
+    setRentals(prev => prev.map(r => r.id === rentalId ? {
+      ...r,
+      status: 'Cancelado',
+      cancelReason: reason || 'Sin motivo especificado',
+      cancelledBy: cancelledBy || 'Administrador',
+      cancelledAt: new Date().toISOString(),
+      pendingDelete: false, pendingDeleteBy: null, pendingDeleteAt: null, pendingDeleteReason: null
+    } : r))
+    addAuditEntry('Arriendo cancelado', `${rental.orderNumber} · ${rental.name}${reason ? ' · Motivo: ' + reason : ''}`, 'arriendo', cancelledBy)
   }
 
   /* ── Agregar producto ── */
@@ -936,7 +1013,8 @@ export function InventoryProvider({ children }) {
       countByState,
       createEvent, updateEvent, deleteEvent, cancelEvent,
       requestDeleteEvent, cancelDeleteEvent,
-      rentals, setRentals, createRental, deleteRental,
+      rentals, setRentals, createRental, deleteRental, updateRental,
+      requestDeleteRental, cancelDeleteRental, cancelRental,
       addProduct, deleteProduct, requestDeleteProduct, cancelDeleteProduct, nextSkuForFamily,
       opStates, setOpStates,
       epcMap, linkEpc, unlinkEpc, unlinkAllForProduct,

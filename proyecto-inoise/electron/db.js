@@ -300,8 +300,35 @@ function runMigrations(db) {
     ensureColumn(db, 'events', 'pending_delete', 'INTEGER DEFAULT 0')
     ensureColumn(db, 'events', 'pending_delete_by', 'TEXT')
     ensureColumn(db, 'events', 'pending_delete_at', 'TEXT')
+    // El motivo de la solicitud de eliminación (pending_delete_reason) y los
+    // datos de cancelación (cancel_reason/cancelled_by/cancelled_at) nunca
+    // tuvieron columna propia — el frontend los calculaba y mostraba bien
+    // DENTRO de la misma sesión (viven en el estado de React y se
+    // retransmiten por Socket.io), pero se perdían en silencio en cada
+    // guardado porque no había dónde escribirlos, y con ellos se iba el
+    // "quién" y el "por qué" de cada cancelación apenas se reiniciaba la
+    // app o se recargaba desde el servidor. Mismo tipo de bug que ya se
+    // había encontrado antes en event_history (ver items_json más abajo).
+    ensureColumn(db, 'events', 'pending_delete_reason', 'TEXT')
+    ensureColumn(db, 'events', 'cancel_reason', 'TEXT')
+    ensureColumn(db, 'events', 'cancelled_by', 'TEXT')
+    ensureColumn(db, 'events', 'cancelled_at', 'TEXT')
     // Personal asignado al evento (array de IDs guardado como JSON)
     ensureColumn(db, 'events', 'staff_ids', 'TEXT')
+
+    // ── Mismo flujo de aprobación de eliminación + cancelación, ahora
+    //    también para arriendos (antes solo existía para eventos) ──────────
+    ensureColumn(db, 'rentals', 'pending_delete', 'INTEGER DEFAULT 0')
+    ensureColumn(db, 'rentals', 'pending_delete_by', 'TEXT')
+    ensureColumn(db, 'rentals', 'pending_delete_at', 'TEXT')
+    ensureColumn(db, 'rentals', 'pending_delete_reason', 'TEXT')
+    ensureColumn(db, 'rentals', 'cancel_reason', 'TEXT')
+    ensureColumn(db, 'rentals', 'cancelled_by', 'TEXT')
+    ensureColumn(db, 'rentals', 'cancelled_at', 'TEXT')
+    // Personal asignado al arriendo — antes solo existía staff_name (texto
+    // libre, sin vínculo real a /api/staff). Se suma staff_ids igual que en
+    // eventos; staff_name se deja como está para no romper arriendos viejos.
+    ensureColumn(db, 'rentals', 'staff_ids', 'TEXT')
     // PIN de acceso rápido — NULL = sin PIN configurado
     ensureColumn(db, 'users', 'pin_hash', 'TEXT')
     // Habilitado/deshabilitado por el admin (1 = activo, 0 = deshabilitado)
@@ -455,14 +482,15 @@ function saveEvents(events) {
         db.prepare('DELETE FROM event_assignment_units').run()
         db.prepare('DELETE FROM event_assignments').run()
         db.prepare('DELETE FROM events').run()
-        const insE = db.prepare(`INSERT INTO events (id, order_number, name, date, location, notes, status, created_at, pending_delete, pending_delete_by, pending_delete_at, staff_ids)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        const insE = db.prepare(`INSERT INTO events (id, order_number, name, date, location, notes, status, created_at, pending_delete, pending_delete_by, pending_delete_at, staff_ids, pending_delete_reason, cancel_reason, cancelled_by, cancelled_at)
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         const insA = db.prepare(`INSERT INTO event_assignments (event_id, product_id, qty) VALUES (?, ?, ?)`)
         const insU = db.prepare(`INSERT INTO event_assignment_units (assignment_id, unit_id) VALUES (?, ?)`)
         for (const e of list) {
             insE.run(e.id, e.orderNumber ?? null, e.name, e.date ?? null, e.location ?? null, e.notes ?? null, e.status || 'Programado', e.createdAt ?? null,
                 e.pendingDelete ? 1 : 0, e.pendingDeleteBy ?? null, e.pendingDeleteAt ?? null,
-                e.staffIds?.length ? JSON.stringify(e.staffIds) : null)
+                e.staffIds?.length ? JSON.stringify(e.staffIds) : null,
+                e.pendingDeleteReason ?? null, e.cancelReason ?? null, e.cancelledBy ?? null, e.cancelledAt ?? null)
             for (const a of e.assignments || []) {
                 const { lastInsertRowid } = insA.run(e.id, a.productId, a.qty || 0)
                 for (const unitId of a.unitIds || []) {
@@ -491,6 +519,10 @@ function loadEvents() {
         pendingDelete: !!e.pending_delete,
         pendingDeleteBy: e.pending_delete_by,
         pendingDeleteAt: e.pending_delete_at,
+        pendingDeleteReason: e.pending_delete_reason,
+        cancelReason: e.cancel_reason,
+        cancelledBy: e.cancelled_by,
+        cancelledAt: e.cancelled_at,
         staffIds: e.staff_ids ? JSON.parse(e.staff_ids) : [],
         assignments: assignments
             .filter(a => a.event_id === e.id)
@@ -509,12 +541,15 @@ function saveRentals(rentals) {
         db.prepare('DELETE FROM rental_assignment_units').run()
         db.prepare('DELETE FROM rental_assignments').run()
         db.prepare('DELETE FROM rentals').run()
-        const insR = db.prepare(`INSERT INTO rentals (id, order_number, name, date, end_date, client_name, staff_name, notes, status, created_at)
-                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        const insR = db.prepare(`INSERT INTO rentals (id, order_number, name, date, end_date, client_name, staff_name, notes, status, created_at, pending_delete, pending_delete_by, pending_delete_at, pending_delete_reason, cancel_reason, cancelled_by, cancelled_at, staff_ids)
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         const insA = db.prepare(`INSERT INTO rental_assignments (rental_id, product_id, qty) VALUES (?, ?, ?)`)
         const insU = db.prepare(`INSERT INTO rental_assignment_units (assignment_id, unit_id) VALUES (?, ?)`)
         for (const r of list) {
-            insR.run(r.id, r.orderNumber ?? null, r.name, r.date ?? null, r.endDate ?? null, r.clientName ?? null, r.staffName ?? null, r.notes ?? null, r.status || 'Programado', r.createdAt ?? null)
+            insR.run(r.id, r.orderNumber ?? null, r.name, r.date ?? null, r.endDate ?? null, r.clientName ?? null, r.staffName ?? null, r.notes ?? null, r.status || 'Programado', r.createdAt ?? null,
+                r.pendingDelete ? 1 : 0, r.pendingDeleteBy ?? null, r.pendingDeleteAt ?? null, r.pendingDeleteReason ?? null,
+                r.cancelReason ?? null, r.cancelledBy ?? null, r.cancelledAt ?? null,
+                r.staffIds?.length ? JSON.stringify(r.staffIds) : null)
             for (const a of r.assignments || []) {
                 const { lastInsertRowid } = insA.run(r.id, a.productId, a.qty || 0)
                 for (const unitId of a.unitIds || []) {
@@ -542,6 +577,14 @@ function loadRentals() {
         notes: r.notes,
         status: r.status,
         createdAt: r.created_at,
+        pendingDelete: !!r.pending_delete,
+        pendingDeleteBy: r.pending_delete_by,
+        pendingDeleteAt: r.pending_delete_at,
+        pendingDeleteReason: r.pending_delete_reason,
+        cancelReason: r.cancel_reason,
+        cancelledBy: r.cancelled_by,
+        cancelledAt: r.cancelled_at,
+        staffIds: r.staff_ids ? JSON.parse(r.staff_ids) : [],
         assignments: assignments
             .filter(a => a.rental_id === r.id)
             .map(a => ({

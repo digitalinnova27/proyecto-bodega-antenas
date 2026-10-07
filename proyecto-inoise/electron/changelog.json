@@ -1,4 +1,11 @@
 {
+  "1.2.8": [
+    "Rental: ahora se puede editar un arriendo ya creado (antes solo se podía anular y crear uno nuevo)",
+    "Rental: anular ahora pide motivo obligatorio, y el operador puede solicitar la cancelación para que un administrador la apruebe o la rechace — mismo flujo que ya tenían los Eventos",
+    "Rental: personal asignado ahora se elige de la lista de Personal (antes era un campo de texto libre, sin vínculo real)",
+    "Rental: al asignar equipos, solo se puede elegir entre unidades con tag RFID vinculado — evita crear arriendos con equipos que después no se pueden escanear en Operaciones",
+    "Corregido: el motivo de cancelación de un Evento (y de una solicitud de cancelación) se calculaba bien en pantalla pero nunca se guardaba en la base de datos — se perdía al reiniciar la app. Ahora se guarda de verdad, y se agregó lo mismo para Arriendos desde el día uno"
+  ],
   "1.2.7": [
     "Aviso visible cuando un guardado falla por red o servidor caído — antes el cambio se veía aplicado en pantalla aunque en realidad no se hubiera guardado",
     "Login: 'Cambiar configuración de equipo' ahora pide confirmar antes de desconfigurar el PC",
