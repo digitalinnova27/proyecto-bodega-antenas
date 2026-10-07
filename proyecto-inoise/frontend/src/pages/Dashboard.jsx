@@ -38,47 +38,83 @@ const PILL_STYLES = {
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
 const DAY_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
-// ── Genera datos reales según la fecha de hoy ──────────────────────────────
-function buildChartData() {
+// ── Genera datos reales de entradas/salidas a partir de opStates ──────────
+// Antes esto eran arrays de ejemplo hardcodeados (dailyVals/weeklyEnt/etc.)
+// — solo las ETIQUETAS de fecha se calculaban de verdad, los números eran
+// siempre los mismos sin importar qué pasara en la bodega.
+//
+// "Salida" = un artículo escaneado en F1 (Despacho/Salida de bodega),
+// "Entrada" = escaneado en F4 (Recepción/Entrada a bodega) — mismas
+// etiquetas que ya usa Operations.jsx para eventos y arriendos. opStates
+// mezcla ambos (comparten el mismo espacio de ids), así que un solo
+// recorrido cubre entradas/salidas de toda la bodega, no solo eventos.
+function buildChartData(opStates) {
+  const movements = [] // { date: 'YYYY-MM-DD', type: 'entrada'|'salida' }
+  Object.values(opStates || {}).forEach(op => {
+    ;(op?.phases?.f1?.scanned || []).forEach(s => {
+      if (s.scannedAt) movements.push({ date: s.scannedAt.slice(0, 10), type: 'salida' })
+    })
+    ;(op?.phases?.f4?.scanned || []).forEach(s => {
+      if (s.scannedAt) movements.push({ date: s.scannedAt.slice(0, 10), type: 'entrada' })
+    })
+  })
+  const countInRange = (startStr, endStr) => ({
+    entradas: movements.filter(m => m.type === 'entrada' && m.date >= startStr && m.date <= endStr).length,
+    salidas: movements.filter(m => m.type === 'salida' && m.date >= startStr && m.date <= endStr).length
+  })
+
   const today = new Date()
   const dayOfWeek = today.getDay() // 0=Dom
   const monday = new Date(today)
   monday.setDate(today.getDate() - ((dayOfWeek + 6) % 7))
 
   const dayNames = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
-  const dailyVals = [5, 3, 7, 4, 8, 2, 1]
-  const dailySals = [3, 2, 5, 4, 6, 1, 0]
   const dataDiario = dayNames.map((dn, i) => {
     const d = new Date(monday)
     d.setDate(monday.getDate() + i)
-    return { name: `${dn} ${d.getDate()}/${d.getMonth() + 1}`, entradas: dailyVals[i], salidas: dailySals[i] }
+    const dStr = d.toISOString().slice(0, 10)
+    const { entradas, salidas } = countInRange(dStr, dStr)
+    return { name: `${dn} ${d.getDate()}/${d.getMonth() + 1}`, entradas, salidas }
   })
 
-  const weeklyEnt = [12, 9, 15, 9]
-  const weeklySal = [8, 6, 11, 10]
   const dataSemanal = Array.from({ length: 4 }, (_, i) => {
     const wStart = new Date(monday)
     wStart.setDate(monday.getDate() - (3 - i) * 7)
     const wEnd = new Date(wStart)
     wEnd.setDate(wStart.getDate() + 6)
+    const { entradas, salidas } = countInRange(wStart.toISOString().slice(0, 10), wEnd.toISOString().slice(0, 10))
     return {
       name: `${wStart.getDate()}/${wStart.getMonth() + 1}-${wEnd.getDate()}/${wEnd.getMonth() + 1}`,
-      entradas: weeklyEnt[i], salidas: weeklySal[i]
+      entradas, salidas
     }
   })
 
-  const monthlyEnt = [22, 31, 38, 41, 45]
-  const monthlySal = [15, 20, 25, 28, 35]
   const dataMensual = Array.from({ length: 5 }, (_, i) => {
     const d = new Date(today.getFullYear(), today.getMonth() - (4 - i), 1)
+    const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10)
+    const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10)
+    const { entradas, salidas } = countInRange(monthStart, monthEnd)
     return {
       name: `${MONTH_NAMES[d.getMonth()].slice(0, 3)} ${d.getFullYear()}`,
       month: d.getMonth(), year: d.getFullYear(),
-      entradas: monthlyEnt[i], salidas: monthlySal[i]
+      entradas, salidas
     }
   })
 
   return { dataDiario, dataSemanal, dataMensual }
+}
+
+// ── "hace X min" real a partir del último timestamp de antena ─────────────
+function formatRelativeTime(iso) {
+  if (!iso) return 'sin lecturas aún'
+  const diffSec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (diffSec < 10) return 'ahora mismo'
+  if (diffSec < 60) return `hace ${diffSec} s`
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `hace ${diffMin} min`
+  const diffHr = Math.floor(diffMin / 60)
+  if (diffHr < 24) return `hace ${diffHr} h`
+  return `hace ${Math.floor(diffHr / 24)} d`
 }
 
 // ── Calendario modal ────────────────────────────────────────────────────────
@@ -208,7 +244,7 @@ function CalendarModal({ year, month, events, onClose }) {
 
 // ── Dashboard principal ─────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { products, events, getAvailableQty } = useInventory()
+  const { products, events, getAvailableQty, opStates } = useInventory()
   // Estado real del lector (no hardcodeado): "Activa" solo si el bridge
   // está conectado Y además recibió al menos una lectura UDP real desde
   // que se abrió la app. Sin esto, el WS del bridge (que corre siempre
@@ -236,7 +272,7 @@ export default function Dashboard() {
   const [chartView, setChartView] = React.useState('Mensual')
   const [calModal, setCalModal] = React.useState(null)
 
-  const { dataDiario, dataSemanal, dataMensual } = React.useMemo(buildChartData, [])
+  const { dataDiario, dataSemanal, dataMensual } = React.useMemo(() => buildChartData(opStates), [opStates])
   const chartData = chartView === 'Diario' ? dataDiario : chartView === 'Semanal' ? dataSemanal : dataMensual
 
   const totalUnits = products.reduce((s, p) => s + (p.total || 0), 0)
@@ -273,6 +309,12 @@ export default function Dashboard() {
     name: `Antena ${i + 1}`,
     status: a.active ? 'Activa' : 'Offline'
   }))
+
+  // Último escaneo real (la más reciente lastSeenAt de cualquier antena) —
+  // antes esto era el texto fijo "hace 2 min", siempre, sin relación con
+  // si en verdad había pasado algo hace 2 minutos o hace 3 días.
+  const lastScanAt = antennaList.reduce((max, a) =>
+    (a.lastSeenAt && (!max || a.lastSeenAt > max)) ? a.lastSeenAt : max, null)
 
   const alerts = Object.entries(catStats)
     .map(([cat, { total, disp }]) => ({ cat, pct: total ? Math.round((disp / total) * 100) : 100 }))
@@ -373,7 +415,7 @@ export default function Dashboard() {
             )
           })}
           <hr style={s.sep} />
-          <div style={{ fontSize: 11, color: '#888' }}>Último escaneo RFID: <strong style={{ color: '#C5C6C7' }}>hace 2 min</strong></div>
+          <div style={{ fontSize: 11, color: '#888' }}>Último escaneo RFID: <strong style={{ color: '#C5C6C7' }}>{formatRelativeTime(lastScanAt)}</strong></div>
         </div>
       </div>
 

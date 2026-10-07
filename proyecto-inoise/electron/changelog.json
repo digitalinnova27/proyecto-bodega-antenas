@@ -1,4 +1,9 @@
 {
+  "1.2.10": [
+    "Dashboard: el gráfico de 'Entradas y salidas' ahora muestra datos reales de la bodega (escaneos de Despacho/Recepción, eventos y arriendos), en vez de números de ejemplo fijos",
+    "Dashboard: 'Último escaneo RFID' ahora muestra el tiempo real desde la última lectura de antena, en vez de decir siempre 'hace 2 min'",
+    "Corrección interna: forzar el cierre de un evento o arriendo recién creado (sin ningún escaneo previo) podía calcular mal el total de artículos si se hacía en la misma sesión en que se creó"
+  ],
   "1.2.9": [
     "Rental: el progreso de escaneo (F1/F4) ya no se pierde al cambiar de pestaña en Operaciones — ahora se guarda igual que en Eventos",
     "Rental: nuevo botón 'Incidencia' en cada artículo durante el escaneo, para reportar un equipo perdido o en mantenimiento (antes solo existía para Eventos)",

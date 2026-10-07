@@ -151,6 +151,10 @@ export default function Operations() {
   const [openForce, setOpenForce] = React.useState(false)
   const [forceTarget, setForceTarget] = React.useState(null) // { eventId, phase|'all' }
   const forceTargetRef = React.useRef(null) // ref para useCallback estable
+  // Ver el comentario junto a handleForceClose más abajo — guarda siempre
+  // la versión más reciente de lo que esa función necesita, para que su
+  // referencia pueda quedar estable (deps vacías) sin leer datos viejos.
+  const latestForceCloseDeps = React.useRef({})
   const [openForceLog, setOpenForceLog] = React.useState(false)
   const [forceLogEvent, setForceLogEvent] = React.useState(null)
 
@@ -326,8 +330,23 @@ export default function Operations() {
     })
   }
 
-  /* ── Forzar cierre (admin) ── */
+  /* ── Forzar cierre (admin) ──
+   * handleForceClose tiene que ser una referencia ESTABLE (useCallback con
+   * deps vacías) para no remontar ForceDialogExternal (React.memo) en cada
+   * render — ver el comentario de forceTargetRef más arriba. El problema:
+   * con deps vacías, el closure quedaba pegado para siempre a los valores
+   * de events/rentals/roleLabel (vía updateOp) de la PRIMERA vez que se
+   * montó esta pantalla. Si alguien forzaba el cierre de un evento o
+   * arriendo creado DESPUÉS de ese primer render y que todavía no tenía
+   * ningún escaneo propio (sin opState inicializado), updateOp no lo
+   * encontraba en ese events/rentals viejos y arrancaba el opState con
+   * totalItems: 0 — rompiendo el cálculo de progreso para ese caso.
+   * Se resuelve con un ref que se reescribe en cada render: la función
+   * sigue siendo la misma referencia (no remonta nada), pero lee siempre
+   * la versión más actual de lo que necesita. */
+  latestForceCloseDeps.current = { updateOp, setEvents, showSnack, roleLabel }
   const handleForceClose = React.useCallback((reason) => {
+    const { updateOp, setEvents, showSnack, roleLabel } = latestForceCloseDeps.current
     const { eventId, phase } = forceTargetRef.current || {}
     const logEntry = {
       at: new Date().toISOString(),
