@@ -459,9 +459,30 @@ async function _hashPassword(password) {
   return bcrypt.hash(String(password), BCRYPT_ROUNDS)
 }
 
+const _looksLikeBcrypt = (hash) => typeof hash === 'string' && /^\$2[aby]\$/.test(hash)
+
+/* Verifica un hash con el PBKDF2 "salt:hash" que usaba electron/db.js
+ * (10000 iteraciones, sha256) — necesario SOLO para los usuarios migrados
+ * desde el SQLite real del cliente (ver scripts/migrate-from-sqlite.js),
+ * cuyos hashes se copian tal cual porque no hay forma de recuperar la
+ * contraseña en texto plano para rehashearla con bcrypt de entrada. */
+function _pbkdf2Verify(password, stored) {
+  return new Promise((resolve) => {
+    const colonIdx = typeof stored === 'string' ? stored.indexOf(':') : -1
+    if (colonIdx === -1) return resolve(false)
+    const salt = stored.slice(0, colonIdx)
+    const expected = stored.slice(colonIdx + 1)
+    crypto.pbkdf2(String(password), salt, 10000, 64, 'sha256', (err, derivedKey) => {
+      resolve(!err && derivedKey.toString('hex') === expected)
+    })
+  })
+}
+
 async function _verifyPassword(password, stored) {
-  try { return await bcrypt.compare(String(password), stored || '') }
-  catch (err) { console.error('[Auth] verify error:', err.message); return false }
+  try {
+    if (_looksLikeBcrypt(stored)) return await bcrypt.compare(String(password), stored)
+    return await _pbkdf2Verify(password, stored)
+  } catch (err) { console.error('[Auth] verify error:', err.message); return false }
 }
 
 // NUNCA incluir passwordHash acá — ver electron/db.js _mapUser para el porqué.
@@ -512,6 +533,13 @@ async function authLogin(username, plainPassword) {
   if (!u) return null
   if (!u.active) return { disabled: true }
   if (!(await _verifyPassword(plainPassword, u.passwordHash))) return null
+  if (!_looksLikeBcrypt(u.passwordHash)) {
+    // Login correcto con un hash heredado del SQLite viejo (PBKDF2) — se
+    // reemplaza por bcrypt ahora que tenemos la contraseña en texto plano a
+    // mano. Transparente para el usuario, no hace falta resetear nada.
+    try { await prisma.user.update({ where: { id: u.id }, data: { passwordHash: await _hashPassword(plainPassword) } }) }
+    catch (e) { console.error('[Auth] No se pudo re-hashear password heredado:', e.message) }
+  }
   return {
     id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
     email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
