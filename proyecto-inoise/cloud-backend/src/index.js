@@ -72,6 +72,16 @@ if (!ALLOWED_ORIGINS.length) {
   console.warn('[iNOISE] ALLOWED_ORIGINS no está configurada — CORS permisivo (cualquier origen). Fijarla antes de producción.')
 }
 
+// Secreto compartido con el gateway RFID local (ver rfid-gateway/) — permite
+// que la PC con las antenas conectadas reenvíe lecturas en vivo para que
+// cualquier otra PC conectada a Orbitag también las vea en tiempo real. Si
+// no está configurada, ese reenvío queda desactivado (el gateway sigue
+// funcionando igual en modo local, solo no llega a otras PCs).
+const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || null
+if (!GATEWAY_TOKEN) {
+  console.warn('[Orbitag] GATEWAY_TOKEN no está configurada — el reenvío en vivo del gateway RFID queda desactivado.')
+}
+
 // ── Usuarios online (en memoria) ──────────────────────────────────────────────
 // Clave: socket.id  Valor: { userId, username, displayName, sessionId }
 const onlineUsers = new Map()
@@ -718,6 +728,28 @@ io.on('connection', (socket) => {
   socket.on('user:deauthenticate', () => {
     onlineUsers.delete(socket.id)
     io.emit('online:users', getOnlineList())
+  })
+
+  // ── Gateway RFID local (ver rfid-gateway/) ──────────────────────────────
+  // Autenticación separada de la de usuarios: un secreto largo compartido,
+  // no un JWT de persona. Solo un socket ya marcado como gateway puede
+  // emitir 'gateway:event' — evita que cualquier cliente conectado pueda
+  // falsificar lecturas RFID.
+  socket.on('gateway:authenticate', ({ token } = {}) => {
+    const ok = Boolean(GATEWAY_TOKEN) && token === GATEWAY_TOKEN
+    socket.data = { ...(socket.data || {}), isGateway: ok }
+    socket.emit('gateway:authenticated', ok)
+    if (ok) console.log(`[Orbitag] Gateway RFID conectado (${socket.id})`)
+  })
+
+  socket.on('gateway:event', (msg) => {
+    if (!socket.data?.isGateway) return
+    const { type, payload } = msg || {}
+    if (!type) return
+    for (const socketId of onlineUsers.keys()) {
+      const s = io.sockets.sockets.get(socketId)
+      if (s) s.emit('rfid:event', { type, payload })
+    }
   })
 
   socket.on('chat:typing', ({ to, isTyping } = {}) => {

@@ -1,0 +1,4 @@
+node_modules/
+.env
+epcMap.json
+queue.ndjson

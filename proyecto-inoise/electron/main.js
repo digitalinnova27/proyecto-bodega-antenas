@@ -204,28 +204,14 @@ app.whenReady().then(async () => {
     )
   }
 
-  // Iniciar rfid-bridge DENTRO del proceso de Electron (no como proceso
-  // 'node.exe' aparte). Electron ya trae su propio Node embebido en el
-  // proceso main, así que un require() normal corre el mismo código
-  // (servidor UDP/WS/HTTP) sin depender de que la PC del usuario tenga
-  // Node.js instalado por separado. Esto también evita el problema de que
-  // spawn() no puede apuntar a un archivo empaquetado dentro de app.asar —
-  // require() sí puede leer adentro del asar sin problema.
-  //
-  // Sigue siendo 100% local: lee las antenas físicas conectadas a ESTA PC
-  // y expone WS/HTTP en localhost (3001/3002) para que el frontend las
-  // consuma — eso no depende del backend en la nube ni cambia con esta
-  // migración (ver Parte C del plan: el día que este bridge además reenvíe
-  // las lecturas al backend en la nube, es un cambio aparte).
-  const bridgePath = path.join(__dirname, '../server/rfid-bridge.js')
-  if (fs.existsSync(bridgePath)) {
-    try {
-      require(bridgePath)
-      console.log('[Electron] rfid-bridge iniciado dentro del proceso de Electron')
-    } catch (e) {
-      console.error('[Electron] Error al iniciar rfid-bridge:', e.message)
-    }
-  }
+  // El bridge RFID (UDP:6001 / WS:3001 / HTTP:3002) ya NO corre dentro de
+  // Electron — ver rfid-gateway/ (Parte C del plan). Antes se cargaba con
+  // require() en este mismo proceso, lo que significaba que las antenas
+  // dejaban de leerse apenas alguien cerraba la ventana de la app. Ahora es
+  // un servicio Windows aparte (NSSM, ver rfid-gateway/INSTALL.md), siempre
+  // encendido, que además reenvía las lecturas al backend en la nube. El
+  // frontend sigue hablándole igual que siempre por ws://localhost:3001 y
+  // http://localhost:3002 — nada cambia de ese lado.
 
   if (isDev) {
     // Inicia Vite en segundo plano si no está corriendo.
