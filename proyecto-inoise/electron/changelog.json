@@ -1,4 +1,7 @@
 {
+  "1.2.12": [
+    "Corrección interna: se restauran los atajos F12 / Ctrl+Shift+I para abrir las herramientas de diagnóstico (se habían perdido al simplificar el menú en la v1.2.11)"
+  ],
   "1.2.11": [
     "La aplicación ahora funciona contra un servidor en la nube en vez de depender de que una PC de la oficina esté siempre encendida — se puede operar desde cualquier equipo con internet, sin un 'servidor principal' local",
     "Ya no existe la configuración inicial de 'Servidor' o 'Cliente' al abrir la app por primera vez en un equipo nuevo",

@@ -80,6 +80,25 @@ function createMainWindow() {
 
   mainWindow.removeMenu()
 
+  // removeMenu() también se lleva los atajos por defecto (F12, Ctrl+Shift+I
+  // para DevTools), que normalmente vienen del menú "View" de Electron. Se
+  // restauran a mano acá para poder diagnosticar errores en producción sin
+  // depender de abrir la app en modo desarrollo.
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown') return
+    const isF12 = input.key === 'F12'
+    const isCtrlShiftI = input.control && input.shift && input.key.toLowerCase() === 'i'
+    if (isF12 || isCtrlShiftI) mainWindow.webContents.toggleDevTools()
+  })
+
+  // Los console.log/console.error del renderer (React) no llegan a ninguna
+  // terminal en una app empaquetada salvo que se reenvíen a mano acá — esto
+  // permite ver errores reales corriendo el .exe desde una terminal, sin
+  // necesitar abrir las DevTools.
+  mainWindow.webContents.on('console-message', (_event, _level, message, line, sourceId) => {
+    console.log(`[Renderer] ${message} (${sourceId}:${line})`)
+  })
+
   if (isDev) {
     // Modo desarrollo: carga desde el servidor de Vite, con reintentos
     // por si Vite todavía no terminó de levantar (evita pantalla en blanco).
