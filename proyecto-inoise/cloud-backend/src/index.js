@@ -268,7 +268,15 @@ app.get('/api/users/count-admins', requireAuth, async (req, res) => {
 
 app.post('/api/users', async (req, res) => {
   const count = await safe(() => countAdmins())
-  const isFirstRun = count.ok && count.data === 0
+  if (!count.ok) {
+    // Un hipo transitorio de conexión a la base (ya visto antes con
+    // Supabase) NO debe interpretarse como "ya hay administradores" — eso
+    // hacía que el primer arranque cayera por error en la rama que exige
+    // Bearer token, devolviendo 401 "No autorizado" en vez de un mensaje
+    // claro de que hubo un problema temporal de conexión.
+    return res.status(503).json({ ok: false, error: 'No se pudo conectar con la base de datos. Probá de nuevo en unos segundos.' })
+  }
+  const isFirstRun = count.data === 0
   const { data, password, deviceId } = req.body || {}
   if (!_isStrongPassword(password)) {
     return res.json({ ok: false, error: WEAK_PASSWORD_MSG })
