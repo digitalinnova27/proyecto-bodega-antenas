@@ -1,0 +1,489 @@
+// Esquema derivado 1:1 de electron/db.js (runMigrations), la base SQLite
+// real que usa hoy la app de escritorio. No se reutiliza el prototipo
+// viejo de proyecto-inoise/backend/prisma/schema.prisma — está roto e
+// incompleto (ver auditoría previa), este se construyó desde cero mirando
+// el esquema que de verdad está en producción.
+//
+// Nota sobre tipos: products.id, events.id, rentals.id, event_history.id,
+// rental_history.id y purchase_history.id se generan en el frontend con
+// Date.now() (ms desde 1970) — eso excede el rango de un INT de 32 bits
+// de Postgres (max ~2.147 millones), así que esas columnas (y toda FK que
+// apunte a ellas) usan BigInt. Siguen cabiendo sin problema dentro del
+// rango seguro de Number en JS (hasta 2^53-1), así que el backend puede
+// convertirlas a Number al armar las respuestas JSON sin perder precisión.
+//
+// IMPORTANTE sobre onDelete/onUpdate: TODAS las relaciones de este archivo
+// usan explícitamente NoAction (nunca Cascade, nunca el default de Prisma
+// que es Restrict). No es un detalle de estilo — es un requisito real:
+//  - electron/db.js guarda cada entidad con el patrón "borrar todo y
+//    reinsertar" (saveProducts borra y reinserta TODOS los productos y
+//    unidades, aunque otras tablas sigan "apuntando" a esos ids por un
+//    instante). En SQLite esto se toleraba apagando la verificación de FK
+//    durante esa transacción puntual.
+//  - En Postgres el equivalente es declarar la FK DEFERRABLE INITIALLY
+//    DEFERRED (ver prisma/make-fks-deferrable.sql, que hay que correr
+//    después de cada "prisma db push"/"migrate") — así la relación se
+//    revisa recién al hacer COMMIT, no en cada statement.
+//  - Pero Postgres SOLO permite diferir de verdad una FK con acción
+//    NO ACTION. Con RESTRICT (el default de Prisma si no se especifica
+//    onDelete) la verificación es SIEMPRE inmediata aunque la constraint
+//    diga DEFERRABLE — confirmado a mano. Con CASCADE la verificación sí
+//    se difiere, pero el borrado en cascada se ejecuta de inmediato de
+//    todas formas, así que un "borrar y reinsertar la misma fila" termina
+//    borrando para siempre cualquier fila relacionada con CASCADE antes
+//    de que la reinserción llegue a correr — pérdida de datos silenciosa.
+//  - Por eso: NoAction en todos lados, y la limpieza real de filas
+//    relacionadas la hace el código en src/db.js a mano (deleteMany
+//    explícito), nunca la base de datos sola.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* ── Inventario ──────────────────────────────────────────────────────── */
+
+model Product {
+  id          BigInt  @id
+  name        String
+  sku         String?
+  rfidBase    String? @map("rfid_base")
+  category    String?
+  total       Int     @default(0)
+  description String?
+
+  pendingDelete   Boolean @default(false) @map("pending_delete")
+  pendingDeleteBy String? @map("pending_delete_by")
+  pendingDeleteAt String? @map("pending_delete_at")
+
+  units             Unit[]
+  eventAssignments  EventAssignment[]
+  rentalAssignments RentalAssignment[]
+
+  @@map("products")
+}
+
+model Unit {
+  id        String  @id // ej "1699999999-1"
+  productId BigInt  @map("product_id")
+  rfid      String?
+  state     String  @default("Disponible")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  eventAssignmentUnits  EventAssignmentUnit[]
+  rentalAssignmentUnits RentalAssignmentUnit[]
+
+  @@index([productId])
+  @@map("units")
+}
+
+/* ── Eventos ─────────────────────────────────────────────────────────── */
+
+model Event {
+  id          BigInt  @id
+  orderNumber String? @map("order_number")
+  name        String
+  date        String?
+  location    String?
+  notes       String?
+  status      String  @default("Programado")
+  createdAt   String? @map("created_at")
+
+  pendingDelete       Boolean @default(false) @map("pending_delete")
+  pendingDeleteBy     String? @map("pending_delete_by")
+  pendingDeleteAt     String? @map("pending_delete_at")
+  pendingDeleteReason String? @map("pending_delete_reason")
+  cancelReason        String? @map("cancel_reason")
+  cancelledBy         String? @map("cancelled_by")
+  cancelledAt         String? @map("cancelled_at")
+  staffIds            String? @map("staff_ids") // JSON array de ids, igual que en SQLite
+
+  assignments EventAssignment[]
+  opState     OpState?
+
+  @@map("events")
+}
+
+model EventAssignment {
+  id        Int    @id @default(autoincrement())
+  eventId   BigInt @map("event_id")
+  productId BigInt @map("product_id")
+  qty       Int    @default(0)
+
+  event   Event   @relation(fields: [eventId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  product Product @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  units   EventAssignmentUnit[]
+
+  @@index([eventId])
+  @@map("event_assignments")
+}
+
+model EventAssignmentUnit {
+  assignmentId Int    @map("assignment_id")
+  unitId       String @map("unit_id")
+
+  assignment EventAssignment @relation(fields: [assignmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  unit       Unit            @relation(fields: [unitId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([assignmentId, unitId])
+  @@map("event_assignment_units")
+}
+
+/* ── Arriendos (rentals) ─────────────────────────────────────────────── */
+
+model Rental {
+  id          BigInt  @id
+  orderNumber String? @map("order_number")
+  name        String
+  date        String?
+  endDate     String? @map("end_date")
+  clientName  String? @map("client_name")
+  staffName   String? @map("staff_name")
+  notes       String?
+  status      String  @default("Programado")
+  createdAt   String? @map("created_at")
+
+  pendingDelete       Boolean @default(false) @map("pending_delete")
+  pendingDeleteBy     String? @map("pending_delete_by")
+  pendingDeleteAt     String? @map("pending_delete_at")
+  pendingDeleteReason String? @map("pending_delete_reason")
+  cancelReason        String? @map("cancel_reason")
+  cancelledBy         String? @map("cancelled_by")
+  cancelledAt         String? @map("cancelled_at")
+  staffIds            String? @map("staff_ids")
+
+  assignments RentalAssignment[]
+  opState     RentalOpState?
+
+  @@map("rentals")
+}
+
+model RentalAssignment {
+  id        Int    @id @default(autoincrement())
+  rentalId  BigInt @map("rental_id")
+  productId BigInt @map("product_id")
+  qty       Int    @default(0)
+
+  rental  Rental  @relation(fields: [rentalId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  product Product @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  units   RentalAssignmentUnit[]
+
+  @@index([rentalId])
+  @@map("rental_assignments")
+}
+
+model RentalAssignmentUnit {
+  assignmentId Int    @map("assignment_id")
+  unitId       String @map("unit_id")
+
+  assignment RentalAssignment @relation(fields: [assignmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  unit       Unit             @relation(fields: [unitId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([assignmentId, unitId])
+  @@map("rental_assignment_units")
+}
+
+/* ── Progreso de fases en Operaciones — eventos ───────────────────────── */
+
+model OpState {
+  eventId      BigInt  @id @map("event_id")
+  totalItems   Int     @default(0) @map("total_items")
+  activePhase  String? @map("active_phase")
+  scanMode     String? @map("scan_mode")
+  forcedByJson String? @map("forced_by_json")
+  forceLogJson String? @map("force_log_json")
+
+  event    Event             @relation(fields: [eventId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  phases   OpStatePhase[]
+  incidents OpStateIncident[]
+
+  @@map("op_states")
+}
+
+model OpStatePhase {
+  eventId     BigInt @map("event_id")
+  phaseKey    String @map("phase_key") // 'f1'..'f4'
+  done        Boolean @default(false)
+  forcedClose Boolean @default(false) @map("forced_close")
+
+  opState OpState              @relation(fields: [eventId], references: [eventId], onDelete: NoAction, onUpdate: NoAction)
+  scanned OpStateScannedUnit[]
+
+  @@id([eventId, phaseKey])
+  @@map("op_state_phases")
+}
+
+model OpStateScannedUnit {
+  eventId   BigInt  @map("event_id")
+  phaseKey  String  @map("phase_key")
+  unitId    String  @map("unit_id")
+  scannedAt String? @map("scanned_at")
+
+  phase OpStatePhase @relation(fields: [eventId, phaseKey], references: [eventId, phaseKey], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([eventId, phaseKey, unitId])
+  @@map("op_state_scanned_units")
+}
+
+model OpStateIncident {
+  id         Int     @id @default(autoincrement())
+  eventId    BigInt  @map("event_id")
+  phaseKey   String  @map("phase_key")
+  unitId     String? @map("unit_id")
+  name       String?
+  rfid       String?
+  state      String?
+  reason     String?
+  reportedAt String? @map("reported_at")
+
+  opState OpState @relation(fields: [eventId], references: [eventId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([eventId, phaseKey])
+  @@map("op_state_incidents")
+}
+
+/* ── Progreso de fases en Operaciones — arriendos (mismo set, tabla aparte:
+   ver comentario en electron/db.js sobre por qué no se comparte op_states) ── */
+
+model RentalOpState {
+  rentalId     BigInt  @id @map("rental_id")
+  totalItems   Int     @default(0) @map("total_items")
+  activePhase  String? @map("active_phase")
+  scanMode     String? @map("scan_mode")
+  forcedByJson String? @map("forced_by_json")
+  forceLogJson String? @map("force_log_json")
+
+  rental    Rental                     @relation(fields: [rentalId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  phases    RentalOpStatePhase[]
+  incidents RentalOpStateIncident[]
+
+  @@map("rental_op_states")
+}
+
+model RentalOpStatePhase {
+  rentalId    BigInt  @map("rental_id")
+  phaseKey    String  @map("phase_key")
+  done        Boolean @default(false)
+  forcedClose Boolean @default(false) @map("forced_close")
+
+  opState RentalOpState               @relation(fields: [rentalId], references: [rentalId], onDelete: NoAction, onUpdate: NoAction)
+  scanned RentalOpStateScannedUnit[]
+
+  @@id([rentalId, phaseKey])
+  @@map("rental_op_state_phases")
+}
+
+model RentalOpStateScannedUnit {
+  rentalId  BigInt  @map("rental_id")
+  phaseKey  String  @map("phase_key")
+  unitId    String  @map("unit_id")
+  scannedAt String? @map("scanned_at")
+
+  phase RentalOpStatePhase @relation(fields: [rentalId, phaseKey], references: [rentalId, phaseKey], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([rentalId, phaseKey, unitId])
+  @@map("rental_op_state_scanned_units")
+}
+
+model RentalOpStateIncident {
+  id         Int     @id @default(autoincrement())
+  rentalId   BigInt  @map("rental_id")
+  phaseKey   String  @map("phase_key")
+  unitId     String? @map("unit_id")
+  name       String?
+  rfid       String?
+  state      String?
+  reason     String?
+  reportedAt String? @map("reported_at")
+
+  opState RentalOpState @relation(fields: [rentalId], references: [rentalId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([rentalId, phaseKey])
+  @@map("rental_op_state_incidents")
+}
+
+/* ── Vínculos RFID ↔ unidad ────────────────────────────────────────────── */
+
+model EpcMap {
+  epc    String @id
+  unitId String @map("unit_id")
+
+  @@map("epc_map")
+}
+
+/* ── Historiales ─────────────────────────────────────────────────────── */
+
+model EventHistory {
+  id               BigInt  @id
+  orderNumber      String? @map("order_number")
+  name             String?
+  date             String?
+  location         String?
+  totalItems       Int?    @map("total_items")
+  incidentsCount   Int?    @map("incidents_count")
+  forcedClose      Boolean? @map("forced_close")
+  closedAt         String? @map("closed_at")
+  closedBy         String? @map("closed_by")
+  itemsJson        String? @map("items_json")
+  phasesApprovedJson String? @map("phases_approved_json")
+  lossDetailsJson  String? @map("loss_details_json")
+
+  @@map("event_history")
+}
+
+model RentalHistory {
+  id          BigInt  @id
+  orderNumber String? @map("order_number")
+  name        String?
+  clientName  String? @map("client_name")
+  date        String?
+  endDate     String? @map("end_date")
+  totalItems  Int?    @map("total_items")
+  closedAt    String? @map("closed_at")
+  closedBy    String? @map("closed_by")
+
+  @@map("rental_history")
+}
+
+model PurchaseHistory {
+  id          BigInt  @id
+  date        String?
+  productName String? @map("product_name")
+  sku         String?
+  category    String?
+  qty         Int?
+  user        String?
+
+  @@map("purchase_history")
+}
+
+model AuditLog {
+  id        String @id
+  timestamp String
+  user      String?
+  action    String
+  detail    String?
+  category  String?
+
+  @@map("audit_log")
+}
+
+/* ── Sesiones ───────────────────────────────────────────────────────── */
+
+model Session {
+  id          String  @id
+  userId      String  @map("user_id") // sin FK a propósito — ver comentario en db.js
+  username    String
+  displayName String? @map("display_name")
+  loginAt     String  @map("login_at")
+  logoutAt    String? @map("logout_at")
+  ip          String?
+
+  @@map("sessions")
+}
+
+/* ── Usuarios ───────────────────────────────────────────────────────── */
+
+model User {
+  id              String  @id
+  role            String  @default("operador")
+  nombre          String
+  apellido        String
+  email           String?
+  cargo           String?
+  avatar          String?
+  username        String  @unique
+  passwordHash    String  @map("password_hash")
+  createdAt       String? @map("created_at")
+  pinHash         String? @map("pin_hash")
+  active          Boolean @default(true)
+  telefono        String?
+  trustedDeviceId String? @map("trusted_device_id")
+
+  @@map("users")
+}
+
+/* ── Chat interno ───────────────────────────────────────────────────── */
+
+model Message {
+  id        Int     @id @default(autoincrement())
+  fromUser  String  @map("from_user")
+  toUser    String  @map("to_user")
+  content   String
+  type      String  @default("text")
+  metadata  String?
+  createdAt String  @map("created_at")
+  readAt    String? @map("read_at")
+
+  @@index([fromUser, toUser])
+  @@map("messages")
+}
+
+/* ── Recuperación de contraseña ────────────────────────────────────── */
+
+model PasswordReset {
+  id        Int     @id @default(autoincrement())
+  userId    String  @map("user_id")
+  codeHash  String  @map("code_hash")
+  expiresAt String  @map("expires_at")
+  used      Boolean @default(false)
+  createdAt String  @map("created_at")
+
+  @@map("password_resets")
+}
+
+model AdminLoginOtp {
+  id        Int     @id @default(autoincrement())
+  userId    String  @map("user_id")
+  codeHash  String  @map("code_hash")
+  expiresAt String  @map("expires_at")
+  used      Boolean @default(false)
+  createdAt String  @map("created_at")
+
+  @@map("admin_login_otp")
+}
+
+/* ── Configuración general (clave/valor) ──────────────────────────────
+ * En el backend en la nube el SMTP ya no se guarda acá en texto plano
+ * (ver plan original) — se deja la tabla por fidelidad con el esquema de
+ * origen, pero las credenciales reales van en variables de entorno. */
+
+model AppSetting {
+  key   String  @id
+  value String?
+
+  @@map("app_settings")
+}
+
+/* ── Personal de trabajo ───────────────────────────────────────────── */
+
+model Staff {
+  id        String  @id
+  nombre    String
+  apellido  String
+  rut       String?
+  telefono  String?
+  cargo     String?
+  activo    Boolean @default(true)
+  createdAt String? @map("created_at")
+
+  @@map("staff")
+}
+
+// Tabla N:M heredada del esquema SQLite — hoy no la usa ningún código real
+// (eventos guardan el personal asignado en events.staff_ids, un JSON de
+// ids). En el origen tampoco tiene una FK real hacia events (event_id es
+// TEXT suelto, solo staff_id referencia staff(id)) — se mantiene así,
+// sin relación tipada, por fidelidad 1:1 con el esquema de origen.
+model EventStaff {
+  eventId String @map("event_id")
+  staffId String @map("staff_id")
+
+  @@id([eventId, staffId])
+  @@map("event_staff")
+}
