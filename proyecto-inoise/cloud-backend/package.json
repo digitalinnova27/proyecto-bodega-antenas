@@ -5,7 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node src/index.js",
-    "prisma:generate": "prisma generate",
+    "start": "node src/index.js",
+    "build": "prisma generate",
+    "postinstall": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"
@@ -13,7 +15,6 @@
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.1",
