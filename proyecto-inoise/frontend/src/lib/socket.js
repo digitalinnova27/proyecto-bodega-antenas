@@ -2,9 +2,11 @@
  * frontend/src/lib/socket.js
  *
  * Singleton de Socket.io-client.
- * Conecta al servidor embebido en Electron (puerto 3005) para recibir
- * actualizaciones en tiempo real cuando otro operador/cliente modifica datos.
- * (3001/3002 son puertos aparte, del rfid-bridge — ver server/rfid-bridge.js)
+ * Conecta al backend en la nube (cloud-backend/, Railway) para recibir
+ * actualizaciones en tiempo real cuando otro operador modifica datos —
+ * mismo backend que usa lib/api.js, ya no el servidor embebido en Electron.
+ * (3001/3002 son puertos aparte, del rfid-bridge LOCAL — ver
+ * server/rfid-bridge.js — eso sigue siendo siempre localhost)
  *
  * Uso:
  *   import { getSocket } from '../lib/socket'
@@ -20,19 +22,13 @@ import { io } from 'socket.io-client'
 
 let socket = null
 
-// Leer config al iniciar el módulo (síncrono, igual que api.js)
-function _readConfig() {
-  try { return (typeof window !== 'undefined' && window.api?.getConfig?.()) || {} } catch { return {} }
-}
-const _cfg = _readConfig()
-// Modo cliente → conectar al servidor remoto; modo servidor/dev → misma origin
-const _socketUrl = _cfg.mode === 'client' ? (_cfg.serverUrl || '/') : '/'
+const PROD_API_URL = 'https://proyecto-bodega-antenas-production.up.railway.app'
+// En dev, el proxy de Vite redirige /socket.io → un cloud-backend local
+// (localhost:3005). En producción, al backend real en Railway.
+const _socketUrl = import.meta.env.DEV ? '/' : (import.meta.env.VITE_API_URL || PROD_API_URL)
 
 /**
  * Devuelve (o crea) la instancia única de Socket.io.
- * En dev, el proxy de Vite redirige /socket.io → 3005.
- * En prod y browsers de red, misma origin.
- * En modo cliente, conecta al servidor remoto.
  */
 export function getSocket() {
   if (!socket) {

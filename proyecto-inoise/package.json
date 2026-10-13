@@ -1,6 +1,6 @@
 {
   "name": "rfid-dashboard-final",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -9,20 +9,17 @@
     "preview": "vite preview frontend --config frontend/vite.config.js",
     "electron": "electron .",
     "electron:dev": "electron .",
-    "dev:web": "electron . --headless",
     "electron:build": "npm run build && electron .",
     "start": "npm run electron:dev",
     "dist": "npm run build && electron-builder --win",
     "dist:publish": "npm run build && electron-builder --win --publish=always",
-    "dist:dir": "npm run build && electron-builder --win --dir",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "dist:dir": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
     "@emotion/react": "^11.11.0",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.7",
     "@mui/material": "^5.14.7",
-    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
     "electron-updater": "^6.8.9",
     "express": "^4.18.2",
@@ -39,7 +36,6 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.6.0",
     "@vitejs/plugin-react": "^4.0.0",
     "concurrently": "^8.2.0",
     "electron": "^40.0.0",
@@ -64,7 +60,6 @@
       "server/**/*"
     ],
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*",
       "frontend/dist/**/*"
     ],
     "win": {

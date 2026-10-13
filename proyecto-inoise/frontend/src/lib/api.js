@@ -1,23 +1,28 @@
 /**
  * frontend/src/lib/api.js
  *
- * Cliente HTTP centralizado para comunicarse con el servidor Express (puerto 3005).
- * Adjunta automáticamente el JWT en cada request.
+ * Cliente HTTP centralizado para comunicarse con el backend — cloud-backend/
+ * (Express + Prisma + Postgres en Railway), ya no el servidor embebido en
+ * Electron. Adjunta automáticamente el JWT en cada request.
  *
- * En desarrollo (Vite en 5173): el proxy de vite.config.js redirige /api → 3005.
- * En producción (build servido desde Express en 3005): misma origin, sin proxy.
- * En navegadores externos (http://192.168.x.x:3005): misma origin, sin proxy.
+ * Toda instalación (Electron de escritorio o navegador) habla siempre con
+ * el MISMO backend en la nube — ya no existe el "modo servidor/cliente" que
+ * elegía a qué PC de la red local conectarse.
  *
- * (3001/3002 son puertos aparte, del rfid-bridge — ver server/rfid-bridge.js)
+ * En desarrollo (Vite en 5173): URLs relativas, el proxy de vite.config.js
+ * redirige /api y /socket.io a un cloud-backend corriendo en localhost:3005
+ * (correr `npm run dev` dentro de cloud-backend/ en paralelo).
+ * En producción (build empaquetado): URL absoluta al backend real en
+ * Railway, salvo que VITE_API_URL la sobreescriba (ej. para apuntar a un
+ * backend de prueba sin tocar este archivo).
+ *
+ * (3001/3002 son puertos aparte, del rfid-bridge local — ver
+ * server/rfid-bridge.js — ese sigue siendo siempre localhost, antenas
+ * físicas conectadas a ESTE PC, nada que ver con el backend en la nube).
  */
 
-// En modo servidor (o dev): URLs relativas → el proxy de Vite o Express mismo.
-// En modo cliente: URL absoluta al servidor del admin (leída de inoise-config.json).
-function _readConfig() {
-  try { return (typeof window !== 'undefined' && window.api?.getConfig?.()) || {} } catch { return {} }
-}
-const _cfg = _readConfig()
-const API_BASE = _cfg.mode === 'client' ? (_cfg.serverUrl || '') : ''
+const PROD_API_URL = 'https://proyecto-bodega-antenas-production.up.railway.app'
+const API_BASE = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_URL || PROD_API_URL)
 
 // Token almacenado en memoria + sessionStorage para sobrevivir recargas
 let _token = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('inoise_token') || null) : null

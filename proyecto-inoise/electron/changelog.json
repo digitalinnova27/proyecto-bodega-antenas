@@ -1,4 +1,9 @@
 {
+  "1.2.11": [
+    "La aplicación ahora funciona contra un servidor en la nube en vez de depender de que una PC de la oficina esté siempre encendida — se puede operar desde cualquier equipo con internet, sin un 'servidor principal' local",
+    "Ya no existe la configuración inicial de 'Servidor' o 'Cliente' al abrir la app por primera vez en un equipo nuevo",
+    "Mejoras de seguridad internas en el guardado de datos (ver notas técnicas de la versión anterior) aplicadas también al nuevo servidor en la nube"
+  ],
   "1.2.10": [
     "Dashboard: el gráfico de 'Entradas y salidas' ahora muestra datos reales de la bodega (escaneos de Despacho/Recepción, eventos y arriendos), en vez de números de ejemplo fijos",
     "Dashboard: 'Último escaneo RFID' ahora muestra el tiempo real desde la última lectura de antena, en vez de decir siempre 'hace 2 min'",

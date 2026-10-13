@@ -416,297 +416,11 @@ function CreateAccountForm({ selectedRole, adminExists, onBack }) {
   )
 }
 
-/* ─── Pantalla de setup inicial (primera vez, sin config) ──────────────── */
-function SetupScreen({ onDone, startAtConnect = false }) {
-  const [step, setStep] = useState(startAtConnect ? 'connect' : 'choice') // 'choice' | 'connect'
-  // Confirmación antes de elegir "Servidor principal" — cada equipo decide
-  // este modo de forma local e independiente, así que no hay manera de que
-  // el sistema impida por sí solo que dos PCs distintas se autodeclaren
-  // servidor a la vez (cada una crearía su propia base de datos separada,
-  // un "split-brain" silencioso). Este paso extra es la mitigación
-  // práctica: obliga a pensarlo dos veces antes de crear una base nueva.
-  const [confirmServer, setConfirmServer] = useState(false)
-
-  // Auto-descubrimiento
-  const [discovering, setDiscovering]   = useState(false)
-  const [discoveredUrl, setDiscoveredUrl] = useState(null)  // URL encontrada por UDP
-  // Contador para re-disparar la búsqueda sin cambiar 'step'
-  const [searchKey, setSearchKey] = useState(0)
-
-  // Fallback manual
-  const [serverUrl, setServerUrl]   = useState('')
-  const [verifying, setVerifying]   = useState(false)
-  const [error, setError]           = useState('')
-  const [showManual, setShowManual] = useState(false) // true si UDP no encontró nada
-
-  // Al entrar al paso 'connect' (o al incrementar searchKey), lanzar auto-descubrimiento UDP
-  useEffect(() => {
-    if (step !== 'connect') return
-    // Reset states
-    setDiscovering(true)
-    setDiscoveredUrl(null)
-    setShowManual(false)
-    setError('')
-    setServerUrl('')
-
-    // Si no hay Electron (modo web / sin preload) saltar directo al manual
-    if (!window.api?.discoverServer) {
-      setDiscovering(false)
-      setShowManual(true)
-      return
-    }
-
-    window.api.discoverServer().then(res => {
-      setDiscovering(false)
-      if (res?.ok && res?.url) {
-        setDiscoveredUrl(res.url)
-        setServerUrl(res.url)
-      } else {
-        // Tiempo agotado — mostrar formulario manual
-        setShowManual(true)
-        setError('No se encontró servidor automáticamente. Ingresa la IP del administrador.')
-      }
-    }).catch(() => {
-      setDiscovering(false)
-      setShowManual(true)
-      setError('Error en auto-descubrimiento. Ingresa la IP del administrador.')
-    })
-  }, [step, searchKey])
-
-  const cardBase = {
-    background: 'rgba(31,40,51,0.95)',
-    border: '2px solid rgba(102,252,241,0.15)',
-    borderRadius: 16, padding: '28px 24px',
-    cursor: 'pointer', textAlign: 'center',
-    transition: 'border-color 0.2s, transform 0.2s',
-    flex: 1, maxWidth: 280
-  }
-
-  const handleChooseServer = async () => {
-    await window.api?.saveConfig?.({ mode: 'server' })
-    onDone('server')
-  }
-
-  const handleConnect = async (urlToUse) => {
-    setError('')
-    let url = (urlToUse || serverUrl).trim()
-    if (!url) { setError('Ingresa la IP del servidor'); return }
-    if (!url.startsWith('http')) url = `http://${url}`
-    url = url.replace(/\/+$/, '') // quitar slash(es) al final
-    if (!/:\d+$/.test(url)) url = `${url}:3005`
-    setVerifying(true)
-    const res = await window.api?.verifyServer?.(url)
-    setVerifying(false)
-    if (!res?.ok) {
-      setError(res?.error || 'No se pudo conectar al servidor')
-      return
-    }
-    await window.api?.saveConfig?.({ mode: 'client', serverUrl: url })
-    onDone('client')
-  }
-
-  const inputStyle = (hasErr) => ({
-    padding: '11px 14px', borderRadius: 8,
-    border: `1.5px solid ${hasErr ? '#E24B4A' : 'rgba(255,255,255,0.2)'}`,
-    background: 'rgba(255,255,255,0.07)', color: '#fff',
-    fontSize: 15, width: '100%', boxSizing: 'border-box',
-    outline: 'none', fontFamily: 'inherit'
-  })
-
-  const btnPrimary = (disabled) => ({
-    marginTop: 16, width: '100%', padding: '13px', borderRadius: 8,
-    border: 'none', background: '#66FCF1', color: '#000',
-    fontWeight: 700, fontSize: 15,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.7 : 1, animation: 'none'
-  })
-
-  const btnSecondary = {
-    marginTop: 10, width: '100%', padding: '10px', borderRadius: 8,
-    border: '1px solid rgba(255,255,255,0.15)', background: 'transparent',
-    color: '#C5C6C7', fontSize: 14, cursor: 'pointer', animation: 'none'
-  }
-
-  if (step === 'connect') {
-    return (
-      <div style={{ width: '100%', maxWidth: 380, textAlign: 'center' }}>
-        <h2 style={{ color: '#66FCF1', marginBottom: 6, fontSize: 20 }}>
-          Conectar al servidor
-        </h2>
-
-        {/* ── Estado: buscando ── */}
-        {discovering && (
-          <div style={{ padding: '32px 0' }}>
-            {/* Spinner animado */}
-            <div style={{
-              width: 48, height: 48, margin: '0 auto 20px',
-              border: '4px solid rgba(102,252,241,0.2)',
-              borderTopColor: '#66FCF1',
-              borderRadius: '50%',
-              animation: 'spin 0.9s linear infinite'
-            }} />
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-            <p style={{ color: '#66FCF1', fontWeight: 600, margin: '0 0 6px', fontSize: 15 }}>
-              Buscando servidor en la red…
-            </p>
-            <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, margin: 0 }}>
-              Esto puede tardar hasta 8 segundos
-            </p>
-          </div>
-        )}
-
-        {/* ── Estado: servidor encontrado ── */}
-        {!discovering && discoveredUrl && (
-          <div style={{ padding: '8px 0 4px' }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
-            <p style={{ color: '#66FCF1', fontWeight: 600, margin: '0 0 4px', fontSize: 15 }}>
-              Servidor encontrado
-            </p>
-            <p style={{
-              color: 'rgba(255,255,255,0.55)', fontSize: 13,
-              background: 'rgba(102,252,241,0.06)',
-              border: '1px solid rgba(102,252,241,0.2)',
-              borderRadius: 8, padding: '8px 14px',
-              margin: '12px 0 0', wordBreak: 'break-all'
-            }}>
-              {discoveredUrl}
-            </p>
-            {error && (
-              <p style={{ color: '#E24B4A', fontSize: 12, marginTop: 8 }}>{error}</p>
-            )}
-            <button
-              onClick={() => handleConnect(discoveredUrl)}
-              disabled={verifying}
-              style={btnPrimary(verifying)}
-            >
-              {verifying ? 'Verificando…' : 'Conectar'}
-            </button>
-            <button
-              onClick={() => { setDiscoveredUrl(null); setShowManual(true); setError('') }}
-              style={btnSecondary}
-            >
-              Ingresar IP manualmente
-            </button>
-          </div>
-        )}
-
-        {/* ── Estado: fallback manual (UDP falló o usuario lo eligió) ── */}
-        {!discovering && !discoveredUrl && showManual && (
-          <div>
-            {error && (
-              <p style={{ color: 'rgba(255,200,100,0.85)', fontSize: 12, margin: '0 0 16px' }}>
-                {error}
-              </p>
-            )}
-            <p style={{ color: '#C5C6C7', fontSize: 13, margin: '0 0 16px' }}>
-              Ingresa la IP del PC del administrador.
-              Puedes verla en <strong>Ajustes → Información del sistema</strong>.
-            </p>
-            <input
-              style={inputStyle(!!error && !serverUrl)}
-              placeholder="192.168.1.100  ó  192.168.1.100:3005"
-              value={serverUrl}
-              onChange={e => { setServerUrl(e.target.value); setError('') }}
-              onKeyDown={e => e.key === 'Enter' && handleConnect()}
-              autoFocus
-            />
-            {error && serverUrl && (
-              <p style={{ color: '#E24B4A', fontSize: 12, marginTop: 8 }}>{error}</p>
-            )}
-            <button
-              onClick={() => handleConnect()}
-              disabled={verifying}
-              style={btnPrimary(verifying)}
-            >
-              {verifying ? 'Verificando…' : 'Conectar'}
-            </button>
-            <button
-              onClick={() => {
-                setShowManual(false)
-                setError('')
-                setServerUrl('')
-                setDiscoveredUrl(null)
-                setSearchKey(k => k + 1) // incrementar dispara el useEffect aunque step sea 'connect'
-              }}
-              style={btnSecondary}
-            >
-              🔄 Buscar de nuevo
-            </button>
-          </div>
-        )}
-
-        <button
-          onClick={() => { setStep('choice'); setError('') }}
-          style={{ ...btnSecondary, marginTop: 14, color: 'rgba(255,255,255,0.35)', fontSize: 12, border: 'none' }}
-        >
-          ← Volver
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div style={{ width: '100%', maxWidth: 620, textAlign: 'center' }}>
-      <h2 style={{ color: '#66FCF1', marginBottom: 6, fontSize: 22 }}>
-        Configuración inicial
-      </h2>
-      <p style={{ color: '#C5C6C7', fontSize: 14, marginBottom: 32 }}>
-        ¿Cómo deseas usar este equipo?
-      </p>
-      {!confirmServer ? (
-        <div style={{ display: 'flex', gap: 20, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <div
-            style={cardBase}
-            onClick={() => setConfirmServer(true)}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
-          >
-            <div style={{ fontSize: 42, marginBottom: 12 }}>🖥️</div>
-            <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Servidor principal</h3>
-            <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
-              Este PC almacena todos los datos. Los demás equipos se conectarán a él.
-            </p>
-          </div>
-          <div
-            style={cardBase}
-            onClick={() => setStep('connect')}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#66FCF1'; e.currentTarget.style.transform = 'translateY(-3px)' }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(102,252,241,0.15)'; e.currentTarget.style.transform = 'none' }}
-          >
-            <div style={{ fontSize: 42, marginBottom: 12 }}>🔗</div>
-            <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 17 }}>Conectarme a otro equipo</h3>
-            <p style={{ color: '#C5C6C7', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
-              Este PC se conectará al servidor del administrador para ver todos los datos sincronizados.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div style={{ maxWidth: 380, margin: '0 auto' }}>
-          <div style={{
-            background: 'rgba(226,75,74,0.08)', border: '1.5px solid rgba(226,75,74,0.35)',
-            borderRadius: 12, padding: '18px 20px', textAlign: 'left'
-          }}>
-            <p style={{ color: '#E24B4A', fontWeight: 700, fontSize: 14, margin: '0 0 8px' }}>
-              ⚠️ Confirma antes de continuar
-            </p>
-            <p style={{ color: '#C5C6C7', fontSize: 13, lineHeight: 1.6, margin: 0 }}>
-              Esto crea una base de datos <strong>nueva e independiente</strong> en este equipo.
-              Solo debería existir <strong>un</strong> servidor principal para todo el equipo de trabajo.
-              Si ya hay uno configurado en otra PC, elegí "Conectarme a otro equipo" en su lugar —
-              elegir esto por error crea un sistema separado que no se sincroniza con el resto.
-            </p>
-          </div>
-          <button onClick={handleChooseServer} style={btnPrimary(false)}>
-            Sí, este equipo es el servidor principal
-          </button>
-          <button onClick={() => setConfirmServer(false)} style={btnSecondary}>
-            ← Cancelar
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
+/* La pantalla de setup inicial ("¿Servidor o cliente?", con descubrimiento
+ * UDP en la red local) se eliminó junto con el modo servidor/cliente de
+ * Electron — ahora cada instalación habla siempre con el mismo backend en
+ * la nube (ver frontend/src/lib/api.js), así que no hay nada que elegir ni
+ * descubrir al primer arranque. */
 
 /* ─── Diálogo: Olvidé mi contraseña ─────────────────────────────────────────
  * Flujo estándar de recuperación: pedir código → el código llega al correo
@@ -1000,23 +714,9 @@ export default function Login() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Config leída síncronamente al montar (antes del primer render)
-  const [appCfg] = useState(() => {
-    try { return window.api?.getConfig?.() || {} } catch { return {} }
-  })
-  const isClientMode = appCfg.mode === 'client'
-
-  // 'loading' | 'setup' | 'firstRun' | 'login'
+  // 'loading' | 'firstRun' | 'login'
   const [phase, setPhase] = useState('loading')
   const [adminExists, setAdminExists] = useState(false)
-  // "← Cambiar configuración de equipo" / "este equipo no es el servidor
-  // principal" dispara handleResetConfig, que desconfigura el modo
-  // servidor/cliente de ESTA PC — antes se ejecutaba de un clic, sin
-  // confirmar, y además es alcanzable ANTES de iniciar sesión (cualquiera
-  // que abra la app podía desconfigurar el PC servidor sin querer).
-  // Ahora exige un segundo clic explícito, igual que ya exige el paso
-  // "confirmServer" al elegir "Servidor principal" en SetupScreen.
-  const [confirmResetOpen, setConfirmResetOpen] = useState(false)
 
   // First-run
   const [createStep, setCreateStep] = useState('role')   // 'role' | 'form'
@@ -1048,65 +748,16 @@ export default function Login() {
   const [pinError, setPinError]     = useState('')
   const [pinLoading, setPinLoading] = useState(false)
 
-  // Determinar fase inicial:
-  //  1. Leer config (síncrono, ya disponible desde main.js)
-  //  2. Sin config → mostrar pantalla de setup
-  //  3. Modo cliente → ir directo a login (el server ya tiene usuarios)
-  //  4. Modo servidor → firstRun si no hay usuarios, login si hay
+  // Determinar fase inicial: todas las instalaciones hablan siempre con el
+  // mismo backend en la nube (ver lib/api.js) — ya no hay "modo servidor/
+  // cliente" que elegir ni un paso de configuración inicial. Solo falta
+  // esperar a que /api/auth/status responda para saber si ya existe un
+  // administrador (login) o es la primerísima vez que se usa esta base
+  // (firstRun, crear la cuenta admin).
   useEffect(() => {
-    // Sin puente de Electron (window.api) → esto es un navegador normal
-    // accediendo directo a la URL (acceso "web"), no la app de escritorio.
-    // No hay "modo servidor/cliente" que elegir acá: el navegador solo
-    // habla con el backend que sirve esta página. La pantalla de
-    // "Configuración inicial" depende 100% de IPC (window.api.saveConfig),
-    // así que sin ella queda en loop infinito — la saltamos por completo.
-    if (!window.api) {
-      if (hasAnyUsers === null) return // cargando
-      setPhase(hasAnyUsers ? 'login' : 'firstRun')
-      return
-    }
-
-    const cfg = window.api?.getConfig?.() || {}
-
-    // Primera ejecución: aún no eligió modo
-    if (!cfg.mode) {
-      setPhase('setup')
-      return
-    }
-
-    // Modo cliente: se conecta a la base de datos de otro equipo, pero el
-    // login en sí funciona igual que en modo servidor — Carlos (admin)
-    // puede entrar como Administrador desde cualquier PC conectada como
-    // cliente, no solo como Operador. "Modo cliente" define de dónde vienen
-    // los datos, no quién puede loguearse como qué — eso ya lo protege el
-    // servidor (solo el admin real puede crear/editar otros usuarios, ver
-    // electron/server/index.js). Antes esto forzaba selectedRole='operador'
-    // y saltaba el paso de elegir rol, dejando a Carlos sin forma de entrar
-    // como admin desde un segundo dispositivo.
-    if (cfg.mode === 'client') {
-      // Sin serverUrl → volver al paso de conexión (handleResetConfig lo produce)
-      if (!cfg.serverUrl) {
-        setPhase('setup')
-        return
-      }
-      if (hasAnyUsers === null) return // cargando
-      setPhase(hasAnyUsers ? 'login' : 'firstRun')
-      return
-    }
-
-    // Modo servidor: flujo normal
-    if (hasAnyUsers === null) return
+    if (hasAnyUsers === null) return // cargando
     setPhase(hasAnyUsers ? 'login' : 'firstRun')
-  }, [hasAnyUsers]) // eslint-disable-line
-
-  const handleSetupDone = (mode) => {
-    if (mode === 'server') {
-      // Recargar para que api.js/socket.js lean el config nuevo
-      window.location.reload()
-    } else {
-      window.location.reload()
-    }
-  }
+  }, [hasAnyUsers])
 
   const handleLoginRoleSelect = (role) => {
     setSelectedRole(role)
@@ -1223,54 +874,6 @@ export default function Login() {
     )
   }
 
-  // ─── Setup (primera vez — sin config.json) ─────────────────────────────
-  if (phase === 'setup') {
-    return (
-      <div className="login-container">
-        <div className="login-main" style={{ alignItems: 'center', justifyContent: 'center' }}>
-          <SetupScreen onDone={handleSetupDone} startAtConnect={appCfg.mode === 'client'} />
-        </div>
-        <img src="/logo-header.png" alt="Orbitag" className="login-logo" />
-      </div>
-    )
-  }
-
-  // Resetea la config y vuelve al setup de conexión.
-  // Guardamos mode:'client' (sin serverUrl) para que en el próximo arranque
-  // el proceso main NO inicie su propio servidor (y no se auto-descubra).
-  const handleResetConfig = async () => {
-    await window.api?.saveConfig?.({ mode: 'client' })
-    window.location.reload()
-  }
-
-  // Link "← Cambiar configuración de equipo" / "este equipo no es el
-  // servidor principal", con confirmación de un segundo paso (ver comentario
-  // en confirmResetOpen más arriba). `linkStyle` deja que cada uno de los 3
-  // lugares donde se usa mantenga su propio tamaño/color de texto.
-  const renderResetConfigLink = (label, linkStyle) => (
-    confirmResetOpen ? (
-      <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
-        <span style={{ color: '#E24B4A', fontSize: linkStyle.fontSize }}>¿Seguro? Esto desconfigura este equipo —</span>
-        <button
-          onClick={handleResetConfig}
-          style={{ ...linkStyle, background: 'none', border: 'none', cursor: 'pointer', color: '#E24B4A', fontWeight: 700 }}
-        >
-          Sí, continuar
-        </button>
-        <button
-          onClick={() => setConfirmResetOpen(false)}
-          style={{ ...linkStyle, background: 'none', border: 'none', cursor: 'pointer' }}
-        >
-          Cancelar
-        </button>
-      </span>
-    ) : (
-      <button onClick={() => setConfirmResetOpen(true)} style={{ ...linkStyle, background: 'none', border: 'none', cursor: 'pointer' }}>
-        {label}
-      </button>
-    )
-  )
-
   // ─── First run ─────────────────────────────────────────────────────────
   // Solo llega acá en modo servidor sin usuarios. Solo muestra Admin.
   if (phase === 'firstRun') {
@@ -1291,13 +894,6 @@ export default function Login() {
                   <h2>Administrador</h2>
                   <p>Control total del sistema</p>
                 </div>
-              </div>
-              {/* Escape para quien eligió "Servidor" por error */}
-              <div style={{ marginTop: 28 }}>
-                {renderResetConfigLink('← Este equipo no es el servidor principal', {
-                  color: 'rgba(255,255,255,0.35)', fontSize: 12,
-                  textDecoration: 'underline', animation: 'none', opacity: 1
-                })}
               </div>
             </>
           )}
@@ -1748,10 +1344,6 @@ export default function Login() {
                   ← Ingresar como Operador
                 </button>
               ) : null}
-              {isClientMode && renderResetConfigLink('← Cambiar configuración de equipo', {
-                padding: 0, color: 'rgba(255,255,255,0.2)', fontSize: 10,
-                textDecoration: 'underline', animation: 'none', opacity: 1
-              })}
             </div>
           )}
         </div>
@@ -1763,15 +1355,6 @@ export default function Login() {
         className={`login-logo ${loginStep === 'credentials' ? 'hide' : ''}`}
       />
 
-      {/* Enlace de escape en pantalla de selección de rol (cualquier modo) */}
-      {loginStep === 'role' && (
-        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
-          {renderResetConfigLink('← Cambiar configuración de equipo', {
-            color: 'rgba(255,255,255,0.22)', fontSize: 11,
-            textDecoration: 'underline', animation: 'none', opacity: 1
-          })}
-        </div>
-      )}
 
       <ForgotPasswordDialog
         open={forgotOpen}

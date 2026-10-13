@@ -15,7 +15,6 @@ import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings'
 import FingerprintIcon from '@mui/icons-material/Fingerprint'
-import WifiIcon from '@mui/icons-material/Wifi'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import EditNoteIcon from '@mui/icons-material/EditNote'
@@ -817,75 +816,6 @@ function SmtpSettings() {
   )
 }
 
-/* ─── Panel de conexión en red ───────────────────────────────────────────── */
-function NetworkPanel() {
-  const [info, setInfo] = React.useState(null)
-  const [copied, setCopied] = React.useState(false)
-
-  React.useEffect(() => {
-    if (window.api?.getServerInfo) {
-      window.api.getServerInfo().then(setInfo).catch(() => { })
-    } else {
-      setInfo({ networkUrl: window.location.origin, webUrl: window.location.origin, ip: window.location.hostname })
-    }
-  }, [])
-
-  // webUrl  → navegador (Vite :5173 en dev, Express :3005 en prod)
-  // networkUrl → conexión Electron cliente (siempre :3005)
-  const webUrl     = info?.webUrl     || info?.networkUrl || '—'
-  const electronUrl = info?.networkUrl || '—'
-
-  const copyUrl = (url) => {
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
-
-  const urlBox = (label, url) => (
-    <Box sx={{ mb: 1.5 }}>
-      <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
-        {label}
-      </Typography>
-      <Box sx={{
-        display: 'flex', alignItems: 'center', gap: 1,
-        bgcolor: 'rgba(102,252,241,0.06)',
-        border: '1px solid rgba(102,252,241,0.2)',
-        borderRadius: 2, px: 2, py: 1.2
-      }}>
-        <Typography
-          variant="body2"
-          sx={{ flex: 1, fontFamily: 'monospace', color: '#66FCF1', fontWeight: 500 }}
-        >
-          {url}
-        </Typography>
-        <Tooltip title={copied ? '¡Copiado!' : 'Copiar'}>
-          <IconButton size="small" onClick={() => copyUrl(url)} sx={{ color: copied ? '#66FCF1' : 'text.secondary' }}>
-            <ContentCopyIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      </Box>
-    </Box>
-  )
-
-  return (
-    <Paper sx={{ p: 2, mb: 2 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-        <WifiIcon sx={{ color: '#66FCF1' }} />
-        <Typography variant="subtitle1" fontWeight={600}>Acceso desde otros dispositivos</Typography>
-      </Box>
-
-      {urlBox('🌐 Navegador web (misma red WiFi)', webUrl)}
-      {urlBox('🖥️ Conexión app Electron (operadores)', electronUrl)}
-
-      <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-        El lector RFID debe estar conectado al PC principal. Los operadores usan la
-        URL de Electron para configurar su app la primera vez.
-      </Typography>
-    </Paper>
-  )
-}
-
 /* ─── Gestión de PIN (todos los usuarios) ───────────────────────────────── */
 function PinManagement() {
   const { currentUser, verifyAdminPassword, setUserPin, removeUserPin } = useAuth()
@@ -1109,9 +1039,6 @@ export default function Settings() {
         <FormControlLabel control={<Switch checked disabled />} label="Notificaciones por correo (próximamente)" />
         <FormControlLabel control={<Switch checked disabled />} label="Alertas en panel (próximamente)" />
       </Paper>
-
-      {/* Conexión en red — muestra la URL para que otros dispositivos se conecten */}
-      <NetworkPanel />
 
       {/* Acceso rápido PIN — disponible para todos los usuarios */}
       <PinManagement />
