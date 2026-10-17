@@ -178,6 +178,9 @@ export default function Events() {
   const [assignmentsDraft, setAssignmentsDraft] = React.useState([])
   const [pdfLoading, setPdfLoading] = React.useState(false)
   const [snack, setSnack] = React.useState({ open: false, msg: '', severity: 'success' })
+  const [shareEmailOpen, setShareEmailOpen] = React.useState(false)
+  const [shareEmailTo, setShareEmailTo] = React.useState('')
+  const [shareEmailSending, setShareEmailSending] = React.useState(false)
 
   const getProduct = id => products.find(p => p.id === id)
 
@@ -342,8 +345,33 @@ export default function Events() {
   const handleShareWhatsApp = (ev) => {
     window.open(`https://wa.me/?text=${encodeURIComponent(buildShareText(ev))}`, '_blank')
   }
-  const handleShareMail = (ev) => {
-    window.open(`mailto:?subject=${encodeURIComponent(`Evento ${ev.orderNumber} - ${ev.name}`)}&body=${encodeURIComponent(buildShareText(ev))}`, '_blank')
+  // Envío real por correo (vía el servidor, con el SMTP configurado en
+  // Ajustes) — ya no abre el programa de correo del sistema operativo sin
+  // confirmar nada: acá se sabe si realmente se mandó o no.
+  const handleShareMail = () => {
+    setShareEmailTo('')
+    setShareEmailOpen(true)
+  }
+  const handleConfirmShareEmail = async () => {
+    if (!orderResultEvent) return
+    setShareEmailSending(true)
+    try {
+      const res = await api.post('/api/share/email', {
+        to: shareEmailTo.trim(),
+        subject: `Evento ${orderResultEvent.orderNumber} - ${orderResultEvent.name}`,
+        text: buildShareText(orderResultEvent)
+      })
+      if (res?.ok) {
+        setSnack({ open: true, msg: `Correo enviado a ${shareEmailTo.trim()}`, severity: 'success' })
+        setShareEmailOpen(false)
+      } else {
+        setSnack({ open: true, msg: res?.error || 'No se pudo enviar el correo', severity: 'error' })
+      }
+    } catch (e) {
+      setSnack({ open: true, msg: 'No se pudo enviar el correo', severity: 'error' })
+    } finally {
+      setShareEmailSending(false)
+    }
   }
 
   // ── Resumen Hoy / Semana / Año — cuenta eventos por período y por
@@ -648,7 +676,7 @@ export default function Events() {
                   WhatsApp
                 </Button>
                 <Button variant="outlined" startIcon={<EmailIcon />}
-                  onClick={() => handleShareMail(orderResultEvent)}>
+                  onClick={handleShareMail}>
                   Correo
                 </Button>
               </Box>
@@ -657,6 +685,32 @@ export default function Events() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenOrderResult(false)}>Cerrar</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Pedir destinatario y confirmar envío real por correo (vía backend,
+          no mailto:) — ver handleConfirmShareEmail. */}
+      <Dialog open={shareEmailOpen} onClose={() => !shareEmailSending && setShareEmailOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <EmailIcon color="primary" /> Enviar por correo
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus fullWidth type="email" label="Correo del destinatario"
+            value={shareEmailTo} onChange={e => setShareEmailTo(e.target.value)}
+            disabled={shareEmailSending}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShareEmailOpen(false)} disabled={shareEmailSending}>Cancelar</Button>
+          <Button variant="contained" onClick={handleConfirmShareEmail}
+            disabled={shareEmailSending || !shareEmailTo.trim()}
+            startIcon={shareEmailSending ? <CircularProgress size={16} /> : <EmailIcon />}>
+            {shareEmailSending ? 'Enviando…' : 'Enviar'}
+          </Button>
         </DialogActions>
       </Dialog>
 

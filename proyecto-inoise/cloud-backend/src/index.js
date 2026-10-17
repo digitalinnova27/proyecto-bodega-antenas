@@ -34,6 +34,7 @@ const rateLimit = require('express-rate-limit')
 
 const {
   loadAll,
+  loadProducts, loadEvents, loadRentals, loadOpStates,
   saveProducts, saveEvents, saveRentals, saveOpStates,
   saveEpcMap, saveEventHistory, saveRentalHistory, savePurchaseHistory,
   saveAuditLog,
@@ -152,6 +153,62 @@ if (hasFrontendBuild) app.use(express.static(distPath))
 const safe = async (fn) => {
   try { return { ok: true, data: await fn() } }
   catch (e) { console.error('[DB]', e.message); return { ok: false, error: e.message } }
+}
+
+/* ── Guardas de rol para las rutas de reemplazo masivo (/api/data/*) ──────
+ * Estas rutas aceptan el array/mapa completo que ya mantiene el frontend en
+ * memoria (mismo contrato desde antes de la migración a la nube) — por eso
+ * solo exigían estar autenticado, sin mirar el rol: no había forma de saber
+ * "qué cambió" dentro de un PUT masivo. Eso dejaba sin aplicar del lado del
+ * servidor reglas que la UI sí respeta (operador solicita, admin aprueba;
+ * solo admin fuerza una fase) — alguien con un token válido de operador
+ * podía mandar un PUT armado a mano saltándose la aprobación.
+ *
+ * La corrección definitiva es exponer endpoints por acción (POST
+ * /api/events/:id/cancel, etc.) en vez de reemplazo masivo — queda como
+ * mejora de arquitectura pendiente (ver SRS, apéndice de verificación).
+ * Mientras tanto, estas funciones comparan el estado ANTES/DESPUÉS de cada
+ * PUT y rechazan específicamente las transiciones que de verdad importan:
+ * cancelar un evento/arriendo, eliminar un producto, y forzar el cierre de
+ * una fase — sin bloquear el resto de los guardados normales. */
+
+function _blockUnauthorizedCancellations(existingList, incomingList, isAdmin) {
+  if (isAdmin) return null
+  const byId = new Map((existingList || []).map(e => [String(e.id), e]))
+  for (const item of incomingList || []) {
+    const prev = byId.get(String(item.id))
+    if (prev && prev.status !== 'Cancelado' && item.status === 'Cancelado') {
+      return `Solo un administrador puede cancelar (id ${item.id})`
+    }
+  }
+  return null
+}
+
+function _blockUnauthorizedProductDeletes(existingList, incomingList, isAdmin) {
+  if (isAdmin) return null
+  const incomingIds = new Set((incomingList || []).map(p => String(p.id)))
+  for (const p of existingList || []) {
+    if (!incomingIds.has(String(p.id))) {
+      return `Solo un administrador puede eliminar productos (id ${p.id})`
+    }
+  }
+  return null
+}
+
+function _blockUnauthorizedForcedClose(existingMap, incomingMap, isAdmin) {
+  if (isAdmin) return null
+  for (const [id, op] of Object.entries(incomingMap || {})) {
+    const prevOp = (existingMap || {})[id]
+    const phases = op?.phases || {}
+    for (const key of Object.keys(phases)) {
+      const wasForced = !!prevOp?.phases?.[key]?.forcedClose
+      const isForced = !!phases[key]?.forcedClose
+      if (isForced && !wasForced) {
+        return `Solo un administrador puede forzar el cierre de una fase (id ${id}, fase ${key})`
+      }
+    }
+  }
+  return null
 }
 
 function _isStrongPassword(pw) {
@@ -430,6 +487,32 @@ async function _sendAppMail({ to, subject, text, html }) {
   await transporter.sendMail({ from: `"Orbitag" <${cfg.email}>`, to, subject, text, html })
 }
 
+/* ── Compartir evento/arriendo por correo — envío real, no mailto: ───────
+ * Antes "Compartir por correo" en Events.jsx solo abría el cliente de
+ * correo del sistema operativo (mailto:) con el texto prellenado — Orbitag
+ * nunca sabía si el mensaje se mandó de verdad. Esta ruta lo manda desde el
+ * propio backend (mismo SMTP configurado en Ajustes que ya usa el envío de
+ * credenciales), y responde ok:true solo si nodemailer confirma el envío —
+ * así la app puede mostrarle al usuario un resultado real, no un "se abrió
+ * el programa de correo" que no prueba nada. ────────────────────────────── */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+app.post('/api/share/email', requireAuth, async (req, res) => {
+  const { to, subject, text } = req.body || {}
+  if (!to || !EMAIL_RE.test(String(to).trim())) {
+    return res.json({ ok: false, error: 'Correo de destino inválido' })
+  }
+  if (!subject || !text) {
+    return res.json({ ok: false, error: 'Faltan datos para enviar' })
+  }
+  try {
+    await _sendAppMail({ to: String(to).trim(), subject: String(subject).slice(0, 200), text: String(text).slice(0, 5000) })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[Share] Error enviando por correo:', e.message)
+    res.json({ ok: false, error: e.message })
+  }
+})
+
 app.post('/api/users/:id/send-credentials', requireAuth, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
@@ -556,24 +639,48 @@ app.get('/api/data', requireAuth, async (req, res) => {
 })
 
 app.put('/api/data/products', requireAuth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin'
+  if (!isAdmin) {
+    const existing = await safe(() => loadProducts())
+    const err = existing.ok && _blockUnauthorizedProductDeletes(existing.data, req.body, isAdmin)
+    if (err) return res.status(403).json({ ok: false, error: err })
+  }
   const result = await safe(() => saveProducts(req.body))
   if (result.ok) broadcast('products', req.body)
   res.json(result)
 })
 
 app.put('/api/data/events', requireAuth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin'
+  if (!isAdmin) {
+    const existing = await safe(() => loadEvents())
+    const err = existing.ok && _blockUnauthorizedCancellations(existing.data, req.body, isAdmin)
+    if (err) return res.status(403).json({ ok: false, error: err })
+  }
   const result = await safe(() => saveEvents(req.body))
   if (result.ok) broadcast('events', req.body)
   res.json(result)
 })
 
 app.put('/api/data/rentals', requireAuth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin'
+  if (!isAdmin) {
+    const existing = await safe(() => loadRentals())
+    const err = existing.ok && _blockUnauthorizedCancellations(existing.data, req.body, isAdmin)
+    if (err) return res.status(403).json({ ok: false, error: err })
+  }
   const result = await safe(() => saveRentals(req.body))
   if (result.ok) broadcast('rentals', req.body)
   res.json(result)
 })
 
 app.put('/api/data/op-states', requireAuth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin'
+  if (!isAdmin) {
+    const existing = await safe(() => loadOpStates())
+    const err = existing.ok && _blockUnauthorizedForcedClose(existing.data, req.body, isAdmin)
+    if (err) return res.status(403).json({ ok: false, error: err })
+  }
   const result = await safe(() => saveOpStates(req.body))
   if (result.ok) broadcast('opStates', req.body)
   res.json(result)
