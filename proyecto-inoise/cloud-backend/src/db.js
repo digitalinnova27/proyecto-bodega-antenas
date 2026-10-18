@@ -553,8 +553,26 @@ async function countAdmins() {
 
 /* ── PIN de acceso rápido — mismo esquema liviano que el original (SHA-256
  * sin salt fuerte, es un segundo factor corto, no reemplazo de contraseña) ── */
-function setUserPin(userId, pin) {
-  const hash = crypto.createHash('sha256').update(userId + ':' + String(pin)).digest('hex')
+/* ── RNF-006: el PIN pasó de SHA-256(userId+':'+pin) a bcrypt ───────────
+ * SHA-256 es rápido de calcular — con solo 10.000 combinaciones posibles
+ * (4 dígitos), un PIN filtrado junto con la base se puede probar entero en
+ * segundos. bcrypt es deliberadamente lento, hace inviable esa fuerza
+ * bruta offline aunque la base se filtre. _legacyPinHash/_verifyPin dan el
+ * mismo camino de migración perezosa que ya se usa para las contraseñas:
+ * un PIN viejo se verifica una última vez con el algoritmo anterior y, si
+ * es correcto, se reemplaza por bcrypt ahí mismo — nadie necesita volver a
+ * configurar su PIN a mano. */
+function _legacyPinHash(userId, pin) {
+  return crypto.createHash('sha256').update(userId + ':' + String(pin)).digest('hex')
+}
+
+async function _verifyPin(userId, pin, stored) {
+  if (_looksLikeBcrypt(stored)) return bcrypt.compare(String(pin), stored)
+  return _legacyPinHash(userId, pin) === stored
+}
+
+async function setUserPin(userId, pin) {
+  const hash = await bcrypt.hash(String(pin), BCRYPT_ROUNDS)
   return prisma.user.update({ where: { id: userId }, data: { pinHash: hash } })
 }
 
@@ -566,8 +584,12 @@ async function authLoginPin(userId, pin) {
   const u = await prisma.user.findUnique({ where: { id: userId } })
   if (!u || !u.pinHash) return null
   if (!u.active) return { disabled: true }
-  const hash = crypto.createHash('sha256').update(userId + ':' + String(pin)).digest('hex')
-  if (hash !== u.pinHash) return null
+  const valid = await _verifyPin(userId, pin, u.pinHash)
+  if (!valid) return null
+  if (!_looksLikeBcrypt(u.pinHash)) {
+    try { await prisma.user.update({ where: { id: userId }, data: { pinHash: await bcrypt.hash(String(pin), BCRYPT_ROUNDS) } }) }
+    catch (e) { console.error('[Auth] No se pudo re-hashear PIN heredado:', e.message) }
+  }
   return {
     id: u.id, role: u.role, nombre: u.nombre, apellido: u.apellido,
     email: u.email ?? '', cargo: u.cargo ?? '', avatar: u.avatar ?? '',
