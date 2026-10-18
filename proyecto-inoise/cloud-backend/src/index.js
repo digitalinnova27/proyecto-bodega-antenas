@@ -413,7 +413,28 @@ app.patch('/api/users/:id/active', requireAuth, async (req, res) => {
     }
   }
   const result = await safe(() => setUserActive(targetId, active))
-  if (result.ok) io.emit('users:updated')
+  if (result.ok) {
+    io.emit('users:updated')
+    // Deshabilitar a alguien debe sacarlo YA de la sesión en vivo — antes
+    // quedaba conectado por Socket.io (y su JWT seguía sirviendo para la
+    // API hasta las 12h de vencimiento natural) hasta que cerrara sesión
+    // por su cuenta. Esto corta el socket y cierra su sesión registrada de
+    // inmediato; el token HTTP ya emitido sigue siendo técnicamente válido
+    // hasta expirar (ventana de 12h, documentada como riesgo aceptado en
+    // el SRS — requeriría tokens de corta duración + refresh para cerrarla
+    // del todo).
+    if (!active) {
+      const targetSocket = findSocketByUserId(targetId)
+      if (targetSocket) {
+        const data = onlineUsers.get(targetSocket.id)
+        if (data?.sessionId) await safe(() => closeSession(data.sessionId))
+        onlineUsers.delete(targetSocket.id)
+        targetSocket.emit('account:disabled')
+        targetSocket.disconnect(true)
+        io.emit('online:users', getOnlineList())
+      }
+    }
+  }
   res.json(result)
 })
 

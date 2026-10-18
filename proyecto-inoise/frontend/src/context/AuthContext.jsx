@@ -84,14 +84,29 @@ export function AuthProvider({ children }) {
       }).catch(() => {})
     }
 
+    // El servidor manda esto cuando un admin deshabilita ESTA cuenta en
+    // caliente — ya cerró la sesión y desconectó el socket del lado suyo;
+    // acá solo hace falta limpiar el estado local para volver al login en
+    // vez de quedar con una sesión fantasma hasta que alguien recargue.
+    const onAccountDisabled = () => {
+      clearToken()
+      setCurrentUser(null)
+      setUsers([])
+      setUsersLoaded(false)
+      setSessionId(null)
+      window.dispatchEvent(new CustomEvent('inoise:account-disabled'))
+    }
+
     sock.on('online:users', onOnlineUsers)
     sock.on('connect', onConnect)
     sock.on('users:updated', onUsersUpdated)
+    sock.on('account:disabled', onAccountDisabled)
 
     return () => {
       sock.off('online:users', onOnlineUsers)
       sock.off('connect', onConnect)
       sock.off('users:updated', onUsersUpdated)
+      sock.off('account:disabled', onAccountDisabled)
     }
   }, [loadUsers])
 

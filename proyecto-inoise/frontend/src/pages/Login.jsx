@@ -718,6 +718,17 @@ export default function Login() {
   const [phase, setPhase] = useState('loading')
   const [adminExists, setAdminExists] = useState(false)
 
+  // Aviso cuando un admin deshabilita esta cuenta mientras estaba activa —
+  // AuthContext ya limpió la sesión local y nos trajo de vuelta acá; esto
+  // solo le explica al usuario por qué volvió al login sin haber cerrado
+  // sesión él mismo.
+  const [disabledNotice, setDisabledNotice] = useState(false)
+  useEffect(() => {
+    const onDisabled = () => setDisabledNotice(true)
+    window.addEventListener('inoise:account-disabled', onDisabled)
+    return () => window.removeEventListener('inoise:account-disabled', onDisabled)
+  }, [])
+
   // First-run
   const [createStep, setCreateStep] = useState('role')   // 'role' | 'form'
   const [createRole, setCreateRole] = useState(null)
@@ -942,6 +953,12 @@ export default function Login() {
 
   return (
     <div className="login-container">
+      {disabledNotice && (
+        <Alert severity="warning" onClose={() => setDisabledNotice(false)}
+          sx={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 10, maxWidth: 420 }}>
+          Tu cuenta fue deshabilitada por un administrador. Volviste a esta pantalla porque tu sesión se cerró automáticamente.
+        </Alert>
+      )}
       {loginStep === 'credentials' && (
         <button className="back-arrow" onClick={handleBack} aria-label="Volver">
           <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"
