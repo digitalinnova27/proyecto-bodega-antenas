@@ -47,6 +47,7 @@ const {
   createPasswordReset, verifyAndConsumePasswordReset, setUserPassword,
   setTrustedDeviceId, isTrustedDevice, createAdminLoginOtp, verifyAdminLoginOtp
 } = require('./db')
+const { runBackup, startDailyBackup } = require('./backup')
 
 // ── Constantes ───────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3005
@@ -490,6 +491,20 @@ app.post('/api/settings/smtp', requireAuth, async (req, res) => {
     return res.json({ ok: true, email: cfg.email, host: cfg.host, port: cfg.port, hasPassword: !!cfg.appPassword })
   } catch (e) {
     return res.json({ ok: false, error: e.message })
+  }
+})
+
+// ── Respaldo (RNF-010) — disparo manual para probar/forzar un respaldo
+// ahora mismo, sin esperar al ciclo diario automático (ver src/backup.js). ──
+app.post('/api/backup/run-now', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el administrador puede hacer esto' })
+  }
+  try {
+    const result = await runBackup({ to: req.body?.to })
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.json({ ok: false, error: e.message })
   }
 })
 
@@ -951,6 +966,7 @@ async function start() {
     console.log(`[Orbitag] Servidor escuchando en puerto ${PORT}`)
     console.log(`[Orbitag] CORS: ${ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(', ') : '(permisivo — sin ALLOWED_ORIGINS configurada)'}`)
     console.log(`[Orbitag] Frontend estático: ${hasFrontendBuild ? 'servido desde ' + distPath : 'no encontrado — corriendo solo como API'}`)
+    startDailyBackup()
   })
 }
 
