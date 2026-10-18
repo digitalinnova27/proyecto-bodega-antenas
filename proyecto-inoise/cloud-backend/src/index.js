@@ -49,6 +49,7 @@ const {
   setTrustedDeviceId, isTrustedDevice, createAdminLoginOtp, verifyAdminLoginOtp
 } = require('./db')
 const { runBackup, startDailyBackup } = require('./backup')
+const { startKeepalive } = require('./keepalive')
 
 // ── Constantes ───────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3005
@@ -976,6 +977,7 @@ async function start() {
     console.log(`[Orbitag] CORS: ${ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(', ') : '(permisivo — sin ALLOWED_ORIGINS configurada)'}`)
     console.log(`[Orbitag] Frontend estático: ${hasFrontendBuild ? 'servido desde ' + distPath : 'no encontrado — corriendo solo como API'}`)
     startDailyBackup()
+    startKeepalive()
   })
 }
 
