@@ -35,6 +35,7 @@ const rateLimit = require('express-rate-limit')
 const {
   loadAll,
   loadProducts, loadEvents, loadRentals, loadOpStates,
+  findDoubleBookingConflict,
   saveProducts, saveEvents, saveRentals, saveOpStates,
   saveEpcMap, saveEventHistory, saveRentalHistory, savePurchaseHistory,
   saveAuditLog,
@@ -688,10 +689,14 @@ app.put('/api/data/products', requireAuth, async (req, res) => {
 
 app.put('/api/data/events', requireAuth, async (req, res) => {
   const isAdmin = req.user.role === 'admin'
-  if (!isAdmin) {
-    const existing = await safe(() => loadEvents())
-    const err = existing.ok && _blockUnauthorizedCancellations(existing.data, req.body, isAdmin)
+  const [existingEvents, existingRentals] = await Promise.all([safe(() => loadEvents()), safe(() => loadRentals())])
+  if (!isAdmin && existingEvents.ok) {
+    const err = _blockUnauthorizedCancellations(existingEvents.data, req.body, isAdmin)
     if (err) return res.status(403).json({ ok: false, error: err })
+  }
+  if (existingEvents.ok && existingRentals.ok) {
+    const conflict = await findDoubleBookingConflict(req.body, existingEvents.data, existingRentals.data)
+    if (conflict) return res.status(409).json({ ok: false, error: conflict })
   }
   const result = await safe(() => saveEvents(req.body))
   if (result.ok) broadcast('events', req.body)
@@ -700,10 +705,14 @@ app.put('/api/data/events', requireAuth, async (req, res) => {
 
 app.put('/api/data/rentals', requireAuth, async (req, res) => {
   const isAdmin = req.user.role === 'admin'
-  if (!isAdmin) {
-    const existing = await safe(() => loadRentals())
-    const err = existing.ok && _blockUnauthorizedCancellations(existing.data, req.body, isAdmin)
+  const [existingRentals, existingEvents] = await Promise.all([safe(() => loadRentals()), safe(() => loadEvents())])
+  if (!isAdmin && existingRentals.ok) {
+    const err = _blockUnauthorizedCancellations(existingRentals.data, req.body, isAdmin)
     if (err) return res.status(403).json({ ok: false, error: err })
+  }
+  if (existingRentals.ok && existingEvents.ok) {
+    const conflict = await findDoubleBookingConflict(req.body, existingRentals.data, existingEvents.data)
+    if (conflict) return res.status(409).json({ ok: false, error: conflict })
   }
   const result = await safe(() => saveRentals(req.body))
   if (result.ok) broadcast('rentals', req.body)

@@ -68,6 +68,76 @@ async function loadProducts() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+ * RF-011 — doble reserva por condición de carrera
+ *
+ * Dos PCs asignando equipos casi al mismo tiempo pueden terminar
+ * reclamando la misma unidad física para dos eventos/arriendos distintos
+ * — cada guardado "reemplaza todo" (ver cabecera del archivo), así que sin
+ * esta validación gana el último PUT en silencio, sin aviso para nadie.
+ *
+ * Se usa el ESTADO REAL de la unidad (tabla units, no el texto de status
+ * del evento — ese tiene variantes como "Suspendido" cuyo efecto sobre la
+ * disponibilidad no está definido con certeza) como la señal de verdad de
+ * si está libre u ocupada ahora mismo. Una unidad con estado Reservado/
+ * Ocupado/Rental solo puede seguir reclamándola el MISMO evento/arriendo
+ * que ya la tenía en la base — cualquier otro reclamo se rechaza.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+function _assignedUnitHolders(list) {
+  const holder = new Map() // unitId -> id del evento/arriendo que lo tiene
+  for (const item of list || []) {
+    for (const a of item.assignments || []) {
+      for (const unitId of a.unitIds || []) holder.set(unitId, item.id)
+    }
+  }
+  return holder
+}
+
+const _BUSY_UNIT_STATES = new Set(['Reservado', 'Ocupado', 'Rental'])
+
+/** Devuelve un mensaje de error si `incomingList` reclama una unidad que ya
+ *  está ocupada por otro evento/arriendo (en la misma colección o en la
+ *  otra), o null si no hay conflicto. */
+async function findDoubleBookingConflict(incomingList, existingSameList, existingOtherList) {
+  const claimedBy = _assignedUnitHolders(incomingList)
+  if (!claimedBy.size) return null
+
+  // Conflicto DENTRO del propio payload entrante (dos ítems nuevos pisándose)
+  const seen = new Map()
+  for (const item of incomingList || []) {
+    for (const a of item.assignments || []) {
+      for (const unitId of a.unitIds || []) {
+        const prev = seen.get(unitId)
+        if (prev !== undefined && String(prev) !== String(item.id)) {
+          return `La unidad ${unitId} quedaría asignada dos veces en este mismo guardado.`
+        }
+        seen.set(unitId, item.id)
+      }
+    }
+  }
+
+  const sameHolder = _assignedUnitHolders(existingSameList)
+  const otherHolder = _assignedUnitHolders(existingOtherList)
+
+  const units = await prisma.unit.findMany({
+    where: { id: { in: [...claimedBy.keys()] } },
+    select: { id: true, state: true }
+  })
+  for (const u of units) {
+    if (!_BUSY_UNIT_STATES.has(u.state)) continue
+    if (otherHolder.has(u.id)) {
+      return `La unidad ${u.id} ya está asignada a otra operación activa (cruzada entre eventos y arriendos) — recargá la pantalla e intentá de nuevo.`
+    }
+    const currentHolder = sameHolder.get(u.id)
+    const claimant = claimedBy.get(u.id)
+    if (currentHolder !== undefined && String(currentHolder) !== String(claimant)) {
+      return `La unidad ${u.id} ya fue asignada por otra persona mientras tanto — recargá la pantalla e intentá de nuevo.`
+    }
+  }
+  return null
+}
+
+/* ════════════════════════════════════════════════════════════════════════
  * Eventos + asignaciones
  * ════════════════════════════════════════════════════════════════════════ */
 
@@ -804,6 +874,7 @@ async function verifyAdminLoginOtp(username, code) {
 module.exports = {
   prisma,
   loadAll,
+  findDoubleBookingConflict,
   saveProducts, loadProducts,
   saveEvents, loadEvents,
   saveRentals, loadRentals,
